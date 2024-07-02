@@ -21,6 +21,8 @@ import { CombiningOutputParser } from 'langchain/output_parsers';
 import { LLMChain } from 'langchain/chains';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { HumanMessage } from '@langchain/core/messages';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { ChatOllama } from '@langchain/community/chat_models/ollama';
 import { getTemplateNoticeField } from '../../../utils/sharedFields';
 import {
 	getOptionalOutputParsers,
@@ -74,14 +76,22 @@ async function getImageMessage(
 	}
 
 	const bufferData = await context.helpers.getBinaryDataBuffer(itemIndex, binaryDataKey);
+	const model = (await context.getInputConnectionData(
+		NodeConnectionType.AiLanguageModel,
+		0,
+	)) as BaseLanguageModel;
+	const dataURI = `data:image/jpeg;base64,${bufferData.toString('base64')}`;
+
+	const directUriModels = [ChatGoogleGenerativeAI, ChatOllama];
+	const imageUrl = directUriModels.some((i) => model instanceof i)
+		? dataURI
+		: { url: dataURI, detail };
+
 	return new HumanMessage({
 		content: [
 			{
 				type: 'image_url',
-				image_url: {
-					url: `data:image/jpeg;base64,${bufferData.toString('base64')}`,
-					detail,
-				},
+				image_url: imageUrl,
 			},
 		],
 	});
@@ -247,7 +257,7 @@ export class ChainLlm implements INodeType {
 			alias: ['LangChain'],
 			categories: ['AI'],
 			subcategories: {
-				AI: ['Chains'],
+				AI: ['Chains', 'Root Nodes'],
 			},
 			resources: {
 				primaryDocumentation: [
@@ -570,7 +580,7 @@ export class ChainLlm implements INodeType {
 					});
 				});
 			} catch (error) {
-				if (this.continueOnFail()) {
+				if (this.continueOnFail(error)) {
 					returnData.push({ json: { error: error.message }, pairedItem: { item: itemIndex } });
 					continue;
 				}
