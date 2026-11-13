@@ -1,5 +1,4 @@
-import { parseString } from 'xml2js';
-
+import get from 'lodash/get';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -9,25 +8,27 @@ import type {
 	IHttpRequestOptions,
 	JsonObject,
 	IHttpRequestMethods,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
-
-import get from 'lodash/get';
+import { NodeApiError, sanitizeXmlName } from 'n8n-workflow';
+import { parseString } from 'xml2js';
+import { awsRequestPath, getAwsCredentials } from '../GenericFunctions';
 
 export async function awsApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions | IWebhookFunctions,
 	service: string,
 	method: IHttpRequestMethods,
-	path: string,
+	path: RequestPath,
 	body?: string,
 	headers?: object,
+	query?: IDataObject,
 ): Promise<any> {
-	const credentials = await this.getCredentials('aws');
+	const { credentials, credentialsType } = await getAwsCredentials(this);
 
 	const requestOptions = {
 		qs: {
 			service,
-			path,
+			path: awsRequestPath(path, query),
 		},
 		method,
 		body: JSON.stringify(body),
@@ -37,7 +38,7 @@ export async function awsApiRequest(
 	} as IHttpRequestOptions;
 
 	try {
-		return await this.helpers.requestWithAuthentication.call(this, 'aws', requestOptions);
+		return await this.helpers.requestWithAuthentication.call(this, credentialsType, requestOptions);
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject, { parseXml: true });
 	}
@@ -47,11 +48,12 @@ export async function awsApiRequestREST(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	service: string,
 	method: IHttpRequestMethods,
-	path: string,
+	path: RequestPath,
 	body?: string,
 	headers?: object,
+	query?: IDataObject,
 ): Promise<any> {
-	const response = await awsApiRequest.call(this, service, method, path, body, headers);
+	const response = await awsApiRequest.call(this, service, method, path, body, headers, query);
 	try {
 		return JSON.parse(response as string);
 	} catch (error) {
@@ -63,19 +65,28 @@ export async function awsApiRequestSOAP(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions | IWebhookFunctions,
 	service: string,
 	method: IHttpRequestMethods,
-	path: string,
+	path: RequestPath,
 	body?: string,
 	headers?: object,
+	query?: IDataObject,
 ): Promise<any> {
-	const response = await awsApiRequest.call(this, service, method, path, body, headers);
+	const response = await awsApiRequest.call(this, service, method, path, body, headers, query);
 	try {
 		return await new Promise((resolve, reject) => {
-			parseString(response as string, { explicitArray: false }, (err, data) => {
-				if (err) {
-					return reject(err);
-				}
-				resolve(data);
-			});
+			parseString(
+				response as string,
+				{
+					explicitArray: false,
+					tagNameProcessors: [sanitizeXmlName],
+					attrNameProcessors: [sanitizeXmlName],
+				},
+				(err, data) => {
+					if (err) {
+						return reject(err);
+					}
+					resolve(data);
+				},
+			);
 		});
 	} catch (error) {
 		return response;
@@ -87,7 +98,7 @@ export async function awsApiRequestSOAPAllItems(
 	propertyName: string,
 	service: string,
 	method: IHttpRequestMethods,
-	path: string,
+	path: RequestPath,
 	body?: string,
 	query: IDataObject = {},
 	_headers: IDataObject = {},
@@ -101,7 +112,15 @@ export async function awsApiRequestSOAPAllItems(
 	const propertyNameArray = propertyName.split('.');
 
 	do {
-		responseData = await awsApiRequestSOAP.call(this, service, method, path, body, query);
+		responseData = await awsApiRequestSOAP.call(
+			this,
+			service,
+			method,
+			path,
+			body,
+			undefined,
+			query,
+		);
 
 		if (get(responseData, [propertyNameArray[0], propertyNameArray[1], 'NextToken'])) {
 			query.NextToken = get(responseData, [

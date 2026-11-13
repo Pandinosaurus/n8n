@@ -1,7 +1,7 @@
-import type { IExecuteFunctions, IDataObject, INodeExecutionData } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
-
 import { snakeCase } from 'change-case';
+import type { IExecuteFunctions, IDataObject, INodeExecutionData } from 'n8n-workflow';
+import { NodeOperationError, requestPath } from 'n8n-workflow';
+
 import { apiRequest, apiRequestAllItems } from '../../../transport';
 
 export async function getAll(
@@ -13,7 +13,7 @@ export async function getAll(
 
 	const qs = {} as IDataObject;
 	const requestMethod = 'GET';
-	const endpoint = '/users';
+	const endpoint = requestPath`/users`;
 	const body = {} as IDataObject;
 
 	if (additionalFields.inTeam) {

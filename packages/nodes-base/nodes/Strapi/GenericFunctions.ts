@@ -8,20 +8,17 @@ import type {
 	IRequestOptions,
 	IWebhookFunctions,
 	JsonObject,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
-export const removeTrailingSlash = (url: string) => {
-	if (url.endsWith('/')) {
-		return url.slice(0, -1);
-	}
-	return url;
-};
+import { removeTrailingSlash } from '../../utils/utilities';
 
 export async function strapiApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions | IHookFunctions | IWebhookFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
 	uri?: string,
@@ -39,12 +36,15 @@ export async function strapiApiRequest(
 	const url = removeTrailingSlash(credentials.url as string);
 
 	try {
-		const options: IRequestOptions = {
+		const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 			headers: {},
 			method,
 			body,
 			qs,
-			uri: uri || credentials.apiVersion === 'v4' ? `${url}/api${resource}` : `${url}${resource}`,
+			uri:
+				uri || credentials.apiVersion === 'v4'
+					? requestUrl`${url}/api${resource}`
+					: requestUrl`${url}${resource}`,
 			json: true,
 			qsStringifyOptions: {
 				arrayFormat: 'indices',
@@ -93,7 +93,7 @@ export async function getToken(
 export async function strapiApiRequestAllItems(
 	this: IHookFunctions | ILoadOptionsFunctions | IExecuteFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 	body: IDataObject = {},
 	query: IDataObject = {},
 	headers: IDataObject = {},

@@ -1,0 +1,390 @@
+<script setup lang="ts">
+import ExpressionEditorModalInput from './ExpressionEditorModal/ExpressionEditorModalInput.vue';
+import { computed, inject, ref, toRaw, watch } from 'vue';
+
+import { useExternalHooks } from '@/app/composables/useExternalHooks';
+import { injectNDVStore } from '@/features/ndv/shared/ndv.store';
+import { injectWorkflowExecutionStateStore } from '@/app/stores/workflowExecutionState.store';
+import { createExpressionTelemetryPayload } from '@/app/utils/telemetryUtils';
+
+import { useTelemetry } from '@n8n/composables/useTelemetry';
+import type { Segment } from '@/app/types/expressions';
+import type { IDataObject, INodeProperties } from 'n8n-workflow';
+import { NodeConnectionTypes } from 'n8n-workflow';
+import { outputTheme } from './ExpressionEditorModal/theme';
+import ExpressionOutput from '@/features/shared/editors/components/InlineExpressionEditor/ExpressionOutput.vue';
+import VirtualSchema from '@/features/ndv/runData/components/VirtualSchema.vue';
+import OutputItemSelect from '@/features/shared/editors/components/InlineExpressionEditor/OutputItemSelect.vue';
+import { useI18n } from '@n8n/i18n';
+import { ParameterInputModalContextKey } from '@/app/constants/injectionKeys';
+import { useDebounce } from '@n8n/composables/useDebounce';
+import DraggableTarget from '@/app/components/DraggableTarget.vue';
+import { dropInExpressionEditor } from '@/features/shared/editors/plugins/codemirror/dragAndDrop';
+
+import { useThrottleFn } from '@vueuse/core';
+
+import {
+	N8nDialog,
+	N8nDialogBody,
+	N8nDialogHeader,
+	N8nDialogTitle,
+	N8nIcon,
+	N8nInput,
+	N8nSegmentControl,
+	N8nResizeWrapper,
+	N8nText,
+	type ResizeData,
+} from '@n8n/design-system';
+import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
+
+defineOptions({ inheritAttrs: false });
+const DEFAULT_LEFT_SIDEBAR_WIDTH = 360;
+const parameterModalContext = inject(ParameterInputModalContextKey, undefined);
+
+type Props = {
+	parameter: INodeProperties;
+	path: string;
+	modelValue: string;
+	dialogVisible?: boolean;
+	eventSource?: string;
+	redactValues?: boolean;
+	isReadOnly?: boolean;
+	additionalExpressionData?: IDataObject;
+};
+
+const props = withDefaults(defineProps<Props>(), {
+	eventSource: '',
+	dialogVisible: false,
+	redactValues: false,
+	isReadOnly: false,
+	additionalExpressionData: () => ({}),
+});
+const emit = defineEmits<{
+	'update:model-value': [value: string];
+	closeDialog: [];
+}>();
+
+const ndvStore = injectNDVStore();
+const workflowExecutionStateStore = injectWorkflowExecutionStateStore();
+const workflowDocumentStore = injectWorkflowDocumentStore();
+
+const lastSuccessfulExecution = computed(
+	() => workflowExecutionStateStore.value.lastSuccessfulExecution,
+);
+
+const telemetry = useTelemetry();
+const i18n = useI18n();
+const externalHooks = useExternalHooks();
+const { debounce } = useDebounce();
+
+const segments = ref<Segment[]>([]);
+const search = ref('');
+const appliedSearch = ref('');
+const sidebarWidth = ref(DEFAULT_LEFT_SIDEBAR_WIDTH);
+const expressionInputRef = ref<InstanceType<typeof ExpressionEditorModalInput>>();
+const expressionResultRef = ref<InstanceType<typeof ExpressionOutput>>();
+const theme = outputTheme();
+const outputRenderMode = ref<'text' | 'html' | 'markdown'>('text');
+
+const activeNode = computed(() => ndvStore.value.activeNode);
+const inputEditor = computed(() => expressionInputRef.value?.editor);
+const parentNodes = computed(() => {
+	const node = activeNode.value;
+	if (!node) return [];
+	const nodes = workflowDocumentStore?.value?.getParentNodesByDepth(node.name) ?? [];
+
+	return nodes.filter(({ name }) => name !== node.name);
+});
+
+const rootNode = computed(() => {
+	if (!activeNode.value) return null;
+
+	return workflowDocumentStore?.value?.findRootWithMainConnection(activeNode.value.name) ?? null;
+});
+
+const rootNodesParents = computed(() => {
+	if (!rootNode.value) return [];
+	return workflowDocumentStore.value.getParentNodesByDepth(rootNode.value) ?? [];
+});
+
+watch(
+	() => props.dialogVisible,
+	(newValue) => {
+		const resolvedExpressionValue = expressionResultRef.value?.getValue() ?? '';
+
+		void externalHooks.run('expressionEdit.dialogVisibleChanged', {
+			dialogVisible: newValue,
+			parameter: props.parameter,
+			value: props.modelValue.toString(),
+			resolvedExpressionValue,
+		});
+
+		if (!newValue) {
+			const telemetryPayload = createExpressionTelemetryPayload(
+				segments.value,
+				props.modelValue.toString(),
+				workflowDocumentStore.value.workflowId,
+				ndvStore.value.pushRef,
+				ndvStore.value.activeNode?.type ?? '',
+			);
+
+			telemetry.track('User closed Expression Editor', telemetryPayload);
+			void externalHooks.run('expressionEdit.closeDialog', telemetryPayload);
+		}
+	},
+);
+
+watch(
+	search,
+	debounce(
+		(newSearch: string) => {
+			appliedSearch.value = newSearch;
+		},
+		{ debounceTime: 500 },
+	),
+);
+
+function valueChanged(update: { value: string; segments: Segment[] }) {
+	segments.value = update.segments;
+	emit('update:model-value', update.value);
+}
+
+function closeDialog() {
+	emit('closeDialog');
+}
+
+function onDialogOpenUpdate(open: boolean) {
+	if (!open) closeDialog();
+}
+
+async function onDrop(expression: string, event: MouseEvent) {
+	if (!inputEditor.value) return;
+
+	await dropInExpressionEditor(toRaw(inputEditor.value), event, expression);
+}
+
+function onResize(event: ResizeData) {
+	sidebarWidth.value = event.width;
+}
+
+const onResizeThrottle = useThrottleFn(onResize, 10);
+</script>
+
+<template>
+	<N8nDialog
+		:open="dialogVisible"
+		size="cover"
+		:stacked="parameterModalContext !== undefined"
+		@update:open="onDialogOpenUpdate"
+	>
+		<N8nDialogHeader>
+			<N8nDialogTitle>
+				{{ i18n.baseText('expressionEdit.editExpression') }}
+			</N8nDialogTitle>
+		</N8nDialogHeader>
+		<N8nDialogBody>
+			<div :class="$style.container">
+				<N8nResizeWrapper
+					:width="sidebarWidth"
+					:min-width="200"
+					:style="{ width: `${sidebarWidth}px` }"
+					:grid-size="8"
+					:supported-directions="['left', 'right']"
+					@resize="onResizeThrottle"
+				>
+					<div :class="$style.sidebar">
+						<N8nInput
+							v-model="search"
+							size="small"
+							:class="$style.search"
+							:placeholder="i18n.baseText('ndv.search.placeholder.input.schema')"
+						>
+							<template #prefix>
+								<N8nIcon :class="$style.ioSearchIcon" icon="search" />
+							</template>
+						</N8nInput>
+
+						<VirtualSchema
+							:class="$style.schema"
+							:search="appliedSearch"
+							:nodes="parentNodes.length > 0 ? parentNodes : rootNodesParents"
+							:mapping-enabled="!isReadOnly"
+							:connection-type="NodeConnectionTypes.Main"
+							:preview-execution="lastSuccessfulExecution"
+							pane-type="input"
+						/>
+					</div>
+				</N8nResizeWrapper>
+
+				<div :class="$style.io">
+					<div :class="$style.input">
+						<div :class="$style.header">
+							<N8nText bold size="large">
+								{{ i18n.baseText('expressionEdit.expression') }}
+							</N8nText>
+							<N8nText
+								v-n8n-html="i18n.baseText('expressionTip.javascript')"
+								:class="$style.tip"
+								size="small"
+							/>
+						</div>
+
+						<DraggableTarget :class="$style.editorContainer" type="mapping" @drop="onDrop">
+							<template #default>
+								<ExpressionEditorModalInput
+									ref="expressionInputRef"
+									:model-value="modelValue"
+									:is-read-only="isReadOnly"
+									:path="path"
+									:additional-data="additionalExpressionData"
+									:class="[
+										$style.editor,
+										{
+											'ph-no-capture': redactValues,
+										},
+									]"
+									data-test-id="expression-modal-input"
+									@change="valueChanged"
+									@close="closeDialog"
+								/>
+							</template>
+						</DraggableTarget>
+					</div>
+
+					<div :class="$style.output">
+						<div :class="$style.header">
+							<N8nText bold size="large">
+								{{ i18n.baseText('parameterInput.result') }}
+							</N8nText>
+							<div :class="$style.headerControls">
+								<OutputItemSelect />
+								<N8nSegmentControl
+									v-model="outputRenderMode"
+									size="small"
+									:options="[
+										{ label: i18n.baseText('ndv.render.text'), value: 'text' },
+										{ label: i18n.baseText('ndv.render.html'), value: 'html' },
+										{ label: i18n.baseText('ndv.render.markdown'), value: 'markdown' },
+									]"
+								/>
+							</div>
+						</div>
+
+						<div :class="[$style.editorContainer, { 'ph-no-capture': redactValues }]">
+							<ExpressionOutput
+								ref="expressionResultRef"
+								:class="outputRenderMode === 'text' ? $style.editor : undefined"
+								:segments="segments"
+								:extensions="theme"
+								:render="outputRenderMode"
+								data-test-id="expression-modal-output"
+							/>
+						</div>
+					</div>
+				</div>
+			</div>
+		</N8nDialogBody>
+	</N8nDialog>
+</template>
+
+<style module lang="scss">
+@use '@/app/css/variables' as *;
+
+.container {
+	display: flex;
+	flex: 1 1 auto;
+	flex-flow: row nowrap;
+	gap: var(--spacing--2xs);
+}
+
+.sidebar {
+	display: flex;
+	flex-direction: column;
+	gap: var(--spacing--sm);
+	flex-basis: 360px;
+	flex-shrink: 0;
+	height: 100%;
+}
+
+.schema {
+	height: 100%;
+	overflow-y: auto;
+	padding-right: var(--spacing--4xs);
+}
+
+.editor {
+	display: flex;
+	flex: 1 1 0;
+	font-size: var(--font-size--xs);
+
+	> div {
+		flex: 1 1 0;
+	}
+}
+
+.editorContainer {
+	display: flex;
+	flex: 1 1 0;
+	min-height: 0;
+	min-width: 0;
+}
+
+.io {
+	display: flex;
+	flex: 1 1 0;
+	gap: var(--spacing--sm);
+	min-width: 0;
+}
+
+.input,
+.output {
+	display: flex;
+	flex-direction: column;
+	gap: var(--spacing--2xs);
+	flex: 1 1 0;
+	min-width: 0;
+	min-height: 0;
+}
+
+.output {
+	[aria-readonly] {
+		background: var(--color--background--light-2);
+	}
+}
+
+.header {
+	display: flex;
+	flex-direction: column;
+
+	gap: var(--spacing--5xs);
+}
+
+.headerControls {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	width: 100%;
+	padding-right: var(--spacing--4xs);
+}
+
+.tip {
+	min-height: 22px;
+}
+
+@media (max-width: $breakpoint-md) {
+	.io {
+		flex-direction: column;
+	}
+
+	.input,
+	.output {
+		height: 50%;
+	}
+
+	.header {
+		flex-direction: row;
+		align-items: baseline;
+		gap: var(--spacing--2xs);
+	}
+}
+</style>

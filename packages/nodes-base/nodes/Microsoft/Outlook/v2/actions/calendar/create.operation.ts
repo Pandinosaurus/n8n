@@ -1,6 +1,9 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
-import { microsoftApiRequest } from '../../transport';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { microsoftApiRequest } from '../../transport';
 
 export const properties: INodeProperties[] = [
 	{
@@ -29,7 +32,7 @@ export const properties: INodeProperties[] = [
 				},
 				default: [],
 				description:
-					'If set, the calendar will be created in the specified calendar group. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'If set, the calendar will be created in the specified calendar group. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Color',
@@ -93,10 +96,10 @@ export async function execute(this: IExecuteFunctions, index: number) {
 	const additionalFields = this.getNodeParameter('additionalFields', index);
 	const name = this.getNodeParameter('name', index) as string;
 
-	let endpoint = '/calendars';
+	let endpoint = requestPath`/calendars`;
 
 	if (additionalFields.calendarGroup) {
-		endpoint = `/calendarGroups/${additionalFields.calendarGroup}/calendars`;
+		endpoint = requestPath`/calendarGroups/${additionalFields.calendarGroup}/calendars`;
 		delete additionalFields.calendarGroup;
 	}
 
@@ -105,7 +108,7 @@ export async function execute(this: IExecuteFunctions, index: number) {
 		...additionalFields,
 	};
 
-	const responseData = await microsoftApiRequest.call(this, 'POST', endpoint, body);
+	const responseData = await microsoftApiRequest.call(this, 'POST', endpoint, index, body);
 
 	const executionData = this.helpers.constructExecutionMetaData(
 		this.helpers.returnJsonArray(responseData as IDataObject),

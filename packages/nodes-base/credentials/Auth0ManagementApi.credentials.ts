@@ -1,10 +1,11 @@
-import type {
-	IAuthenticateGeneric,
-	ICredentialDataDecryptedObject,
-	ICredentialTestRequest,
-	ICredentialType,
-	IHttpRequestHelper,
-	INodeProperties,
+import {
+	requestUrl,
+	type IAuthenticateGeneric,
+	type ICredentialDataDecryptedObject,
+	type ICredentialTestRequest,
+	type ICredentialType,
+	type IHttpRequestHelper,
+	type INodeProperties,
 } from 'n8n-workflow';
 
 export class Auth0ManagementApi implements ICredentialType {
@@ -14,7 +15,7 @@ export class Auth0ManagementApi implements ICredentialType {
 
 	documentationUrl = 'auth0management';
 
-	icon = 'file:icons/Auth0.svg';
+	icon = { light: 'file:icons/Auth0.svg', dark: 'file:icons/Auth0.dark.svg' } as const;
 
 	httpRequestNode = {
 		name: 'Auth0',
@@ -60,9 +61,10 @@ export class Auth0ManagementApi implements ICredentialType {
 	];
 
 	async preAuthentication(this: IHttpRequestHelper, credentials: ICredentialDataDecryptedObject) {
+		const domain = String(credentials.domain).replace(/\/$/, '');
 		const { access_token } = (await this.helpers.httpRequest({
 			method: 'POST',
-			url: `https://${credentials.domain}/oauth/token`,
+			url: requestUrl`https://${domain}/oauth/token`,
 			body: {
 				client_id: credentials.clientId,
 				client_secret: credentials.clientSecret,

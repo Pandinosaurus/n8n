@@ -1,7 +1,6 @@
-import type { IExecuteFunctions, INodeExecutionData } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import type { IExecuteFunctions, INodeExecutionData, JsonObject } from 'n8n-workflow';
+import { NodeOperationError, SEND_AND_WAIT_OPERATION } from 'n8n-workflow';
 
-import type { MicrosoftOutlook } from './node.type';
 import * as calendar from './calendar';
 import * as contact from './contact';
 import * as draft from './draft';
@@ -10,6 +9,9 @@ import * as folder from './folder';
 import * as folderMessage from './folderMessage';
 import * as message from './message';
 import * as messageAttachment from './messageAttachment';
+import type { MicrosoftOutlook } from './node.type';
+import { configureWaitTillDate } from '../../../../../utils/sendAndWait/configureWaitTillDate.util';
+import { stampItemIndexOnError } from '../../../GenericFunctions';
 
 export async function router(this: IExecuteFunctions) {
 	const items = this.getInputData();
@@ -24,6 +26,25 @@ export async function router(this: IExecuteFunctions) {
 		resource,
 		operation,
 	} as MicrosoftOutlook;
+
+	if (
+		microsoftOutlook.resource === 'message' &&
+		microsoftOutlook.operation === SEND_AND_WAIT_OPERATION
+	) {
+		try {
+			await message[microsoftOutlook.operation].execute.call(this, 0, items);
+		} catch (error) {
+			if (this.continueOnFail()) {
+				return [[{ json: { error: (error as JsonObject).message } }]];
+			}
+			throw error;
+		}
+
+		const waitTill = configureWaitTillDate(this);
+
+		await this.putExecutionToWait(waitTill);
+		return [items];
+	}
 
 	for (let i = 0; i < items.length; i++) {
 		try {
@@ -70,14 +91,8 @@ export async function router(this: IExecuteFunctions) {
 				returnData.push(...executionErrorData);
 				continue;
 			}
-			//NodeApiError will be missing the itemIndex, add it
-			if (error instanceof NodeApiError && error?.context?.itemIndex === undefined) {
-				if (error.context === undefined) {
-					error.context = {};
-				}
-				error.context.itemIndex = i;
-			}
-			throw error;
+			// A NodeError from the transport may be missing the itemIndex, add it
+			throw stampItemIndexOnError(error, i);
 		}
 	}
 	return [returnData];

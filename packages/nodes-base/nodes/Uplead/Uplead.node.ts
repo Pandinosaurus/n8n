@@ -5,8 +5,10 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { upleadApiRequest } from './GenericFunctions';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
+
 import { companyFields, companyOperations } from './CompanyDesciption';
+import { upleadApiRequest } from './GenericFunctions';
 import { personFields, personOperations } from './PersonDescription';
 
 export class Uplead implements INodeType {
@@ -22,8 +24,9 @@ export class Uplead implements INodeType {
 		defaults: {
 			name: 'Uplead',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'upleadApi',
@@ -87,7 +90,13 @@ export class Uplead implements INodeType {
 						if (domain) {
 							qs.domain = domain;
 						}
-						responseData = await upleadApiRequest.call(this, 'GET', '/person-search', {}, qs);
+						responseData = await upleadApiRequest.call(
+							this,
+							'GET',
+							requestPath`/person-search`,
+							{},
+							qs,
+						);
 					}
 				}
 				if (resource === 'company') {
@@ -100,7 +109,13 @@ export class Uplead implements INodeType {
 						if (company) {
 							qs.company = company;
 						}
-						responseData = await upleadApiRequest.call(this, 'GET', '/company-search', {}, qs);
+						responseData = await upleadApiRequest.call(
+							this,
+							'GET',
+							requestPath`/company-search`,
+							{},
+							qs,
+						);
 					}
 				}
 				if (Array.isArray(responseData.data)) {

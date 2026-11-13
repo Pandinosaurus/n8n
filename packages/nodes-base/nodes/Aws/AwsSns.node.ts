@@ -1,15 +1,18 @@
-import type {
-	IExecuteFunctions,
-	IDataObject,
-	ILoadOptionsFunctions,
-	INodeExecutionData,
-	INodeListSearchItems,
-	INodeListSearchResult,
-	INodeType,
-	INodeTypeDescription,
+import {
+	type IExecuteFunctions,
+	type IDataObject,
+	type ILoadOptionsFunctions,
+	type INodeExecutionData,
+	type INodeListSearchItems,
+	type INodeListSearchResult,
+	type INodeType,
+	type INodeTypeDescription,
+	NodeConnectionTypes,
+	requestPath,
 } from 'n8n-workflow';
 
 import { awsApiRequestSOAP } from './GenericFunctions';
+import { awsNodeAuthOptions, awsNodeCredentials } from './utils';
 
 export class AwsSns implements INodeType {
 	description: INodeTypeDescription = {
@@ -23,15 +26,12 @@ export class AwsSns implements INodeType {
 		defaults: {
 			name: 'AWS SNS',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
-		credentials: [
-			{
-				name: 'aws',
-				required: true,
-			},
-		],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
+		credentials: awsNodeCredentials,
 		properties: [
+			awsNodeAuthOptions,
 			{
 				displayName: 'Operation',
 				name: 'operation',
@@ -75,7 +75,7 @@ export class AwsSns implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				default: {},
 				options: [
 					{
@@ -198,13 +198,14 @@ export class AwsSns implements INodeType {
 				paginationToken?: string,
 			): Promise<INodeListSearchResult> {
 				const returnData: INodeListSearchItems[] = [];
-				const params = paginationToken ? `NextToken=${encodeURIComponent(paginationToken)}` : '';
-
 				const data = await awsApiRequestSOAP.call(
 					this,
 					'sns',
 					'GET',
-					'/?Action=ListTopics&' + params,
+					requestPath`/`,
+					undefined,
+					undefined,
+					{ Action: 'ListTopics', ...(paginationToken && { NextToken: paginationToken }) },
 				);
 
 				let topics = data.ListTopicsResponse.ListTopicsResult.Topics.member;
@@ -252,29 +253,31 @@ export class AwsSns implements INodeType {
 					let name = this.getNodeParameter('name', i) as string;
 					const fifoTopic = this.getNodeParameter('options.fifoTopic', i, false) as boolean;
 					const displayName = this.getNodeParameter('options.displayName', i, '') as string;
-					const params: string[] = [];
 
 					if (fifoTopic && !name.endsWith('.fifo')) {
 						name = `${name}.fifo`;
 					}
 
-					params.push(`Name=${name}`);
+					const query: IDataObject = { Action: 'CreateTopic', Name: name };
 
 					if (fifoTopic) {
-						params.push('Attributes.entry.1.key=FifoTopic');
-						params.push('Attributes.entry.1.value=true');
+						query['Attributes.entry.1.key'] = 'FifoTopic';
+						query['Attributes.entry.1.value'] = 'true';
 					}
 
 					if (displayName) {
-						params.push('Attributes.entry.2.key=DisplayName');
-						params.push(`Attributes.entry.2.value=${displayName}`);
+						query['Attributes.entry.2.key'] = 'DisplayName';
+						query['Attributes.entry.2.value'] = displayName;
 					}
 
 					const responseData = await awsApiRequestSOAP.call(
 						this,
 						'sns',
 						'GET',
-						'/?Action=CreateTopic&' + params.join('&'),
+						requestPath`/`,
+						undefined,
+						undefined,
+						query,
 					);
 					returnData.push({
 						TopicArn: responseData.CreateTopicResponse.CreateTopicResult.TopicArn,
@@ -284,14 +287,11 @@ export class AwsSns implements INodeType {
 					const topic = this.getNodeParameter('topic', i, undefined, {
 						extractValue: true,
 					}) as string;
-					const params = ['TopicArn=' + topic];
 
-					await awsApiRequestSOAP.call(
-						this,
-						'sns',
-						'GET',
-						'/?Action=DeleteTopic&' + params.join('&'),
-					);
+					await awsApiRequestSOAP.call(this, 'sns', 'GET', requestPath`/`, undefined, undefined, {
+						Action: 'DeleteTopic',
+						TopicArn: topic,
+					});
 					// response of delete is the same no matter if topic was deleted or not
 					returnData.push({ success: true } as IDataObject);
 				}
@@ -300,17 +300,19 @@ export class AwsSns implements INodeType {
 						extractValue: true,
 					}) as string;
 
-					const params = [
-						'TopicArn=' + topic,
-						'Subject=' + encodeURIComponent(this.getNodeParameter('subject', i) as string),
-						'Message=' + encodeURIComponent(this.getNodeParameter('message', i) as string),
-					];
-
 					const responseData = await awsApiRequestSOAP.call(
 						this,
 						'sns',
 						'GET',
-						'/?Action=Publish&' + params.join('&'),
+						requestPath`/`,
+						undefined,
+						undefined,
+						{
+							Action: 'Publish',
+							TopicArn: topic,
+							Subject: this.getNodeParameter('subject', i) as string,
+							Message: this.getNodeParameter('message', i) as string,
+						},
 					);
 					returnData.push({
 						MessageId: responseData.PublishResponse.PublishResult.MessageId,

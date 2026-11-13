@@ -75,6 +75,9 @@ export const issueFields: INodeProperties[] = [
 		name: 'project',
 		type: 'resourceLocator',
 		default: { mode: 'list', value: '' },
+		typeOptions: {
+			loadOptionsDependsOn: ['site.value'],
+		},
 		required: true,
 		modes: [
 			{
@@ -120,6 +123,9 @@ export const issueFields: INodeProperties[] = [
 		name: 'issueType',
 		type: 'resourceLocator',
 		default: { mode: 'list', value: '' },
+		typeOptions: {
+			loadOptionsDependsOn: ['site.value'],
+		},
 		required: true,
 		modes: [
 			{
@@ -190,6 +196,9 @@ export const issueFields: INodeProperties[] = [
 				name: 'assignee',
 				type: 'resourceLocator',
 				default: { mode: 'list', value: '' },
+				typeOptions: {
+					loadOptionsDependsOn: ['site.value'],
+				},
 				modes: [
 					{
 						displayName: 'Assignee',
@@ -233,10 +242,10 @@ export const issueFields: INodeProperties[] = [
 				name: 'componentIds',
 				type: 'multiOptions',
 				description:
-					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getProjectComponents',
-					loadOptionsDependsOn: ['project'],
+					loadOptionsDependsOn: ['site.value', 'project'],
 				},
 				default: [],
 			},
@@ -259,6 +268,9 @@ export const issueFields: INodeProperties[] = [
 								name: 'fieldId',
 								type: 'resourceLocator',
 								default: { mode: 'list', value: '' },
+								typeOptions: {
+									loadOptionsDependsOn: ['site.value'],
+								},
 								modes: [
 									{
 										displayName: 'Field',
@@ -307,14 +319,15 @@ export const issueFields: INodeProperties[] = [
 				name: 'labels',
 				type: 'multiOptions',
 				description:
-					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getLabels',
+					loadOptionsDependsOn: ['site.value'],
 				},
 				default: [],
 				displayOptions: {
 					show: {
-						'/jiraVersion': ['cloud'],
+						'/jiraVersion': ['cloud', 'cloudOAuth2', 'cloudServiceAccount'],
 					},
 				},
 			},
@@ -343,6 +356,9 @@ export const issueFields: INodeProperties[] = [
 				name: 'priority',
 				type: 'resourceLocator',
 				default: { mode: 'list', value: '' },
+				typeOptions: {
+					loadOptionsDependsOn: ['site.value'],
+				},
 				modes: [
 					{
 						displayName: 'Priority',
@@ -379,6 +395,9 @@ export const issueFields: INodeProperties[] = [
 				name: 'reporter',
 				type: 'resourceLocator',
 				default: { mode: 'list', value: '' },
+				typeOptions: {
+					loadOptionsDependsOn: ['site.value'],
+				},
 				modes: [
 					{
 						displayName: 'Reporter',
@@ -456,6 +475,9 @@ export const issueFields: INodeProperties[] = [
 				name: 'assignee',
 				type: 'resourceLocator',
 				default: { mode: 'list', value: '' },
+				typeOptions: {
+					loadOptionsDependsOn: ['site.value'],
+				},
 				modes: [
 					{
 						displayName: 'Assignee',
@@ -513,6 +535,9 @@ export const issueFields: INodeProperties[] = [
 								name: 'fieldId',
 								type: 'resourceLocator',
 								default: { mode: 'list', value: '' },
+								typeOptions: {
+									loadOptionsDependsOn: ['site.value'],
+								},
 								modes: [
 									{
 										displayName: 'Field',
@@ -568,14 +593,15 @@ export const issueFields: INodeProperties[] = [
 				name: 'labels',
 				type: 'multiOptions',
 				description:
-					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getLabels',
+					loadOptionsDependsOn: ['site.value'],
 				},
 				default: [],
 				displayOptions: {
 					show: {
-						'/jiraVersion': ['cloud'],
+						'/jiraVersion': ['cloud', 'cloudOAuth2', 'cloudServiceAccount'],
 					},
 				},
 			},
@@ -604,6 +630,9 @@ export const issueFields: INodeProperties[] = [
 				name: 'priority',
 				type: 'resourceLocator',
 				default: { mode: 'list', value: '' },
+				typeOptions: {
+					loadOptionsDependsOn: ['site.value'],
+				},
 				modes: [
 					{
 						displayName: 'Priority',
@@ -640,6 +669,9 @@ export const issueFields: INodeProperties[] = [
 				name: 'reporter',
 				type: 'resourceLocator',
 				default: { mode: 'list', value: '' },
+				typeOptions: {
+					loadOptionsDependsOn: ['site.value'],
+				},
 				modes: [
 					{
 						displayName: 'Reporter',
@@ -683,6 +715,9 @@ export const issueFields: INodeProperties[] = [
 				name: 'statusId',
 				type: 'resourceLocator',
 				default: { mode: 'list', value: '' },
+				typeOptions: {
+					loadOptionsDependsOn: ['site.value'],
+				},
 				modes: [
 					{
 						displayName: 'Status',
@@ -878,7 +913,7 @@ export const issueFields: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		displayOptions: {
 			show: {
 				operation: ['getAll'],
@@ -1131,10 +1166,11 @@ export const issueFields: INodeProperties[] = [
 						type: 'multiOptions',
 						typeOptions: {
 							loadOptionsMethod: 'getUsers',
+							loadOptionsDependsOn: ['site.value'],
 						},
 						default: [],
 						description:
-							'List of users to receive the notification. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'List of users to receive the notification. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Group Names or IDs',
@@ -1142,10 +1178,11 @@ export const issueFields: INodeProperties[] = [
 						type: 'multiOptions',
 						typeOptions: {
 							loadOptionsMethod: 'getGroups',
+							loadOptionsDependsOn: ['site.value'],
 						},
 						default: [],
 						description:
-							'List of groups to receive the notification. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'List of groups to receive the notification. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 				],
 			},
@@ -1196,10 +1233,11 @@ export const issueFields: INodeProperties[] = [
 						type: 'multiOptions',
 						typeOptions: {
 							loadOptionsMethod: 'getUsers',
+							loadOptionsDependsOn: ['site.value'],
 						},
 						default: [],
 						description:
-							'List of users to receive the notification. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'List of users to receive the notification. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Group Names or IDs',
@@ -1207,10 +1245,11 @@ export const issueFields: INodeProperties[] = [
 						type: 'multiOptions',
 						typeOptions: {
 							loadOptionsMethod: 'getGroups',
+							loadOptionsDependsOn: ['site.value'],
 						},
 						default: [],
 						description:
-							'List of groups to receive the notification. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'List of groups to receive the notification. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 				],
 			},

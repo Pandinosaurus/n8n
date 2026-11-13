@@ -8,13 +8,10 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
+import { verifySignature } from './AsanaTriggerHelpers';
 import { asanaApiRequest, getWorkspaces } from './GenericFunctions';
-
-// import {
-// 	createHmac,
-// } from 'crypto';
 
 export class AsanaTrigger implements INodeType {
 	description: INodeTypeDescription = {
@@ -28,7 +25,7 @@ export class AsanaTrigger implements INodeType {
 			name: 'Asana Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'asanaApi',
@@ -92,7 +89,7 @@ export class AsanaTrigger implements INodeType {
 				options: [],
 				default: '',
 				description:
-					'The workspace ID the resource is registered under. This is only required if you want to allow overriding existing webhooks. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The workspace ID the resource is registered under. This is only required if you want to allow overriding existing webhooks. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 		],
 	};
@@ -123,7 +120,13 @@ export class AsanaTrigger implements INodeType {
 
 				const workspace = this.getNodeParameter('workspace') as string;
 
-				const { data } = await asanaApiRequest.call(this, 'GET', '/webhooks', {}, { workspace });
+				const { data } = await asanaApiRequest.call(
+					this,
+					'GET',
+					requestPath`/webhooks`,
+					{},
+					{ workspace },
+				);
 
 				for (const webhook of data) {
 					if (webhook.resource.gid === resource && webhook.target === webhookUrl) {
@@ -154,7 +157,7 @@ export class AsanaTrigger implements INodeType {
 					target: webhookUrl,
 				};
 
-				const responseData = await asanaApiRequest.call(this, 'POST', '/webhooks', body);
+				const responseData = await asanaApiRequest.call(this, 'POST', requestPath`/webhooks`, body);
 
 				if (responseData.data === undefined || responseData.data.gid === undefined) {
 					// Required data is missing so was not successful
@@ -162,6 +165,12 @@ export class AsanaTrigger implements INodeType {
 				}
 
 				webhookData.webhookId = responseData.data.gid as string;
+
+				// Asana also returns the webhook's verification secret in this response
+				const hookSecret = responseData['X-Hook-Secret'];
+				if (typeof hookSecret === 'string' && hookSecret.length > 0) {
+					webhookData.hookSecret = hookSecret;
+				}
 
 				return true;
 			},
@@ -172,7 +181,12 @@ export class AsanaTrigger implements INodeType {
 					const body = {};
 
 					try {
-						await asanaApiRequest.call(this, 'DELETE', `/webhooks/${webhookData.webhookId}`, body);
+						await asanaApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/webhooks/${webhookData.webhookId}`,
+							body,
+						);
 					} catch (error) {
 						return false;
 					}
@@ -194,19 +208,22 @@ export class AsanaTrigger implements INodeType {
 		const headerData = this.getHeaderData() as IDataObject;
 		const req = this.getRequestObject();
 
-		const webhookData = this.getWorkflowStaticData('node');
-
 		if (headerData['x-hook-secret'] !== undefined) {
-			// Is a create webhook confirmation request
-			webhookData.hookSecret = headerData['x-hook-secret'];
-
+			// Is a create webhook confirmation request; the secret itself is
+			// captured from the create-webhook API response, not from this header
 			const res = this.getResponseObject();
-			res.set('X-Hook-Secret', webhookData.hookSecret as string);
+			res.set('X-Hook-Secret', headerData['x-hook-secret'] as string);
 			res.status(200).end();
 
 			return {
 				noWebhookResponse: true,
 			};
+		}
+
+		if (!verifySignature.call(this)) {
+			const res = this.getResponseObject();
+			res.status(401).send('Unauthorized').end();
+			return { noWebhookResponse: true };
 		}
 
 		// Is regular webhook call
@@ -220,18 +237,6 @@ export class AsanaTrigger implements INodeType {
 			// start the workflow
 			return {};
 		}
-
-		// TODO: Had to be deactivated as it is currently not possible to get the secret
-		//       in production mode as the static data overwrites each other because the
-		//       two exist at the same time (create webhook [with webhookId] and receive
-		//       webhook [with secret])
-		// // Check if the request is valid
-		// // (if the signature matches to data and hookSecret)
-		// const computedSignature = createHmac('sha256', webhookData.hookSecret as string).update(JSON.stringify(req.body)).digest('hex');
-		// if (headerData['x-hook-signature'] !== computedSignature) {
-		// 	// Signature is not valid so ignore call
-		// 	return {};
-		// }
 
 		return {
 			workflowData: [this.helpers.returnJsonArray(req.body.events as IDataObject[])],

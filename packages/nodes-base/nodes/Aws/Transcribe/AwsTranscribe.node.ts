@@ -5,8 +5,10 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { awsApiRequestREST, awsApiRequestRESTAllItems } from './GenericFunctions';
+import { awsNodeAuthOptions, awsNodeCredentials } from '../utils';
 
 export class AwsTranscribe implements INodeType {
 	description: INodeTypeDescription = {
@@ -17,18 +19,16 @@ export class AwsTranscribe implements INodeType {
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		description: 'Sends data to AWS Transcribe',
+		schemaPath: 'Aws/Transcribe',
 		defaults: {
 			name: 'AWS Transcribe',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
-		credentials: [
-			{
-				name: 'aws',
-				required: true,
-			},
-		],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
+		credentials: awsNodeCredentials,
 		properties: [
+			awsNodeAuthOptions,
 			{
 				displayName: 'Resource',
 				name: 'resource',
@@ -166,7 +166,7 @@ export class AwsTranscribe implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				displayOptions: {
 					show: {
 						operation: ['create'],
@@ -431,7 +431,7 @@ export class AwsTranscribe implements INodeType {
 							this,
 							'transcribe',
 							'POST',
-							'',
+							requestPath`/`,
 							JSON.stringify(body),
 							{ 'x-amz-target': action, 'Content-Type': 'application/x-amz-json-1.1' },
 						);
@@ -450,7 +450,7 @@ export class AwsTranscribe implements INodeType {
 							this,
 							'transcribe',
 							'POST',
-							'',
+							requestPath`/`,
 							JSON.stringify(body),
 							{ 'x-amz-target': action, 'Content-Type': 'application/x-amz-json-1.1' },
 						);
@@ -470,7 +470,7 @@ export class AwsTranscribe implements INodeType {
 							this,
 							'transcribe',
 							'POST',
-							'',
+							requestPath`/`,
 							JSON.stringify(body),
 							{ 'x-amz-target': action, 'Content-Type': 'application/x-amz-json-1.1' },
 						);
@@ -513,7 +513,7 @@ export class AwsTranscribe implements INodeType {
 								'TranscriptionJobSummaries',
 								'transcribe',
 								'POST',
-								'',
+								requestPath`/`,
 								JSON.stringify(body),
 								{ 'x-amz-target': action, 'Content-Type': 'application/x-amz-json-1.1' },
 							);
@@ -524,7 +524,7 @@ export class AwsTranscribe implements INodeType {
 								this,
 								'transcribe',
 								'POST',
-								'',
+								requestPath`/`,
 								JSON.stringify(body),
 								{ 'x-amz-target': action, 'Content-Type': 'application/x-amz-json-1.1' },
 							);

@@ -1,0 +1,21 @@
+{
+    "type": "object",
+    "properties": {
+        "completed": {
+            "type": "boolean"
+        },
+        "gid": {
+            "type": "string"
+        },
+        "name": {
+            "type": "string"
+        },
+        "resource_subtype": {
+            "type": "string"
+        },
+        "resource_type": {
+            "type": "string"
+        }
+    },
+    "version": 2
+}

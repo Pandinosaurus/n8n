@@ -4,6 +4,9 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { NodeOperationError } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
 
 import type {
 	QueryMode,
@@ -11,13 +14,13 @@ import type {
 	QueryValues,
 	QueryWithValues,
 } from '../../helpers/interfaces';
-
 import { AUTO_MAP, BATCH_MODE, DATA_MODE } from '../../helpers/interfaces';
-
-import { escapeSqlIdentifier, replaceEmptyStringsByNulls } from '../../helpers/utils';
-
+import {
+	escapeSqlIdentifier,
+	prepareErrorItem,
+	replaceEmptyStringsByNulls,
+} from '../../helpers/utils';
 import { optionsCollection } from '../common.descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 const properties: INodeProperties[] = [
 	{
@@ -80,7 +83,7 @@ const properties: INodeProperties[] = [
 						type: 'options',
 						// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/" target="_blank">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/" target="_blank">expression</a>',
 						typeOptions: {
 							loadOptionsMethod: 'getColumns',
 							loadOptionsDependsOn: ['table.value'],
@@ -187,49 +190,62 @@ export async function execute(
 		queries.push({ query, values });
 	} else {
 		for (let i = 0; i < items.length; i++) {
-			let columns: string[] = [];
-			let insertItem: IDataObject = {};
+			try {
+				let columns: string[] = [];
+				let insertItem: IDataObject = {};
 
-			const options = this.getNodeParameter('options', i);
-			const priority = (options.priority as string) || '';
-			const ignore = (options.skipOnConflict as boolean) ? 'IGNORE' : '';
+				const options = this.getNodeParameter('options', i);
+				const priority = (options.priority as string) || '';
+				const ignore = (options.skipOnConflict as boolean) ? 'IGNORE' : '';
 
-			if (dataMode === DATA_MODE.AUTO_MAP) {
-				columns = Object.keys(items[i].json);
-				insertItem = columns.reduce((acc, key) => {
-					if (columns.includes(key)) {
-						acc[key] = items[i].json[key];
-					}
-					return acc;
-				}, {} as IDataObject);
+				if (dataMode === DATA_MODE.AUTO_MAP) {
+					columns = Object.keys(items[i].json);
+					insertItem = columns.reduce((acc, key) => {
+						if (columns.includes(key)) {
+							acc[key] = items[i].json[key];
+						}
+						return acc;
+					}, {} as IDataObject);
+				}
+
+				if (dataMode === DATA_MODE.MANUAL) {
+					const valuesToSend = (this.getNodeParameter('valuesToSend', i, []) as IDataObject)
+						.values as IDataObject[];
+
+					insertItem = valuesToSend.reduce((acc, { column, value }) => {
+						acc[column as string] = value;
+						return acc;
+					}, {} as IDataObject);
+
+					columns = Object.keys(insertItem);
+				}
+
+				const escapedColumns = columns.map(escapeSqlIdentifier).join(', ');
+				const placeholder = `(${columns.map(() => '?').join(',')})`;
+
+				const query = `INSERT ${priority} ${ignore} INTO ${escapeSqlIdentifier(
+					table,
+				)} (${escapedColumns}) VALUES ${placeholder};`;
+
+				const values = Object.values(insertItem) as QueryValues;
+
+				queries.push({ query, values, itemIndex: i });
+			} catch (error) {
+				if (!this.continueOnFail()) throw error;
+
+				const nodeError =
+					error instanceof NodeOperationError
+						? error
+						: new NodeOperationError(this.getNode(), error as Error, { itemIndex: i });
+
+				returnData.push(prepareErrorItem(items[i].json, nodeError, i));
 			}
-
-			if (dataMode === DATA_MODE.MANUAL) {
-				const valuesToSend = (this.getNodeParameter('valuesToSend', i, []) as IDataObject)
-					.values as IDataObject[];
-
-				insertItem = valuesToSend.reduce((acc, { column, value }) => {
-					acc[column as string] = value;
-					return acc;
-				}, {} as IDataObject);
-
-				columns = Object.keys(insertItem);
-			}
-
-			const escapedColumns = columns.map(escapeSqlIdentifier).join(', ');
-			const placeholder = `(${columns.map(() => '?').join(',')})`;
-
-			const query = `INSERT ${priority} ${ignore} INTO ${escapeSqlIdentifier(
-				table,
-			)} (${escapedColumns}) VALUES ${placeholder};`;
-
-			const values = Object.values(insertItem) as QueryValues;
-
-			queries.push({ query, values });
 		}
 	}
 
-	returnData = await runQueries(queries);
+	if (queries.length > 0) {
+		returnData = returnData.concat(await runQueries(queries));
+	}
 
 	return returnData;
 }

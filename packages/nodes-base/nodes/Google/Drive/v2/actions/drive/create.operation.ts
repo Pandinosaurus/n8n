@@ -4,10 +4,12 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-
+import { requestPath } from 'n8n-workflow';
 import { v4 as uuid } from 'uuid';
-import { googleApiRequest } from '../../transport';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { googleApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	{
@@ -22,7 +24,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -159,7 +161,7 @@ const properties: INodeProperties[] = [
 						name: 'canShare',
 						type: 'boolean',
 						default: false,
-						description: 'Whether the current user can rename this shared drive',
+						description: 'Whether the current user can share files or folders in this shared drive',
 					},
 					{
 						displayName: 'Can Trash Children',
@@ -251,7 +253,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 
 	Object.assign(body, options);
 
-	const response = await googleApiRequest.call(this, 'POST', '/drive/v3/drives', body, {
+	const response = await googleApiRequest.call(this, 'POST', requestPath`/drive/v3/drives`, body, {
 		requestId: uuid(),
 	});
 

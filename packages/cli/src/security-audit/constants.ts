@@ -1,16 +1,10 @@
-import type { Risk } from '@/security-audit/types';
+import { SECURITY_AUDIT_CATEGORIES } from '@n8n/api-types';
 
 /**
  * Risk categories
  */
 
-export const RISK_CATEGORIES: Risk.Category[] = [
-	'credentials',
-	'database',
-	'nodes',
-	'instance',
-	'filesystem',
-];
+export const RISK_CATEGORIES = [...SECURITY_AUDIT_CATEGORIES];
 
 /**
  * Node types
@@ -109,7 +103,7 @@ export const INSTANCE_REPORT = {
  * URLs
  */
 
-export const ENV_VARS_DOCS_URL = 'https://docs.n8n.io/reference/environment-variables.html';
+export const ENV_VARS_DOCS_URL = 'https://docs.n8n.io/hosting/configuration/environment-variables/';
 
 export const DB_QUERY_PARAMS_DOCS_URL =
 	'https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.postgres#use-query-parameters';

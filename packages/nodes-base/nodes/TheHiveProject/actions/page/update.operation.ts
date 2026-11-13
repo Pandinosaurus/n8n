@@ -4,9 +4,12 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { theHiveApiRequest } from '../../transport';
-import { caseRLC, pageRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { caseRLC, pageRLC } from '../../descriptions';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	{
@@ -48,7 +51,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -97,9 +100,9 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 
 	if (location === 'case') {
 		const caseId = this.getNodeParameter('caseId', i, '', { extractValue: true }) as string;
-		endpoint = `/v1/case/${caseId}/page/${pageId}`;
+		endpoint = requestPath`/v1/case/${caseId}/page/${pageId}`;
 	} else {
-		endpoint = `/v1/page/${pageId}`;
+		endpoint = requestPath`/v1/page/${pageId}`;
 	}
 
 	const body: IDataObject = options;

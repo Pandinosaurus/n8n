@@ -1,4 +1,14 @@
-import type { INodeProperties } from 'n8n-workflow';
+import type { INodeProperties, IParameterBuilderHint } from 'n8n-workflow';
+
+export const columnsResourceMapperBuilderHint: IParameterBuilderHint = {
+	propertyHint:
+		"Pass the full resourceMapper object: { mappingMode, value, schema }. A bare string like 'autoMapInputData' fails validation. `append` is plain insert \u2014 do NOT add `matchingColumns` here (that is for the `appendOrUpdate` and `update` operations).",
+};
+
+export const upsertColumnsResourceMapperBuilderHint: IParameterBuilderHint = {
+	propertyHint:
+		"Pass the full resourceMapper object: { mappingMode, value, schema, matchingColumns }. `matchingColumns` is REQUIRED for this operation \u2014 it must be a non-empty `string[]` of header names that uniquely identify the row to update; without it the node throws 'Could not get parameter' at runtime. Use the `append` operation instead if there is no key column to match on. A bare string like 'autoMapInputData' silently fails validation; always send the full resourceMapper object.",
+};
 
 export const dataLocationOnSheet: INodeProperties = {
 	displayName: 'Data Location on Sheet',
@@ -257,4 +267,14 @@ export const handlingExtraData: INodeProperties = {
 	},
 	default: 'insertInNewColumn',
 	description: "What do to with fields that don't match any columns in the Google Sheet",
+};
+
+export const useAppendOption: INodeProperties = {
+	displayName: 'Minimise API Calls',
+	name: 'useAppend',
+	type: 'boolean',
+	default: false,
+	hint: 'Use if your sheet has no gaps between rows or columns',
+	description:
+		'Whether to use append instead of update(default), this is more efficient but in some cases data might be misaligned',
 };

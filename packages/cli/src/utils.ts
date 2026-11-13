@@ -1,25 +1,45 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
-import { CliWorkflowOperationError, SubworkflowOperationError } from 'n8n-workflow';
-import type { INode } from 'n8n-workflow';
-import { STARTING_NODES } from './constants';
+import { CliWorkflowOperationError, isHitlToolType, SubworkflowOperationError } from 'n8n-workflow';
+import type { INode, INodeType, Workflow } from 'n8n-workflow';
+
+import { STARTING_NODES } from '@/constants';
 
 /**
  * Returns if the given id is a valid workflow id
+ * id should be 16 characters but we allow <=21 to support longer IDs from December 2025
  */
 export function isWorkflowIdValid(id: string | null | undefined): boolean {
-	// TODO: could also check if id only contains nanoId characters
-	return typeof id === 'string' && id?.length <= 16;
+	return typeof id === 'string' && id.length > 0 && id.length <= 21;
+}
+
+/**
+ * Strips the "Tool"/"HitlTool" suffix from a tool-variant node type (e.g. `openAiTool`
+ * → `openAi`), yielding the base node type. Kept in sync with the editor-ui
+ * `stripToolSuffix` so backend and frontend agree on the lookup fallback.
+ */
+export function stripToolSuffix(nodeType: string): string {
+	return nodeType.replace(/HitlTool$/, '').replace(/Tool$/, '');
+}
+
+/**
+ * Whether the given resolved node (version) can back the synthetic tool name.
+ * HITL tools have no capability requirement; regular tools need the base node
+ * version to declare `usableAsTool`.
+ */
+export function satisfiesToolCapability(syntheticToolName: string, nodeType: INodeType): boolean {
+	return isHitlToolType(syntheticToolName) || !!nodeType.description.usableAsTool;
 }
 
 function findWorkflowStart(executionMode: 'integrated' | 'cli') {
 	return function (nodes: INode[]) {
-		const executeWorkflowTriggerNode = nodes.find(
+		const eligibleNodes =
+			executionMode === 'cli' ? nodes.filter((node) => node.disabled !== true) : nodes;
+		const executeWorkflowTriggerNode = eligibleNodes.find(
 			(node) => node.type === 'n8n-nodes-base.executeWorkflowTrigger',
 		);
 
 		if (executeWorkflowTriggerNode) return executeWorkflowTriggerNode;
 
-		const startNode = nodes.find((node) => STARTING_NODES.includes(node.type));
+		const startNode = eligibleNodes.find((node) => STARTING_NODES.includes(node.type));
 
 		if (startNode) return startNode;
 
@@ -39,28 +59,11 @@ export const findSubworkflowStart = findWorkflowStart('integrated');
 
 export const findCliWorkflowStart = findWorkflowStart('cli');
 
-export const separate = <T>(array: T[], test: (element: T) => boolean) => {
-	const pass: T[] = [];
-	const fail: T[] = [];
-
-	array.forEach((i) => (test(i) ? pass : fail).push(i));
-
-	return [pass, fail];
-};
-
 export const toError = (maybeError: unknown) =>
 	// eslint-disable-next-line @typescript-eslint/restrict-template-expressions
 	maybeError instanceof Error ? maybeError : new Error(`${maybeError}`);
 
-export function isStringArray(value: unknown): value is string[] {
-	return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
 export const isIntegerString = (value: string) => /^\d+$/.test(value);
-
-export function isObjectLiteral(item: unknown): item is { [key: string]: string } {
-	return typeof item === 'object' && item !== null && !Array.isArray(item);
-}
 
 export function removeTrailingSlash(path: string) {
 	return path.endsWith('/') ? path.slice(0, -1) : path;
@@ -71,17 +74,84 @@ export function rightDiff<T1, T2>(
 	[arr1, keyExtractor1]: [T1[], (item: T1) => string],
 	[arr2, keyExtractor2]: [T2[], (item: T2) => string],
 ): T2[] {
-	// create map { itemKey => true } for fast lookup for diff
-	const keyMap = arr1.reduce<{ [key: string]: true }>((map, item) => {
-		map[keyExtractor1(item)] = true;
-		return map;
-	}, {});
+	const keys = new Set(arr1.map(keyExtractor1));
 
-	// diff against map
-	return arr2.reduce<T2[]>((acc, item) => {
-		if (!keyMap[keyExtractor2(item)]) {
-			acc.push(item);
+	return arr2.filter((item) => !keys.has(keyExtractor2(item)));
+}
+
+/**
+ * Asserts that the passed in type is never.
+ * Can be used to make sure the type is exhausted
+ * in switch statements or if/else chains.
+ */
+export const assertNever = (_value: never) => {};
+
+export const isPositiveInteger = (maybeInt: string) => /^[1-9]\d*$/.test(maybeInt);
+
+/**
+ * Check if a execute method should be assigned to the node
+ */
+export const shouldAssignExecuteMethod = (nodeType: INodeType) => {
+	const isDeclarativeNode = nodeType?.description?.requestDefaults !== undefined;
+
+	return (
+		!nodeType.execute &&
+		!nodeType.supplyData &&
+		!nodeType.poll &&
+		!nodeType.trigger &&
+		(!nodeType.webhook || isDeclarativeNode) &&
+		(!nodeType.methods || isDeclarativeNode)
+	);
+};
+
+/**
+ * Recursively gets all key paths of an object or array, filtered by the provided value filter.
+ * @param obj - The object or array to search.
+ * @param keys - The array to store matching keys.
+ * @param valueFilter - A function to filter values.
+ * @returns The array of matching key paths.
+ */
+export const getAllKeyPaths = (
+	obj: unknown,
+	currentPath = '',
+	paths: string[] = [],
+	valueFilter: (value: string) => boolean,
+): string[] => {
+	if (Array.isArray(obj)) {
+		obj.forEach((item, index) =>
+			getAllKeyPaths(item, `${currentPath}[${index}]`, paths, valueFilter),
+		);
+	} else if (obj && typeof obj === 'object') {
+		for (const [key, value] of Object.entries(obj)) {
+			const newPath = currentPath ? `${currentPath}.${key}` : key;
+			if (typeof value === 'string' && valueFilter(value)) {
+				paths.push(newPath);
+			} else {
+				getAllKeyPaths(value, newPath, paths, valueFilter);
+			}
 		}
-		return acc;
-	}, []);
+	}
+	return paths;
+};
+
+export function isObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * When N8N_EXPRESSION_ENGINE=vm, expressions run in an isolate that must be acquired
+ * for this workflow before any code resolves {{ }} in parameters or credentials.
+ */
+export async function withExpressionIsolate<T>(
+	workflow: Workflow,
+	fn: () => Promise<T>,
+): Promise<T> {
+	// Release is not reference-counted: only release if this scope newly acquired
+	// the isolate, otherwise we'd return the outer caller's bridge to the pool mid-use.
+	const acquired = await workflow.expression.acquireIsolate();
+	try {
+		return await fn();
+	} finally {
+		if (acquired) await workflow.expression.releaseIsolate();
+	}
 }

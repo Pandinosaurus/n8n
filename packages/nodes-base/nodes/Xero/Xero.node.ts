@@ -1,23 +1,22 @@
-import type {
-	IExecuteFunctions,
-	IDataObject,
-	ILoadOptionsFunctions,
-	INodeExecutionData,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeDescription,
-	JsonObject,
+import {
+	type IExecuteFunctions,
+	type IDataObject,
+	type ILoadOptionsFunctions,
+	type INodeExecutionData,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeDescription,
+	type JsonObject,
+	NodeConnectionTypes,
+	requestPath,
+	requestUrl,
 } from 'n8n-workflow';
 
-import { xeroApiRequest, xeroApiRequestAllItems } from './GenericFunctions';
-
-import { invoiceFields, invoiceOperations } from './InvoiceDescription';
-
 import { contactFields, contactOperations } from './ContactDescription';
-
-import type { IInvoice, ILineItem } from './InvoiceInterface';
-
+import { toPathValue, xeroApiRequest, xeroApiRequestAllItems } from './GenericFunctions';
 import type { IAddress, IContact, IPhone } from './IContactInterface';
+import { invoiceFields, invoiceOperations } from './InvoiceDescription';
+import type { IInvoice, ILineItem } from './InvoiceInterface';
 
 export class Xero implements INodeType {
 	description: INodeTypeDescription = {
@@ -25,14 +24,16 @@ export class Xero implements INodeType {
 		name: 'xero',
 		icon: 'file:xero.svg',
 		group: ['output'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		description: 'Consume Xero API',
 		defaults: {
 			name: 'Xero',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'xeroOAuth2Api',
@@ -73,7 +74,7 @@ export class Xero implements INodeType {
 			async getItemCodes(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const organizationId = this.getCurrentNodeParameter('organizationId');
 				const returnData: INodePropertyOptions[] = [];
-				const { Items: items } = await xeroApiRequest.call(this, 'GET', '/items', {
+				const { Items: items } = await xeroApiRequest.call(this, 'GET', requestPath`/items`, {
 					organizationId,
 				});
 				for (const item of items) {
@@ -91,9 +92,14 @@ export class Xero implements INodeType {
 			async getAccountCodes(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const organizationId = this.getCurrentNodeParameter('organizationId');
 				const returnData: INodePropertyOptions[] = [];
-				const { Accounts: accounts } = await xeroApiRequest.call(this, 'GET', '/Accounts', {
-					organizationId,
-				});
+				const { Accounts: accounts } = await xeroApiRequest.call(
+					this,
+					'GET',
+					requestPath`/Accounts`,
+					{
+						organizationId,
+					},
+				);
 				for (const account of accounts) {
 					const accountName = account.Name;
 					const accountId = account.Code;
@@ -111,10 +117,10 @@ export class Xero implements INodeType {
 				const tenants = await xeroApiRequest.call(
 					this,
 					'GET',
-					'',
+					requestPath``,
 					{},
 					{},
-					'https://api.xero.com/connections',
+					requestUrl`https://api.xero.com/connections`,
 				);
 				for (const tenant of tenants) {
 					const tenantName = tenant.tenantName;
@@ -134,7 +140,7 @@ export class Xero implements INodeType {
 				const { BrandingThemes: themes } = await xeroApiRequest.call(
 					this,
 					'GET',
-					'/BrandingThemes',
+					requestPath`/BrandingThemes`,
 					{ organizationId },
 				);
 				for (const theme of themes) {
@@ -147,20 +153,23 @@ export class Xero implements INodeType {
 				}
 				return returnData;
 			},
-			// Get all the brading themes to display them to user so that they can
+			// Get all the currencies to display them to user so that they can
 			// select them easily
 			async getCurrencies(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const organizationId = this.getCurrentNodeParameter('organizationId');
 				const returnData: INodePropertyOptions[] = [];
-				const { Currencies: currencies } = await xeroApiRequest.call(this, 'GET', '/Currencies', {
-					organizationId,
-				});
+				const { Currencies: currencies } = await xeroApiRequest.call(
+					this,
+					'GET',
+					requestPath`/Currencies`,
+					{
+						organizationId,
+					},
+				);
 				for (const currency of currencies) {
-					const currencyName = currency.Code;
-					const currencyId = currency.Description;
 					returnData.push({
-						name: currencyName,
-						value: currencyId,
+						name: currency.Description, // e.g. "Euro"
+						value: currency.Code, // e.g. "EUR"
 					});
 				}
 				return returnData;
@@ -173,7 +182,7 @@ export class Xero implements INodeType {
 				const { TrackingCategories: categories } = await xeroApiRequest.call(
 					this,
 					'GET',
-					'/TrackingCategories',
+					requestPath`/TrackingCategories`,
 					{ organizationId },
 				);
 				for (const category of categories) {
@@ -212,6 +221,7 @@ export class Xero implements INodeType {
 		const returnData: INodeExecutionData[] = [];
 		const length = items.length;
 		const qs: IDataObject = {};
+		const version = this.getNode().typeVersion;
 		let responseData;
 		for (let i = 0; i < length; i++) {
 			try {
@@ -308,7 +318,7 @@ export class Xero implements INodeType {
 							body.Url = additionalFields.url as string;
 						}
 
-						responseData = await xeroApiRequest.call(this, 'POST', '/Invoices', body);
+						responseData = await xeroApiRequest.call(this, 'POST', requestPath`/Invoices`, body);
 						responseData = responseData.Invoices;
 					}
 					if (operation === 'update') {
@@ -405,15 +415,25 @@ export class Xero implements INodeType {
 							body.Url = updateFields.url as string;
 						}
 
-						responseData = await xeroApiRequest.call(this, 'POST', `/Invoices/${invoiceId}`, body);
+						responseData = await xeroApiRequest.call(
+							this,
+							'POST',
+							requestPath`/Invoices/${toPathValue(version, invoiceId)}`,
+							body,
+						);
 						responseData = responseData.Invoices;
 					}
 					if (operation === 'get') {
 						const organizationId = this.getNodeParameter('organizationId', i) as string;
 						const invoiceId = this.getNodeParameter('invoiceId', i) as string;
-						responseData = await xeroApiRequest.call(this, 'GET', `/Invoices/${invoiceId}`, {
-							organizationId,
-						});
+						responseData = await xeroApiRequest.call(
+							this,
+							'GET',
+							requestPath`/Invoices/${toPathValue(version, invoiceId)}`,
+							{
+								organizationId,
+							},
+						);
 						responseData = responseData.Invoices;
 					}
 					if (operation === 'getAll') {
@@ -439,7 +459,7 @@ export class Xero implements INodeType {
 								this,
 								'Invoices',
 								'GET',
-								'/Invoices',
+								requestPath`/Invoices`,
 								{ organizationId },
 								qs,
 							);
@@ -448,7 +468,7 @@ export class Xero implements INodeType {
 							responseData = await xeroApiRequest.call(
 								this,
 								'GET',
-								'/Invoices',
+								requestPath`/Invoices`,
 								{ organizationId },
 								qs,
 							);
@@ -558,7 +578,7 @@ export class Xero implements INodeType {
 							}
 						}
 
-						responseData = await xeroApiRequest.call(this, 'POST', '/Contacts', {
+						responseData = await xeroApiRequest.call(this, 'POST', requestPath`/Contacts`, {
 							organizationId,
 							Contacts: [body],
 						});
@@ -567,9 +587,14 @@ export class Xero implements INodeType {
 					if (operation === 'get') {
 						const organizationId = this.getNodeParameter('organizationId', i) as string;
 						const contactId = this.getNodeParameter('contactId', i) as string;
-						responseData = await xeroApiRequest.call(this, 'GET', `/Contacts/${contactId}`, {
-							organizationId,
-						});
+						responseData = await xeroApiRequest.call(
+							this,
+							'GET',
+							requestPath`/Contacts/${toPathValue(version, contactId)}`,
+							{
+								organizationId,
+							},
+						);
 						responseData = responseData.Contacts;
 					}
 					if (operation === 'getAll') {
@@ -592,7 +617,7 @@ export class Xero implements INodeType {
 								this,
 								'Contacts',
 								'GET',
-								'/Contacts',
+								requestPath`/Contacts`,
 								{ organizationId },
 								qs,
 							);
@@ -601,7 +626,7 @@ export class Xero implements INodeType {
 							responseData = await xeroApiRequest.call(
 								this,
 								'GET',
-								'/Contacts',
+								requestPath`/Contacts`,
 								{ organizationId },
 								qs,
 							);
@@ -710,10 +735,15 @@ export class Xero implements INodeType {
 							}
 						}
 
-						responseData = await xeroApiRequest.call(this, 'POST', `/Contacts/${contactId}`, {
-							organizationId,
-							Contacts: [body],
-						});
+						responseData = await xeroApiRequest.call(
+							this,
+							'POST',
+							requestPath`/Contacts/${toPathValue(version, contactId)}`,
+							{
+								organizationId,
+								Contacts: [body],
+							},
+						);
 						responseData = responseData.Contacts;
 					}
 				}

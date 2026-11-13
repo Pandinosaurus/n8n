@@ -1,5 +1,6 @@
-import type { IDataObject } from 'n8n-workflow';
 import { convert } from 'html-to-text';
+import type { IDataObject } from 'n8n-workflow';
+
 import type { IValueData, Cheerio } from './types';
 
 // The extraction functions
@@ -25,7 +26,11 @@ const extractFunctions: {
 		}
 		return convert(html, options);
 	},
-	value: ($: Cheerio, _valueData: IValueData): string | undefined => $.val(),
+	value: ($: Cheerio, _valueData: IValueData): string | undefined => {
+		const val = $.val();
+		if (val === undefined) return undefined;
+		return Array.isArray(val) ? val.join(',') : val;
+	},
 };
 
 /**

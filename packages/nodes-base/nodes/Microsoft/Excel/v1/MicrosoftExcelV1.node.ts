@@ -1,4 +1,3 @@
-/* eslint-disable n8n-nodes-base/node-filename-against-convention */
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -10,36 +9,33 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
-import { generatePairedItemData } from '../../../../utils/utilities';
+import { oldVersionNotice } from '@utils/descriptions';
+
 import {
 	microsoftApiRequest,
 	microsoftApiRequestAllItems,
 	microsoftApiRequestAllItemsSkip,
 } from './GenericFunctions';
-
-import { workbookFields, workbookOperations } from './WorkbookDescription';
-
-import { worksheetFields, worksheetOperations } from './WorksheetDescription';
-
 import { tableFields, tableOperations } from './TableDescription';
-
-import { oldVersionNotice } from '@utils/descriptions';
+import { workbookFields, workbookOperations } from './WorkbookDescription';
+import { worksheetFields, worksheetOperations } from './WorksheetDescription';
+import { generatePairedItemData } from '../../../../utils/utilities';
 
 const versionDescription: INodeTypeDescription = {
-	displayName: 'Microsoft Excel',
+	displayName: 'Microsoft Excel (OneDrive)',
 	name: 'microsoftExcel',
 	icon: 'file:excel.svg',
 	group: ['input'],
 	version: 1,
 	subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
-	description: 'Consume Microsoft Excel API',
+	description: 'Consume the Microsoft Excel API for workbooks stored in OneDrive',
 	defaults: {
-		name: 'Microsoft Excel',
+		name: 'Microsoft Excel (OneDrive)',
 	},
-	inputs: ['main'],
-	outputs: ['main'],
+	inputs: [NodeConnectionTypes.Main],
+	outputs: [NodeConnectionTypes.Main],
 	credentials: [
 		{
 			name: 'microsoftExcelOAuth2Api',
@@ -105,7 +101,7 @@ export class MicrosoftExcelV1 implements INodeType {
 					this,
 					'value',
 					'GET',
-					"/drive/root/search(q='.xlsx')",
+					requestPath`/drive/root/search(q='.xlsx')`,
 					{},
 					qs,
 				);
@@ -131,7 +127,7 @@ export class MicrosoftExcelV1 implements INodeType {
 					this,
 					'value',
 					'GET',
-					`/drive/items/${workbookId}/workbook/worksheets`,
+					requestPath`/drive/items/${workbookId}/workbook/worksheets`,
 					{},
 					qs,
 				);
@@ -158,7 +154,7 @@ export class MicrosoftExcelV1 implements INodeType {
 					this,
 					'value',
 					'GET',
-					`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables`,
+					requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables`,
 					{},
 					qs,
 				);
@@ -206,7 +202,7 @@ export class MicrosoftExcelV1 implements INodeType {
 					responseData = await microsoftApiRequest.call(
 						this,
 						'GET',
-						`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
+						requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
 						{},
 						qs,
 					);
@@ -227,13 +223,13 @@ export class MicrosoftExcelV1 implements INodeType {
 					const { id } = await microsoftApiRequest.call(
 						this,
 						'POST',
-						`/drive/items/${workbookId}/workbook/createSession`,
+						requestPath`/drive/items/${workbookId}/workbook/createSession`,
 						{ persistChanges: true },
 					);
 					responseData = await microsoftApiRequest.call(
 						this,
 						'POST',
-						`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/rows/add`,
+						requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/rows/add`,
 						body,
 						{},
 						'',
@@ -242,7 +238,7 @@ export class MicrosoftExcelV1 implements INodeType {
 					await microsoftApiRequest.call(
 						this,
 						'POST',
-						`/drive/items/${workbookId}/workbook/closeSession`,
+						requestPath`/drive/items/${workbookId}/workbook/closeSession`,
 						{},
 						{},
 						'',
@@ -288,7 +284,7 @@ export class MicrosoftExcelV1 implements INodeType {
 								this,
 								'value',
 								'GET',
-								`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
+								requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
 								{},
 								qs,
 							);
@@ -297,7 +293,7 @@ export class MicrosoftExcelV1 implements INodeType {
 							responseData = await microsoftApiRequest.call(
 								this,
 								'GET',
-								`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
+								requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
 								{},
 								qs,
 							);
@@ -350,7 +346,7 @@ export class MicrosoftExcelV1 implements INodeType {
 								this,
 								'value',
 								'GET',
-								`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/rows`,
+								requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/rows`,
 								{},
 								qs,
 							);
@@ -360,7 +356,7 @@ export class MicrosoftExcelV1 implements INodeType {
 							responseData = await microsoftApiRequest.call(
 								this,
 								'GET',
-								`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/rows`,
+								requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/rows`,
 								{},
 								rowsQs,
 							);
@@ -374,7 +370,7 @@ export class MicrosoftExcelV1 implements INodeType {
 								this,
 								'value',
 								'GET',
-								`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
+								requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
 								{},
 								columnsQs,
 							);
@@ -429,7 +425,7 @@ export class MicrosoftExcelV1 implements INodeType {
 							this,
 							'value',
 							'GET',
-							`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/rows`,
+							requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/rows`,
 							{},
 							{},
 						);
@@ -440,7 +436,7 @@ export class MicrosoftExcelV1 implements INodeType {
 							this,
 							'value',
 							'GET',
-							`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
+							requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/tables/${tableId}/columns`,
 							{},
 							qs,
 						);
@@ -511,13 +507,13 @@ export class MicrosoftExcelV1 implements INodeType {
 						const { id } = await microsoftApiRequest.call(
 							this,
 							'POST',
-							`/drive/items/${workbookId}/workbook/createSession`,
+							requestPath`/drive/items/${workbookId}/workbook/createSession`,
 							{ persistChanges: true },
 						);
 						responseData = await microsoftApiRequest.call(
 							this,
 							'POST',
-							`/drive/items/${workbookId}/workbook/worksheets/add`,
+							requestPath`/drive/items/${workbookId}/workbook/worksheets/add`,
 							body,
 							{},
 							'',
@@ -526,7 +522,7 @@ export class MicrosoftExcelV1 implements INodeType {
 						await microsoftApiRequest.call(
 							this,
 							'POST',
-							`/drive/items/${workbookId}/workbook/closeSession`,
+							requestPath`/drive/items/${workbookId}/workbook/closeSession`,
 							{},
 							{},
 							'',
@@ -544,7 +540,7 @@ export class MicrosoftExcelV1 implements INodeType {
 								this,
 								'value',
 								'GET',
-								"/drive/root/search(q='.xlsx')",
+								requestPath`/drive/root/search(q='.xlsx')`,
 								{},
 								qs,
 							);
@@ -553,7 +549,7 @@ export class MicrosoftExcelV1 implements INodeType {
 							responseData = await microsoftApiRequest.call(
 								this,
 								'GET',
-								"/drive/root/search(q='.xlsx')",
+								requestPath`/drive/root/search(q='.xlsx')`,
 								{},
 								qs,
 							);
@@ -606,7 +602,7 @@ export class MicrosoftExcelV1 implements INodeType {
 								this,
 								'value',
 								'GET',
-								`/drive/items/${workbookId}/workbook/worksheets`,
+								requestPath`/drive/items/${workbookId}/workbook/worksheets`,
 								{},
 								qs,
 							);
@@ -615,7 +611,7 @@ export class MicrosoftExcelV1 implements INodeType {
 							responseData = await microsoftApiRequest.call(
 								this,
 								'GET',
-								`/drive/items/${workbookId}/workbook/worksheets`,
+								requestPath`/drive/items/${workbookId}/workbook/worksheets`,
 								{},
 								qs,
 							);
@@ -638,7 +634,7 @@ export class MicrosoftExcelV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'GET',
-							`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+							requestPath`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
 							{},
 							qs,
 						);

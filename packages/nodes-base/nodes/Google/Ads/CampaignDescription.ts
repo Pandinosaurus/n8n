@@ -11,7 +11,7 @@ async function processCampaignSearchResponse(
 	_inputData: INodeExecutionData[],
 	responseData: IN8nHttpFullResponse,
 ): Promise<INodeExecutionData[]> {
-	const results = (responseData.body as IDataObject).results as GoogleAdsCampaignElement;
+	const results = ((responseData.body as IDataObject).results as GoogleAdsCampaignElement) ?? [];
 
 	return results.map((result) => ({
 		json: {
@@ -41,7 +41,7 @@ export const campaignOperations: INodeProperties[] = [
 				routing: {
 					request: {
 						method: 'POST',
-						url: '={{"/v15/customers/" + $parameter["clientCustomerId"].toString().replace(/-/g, "")  + "/googleAds:search"}}',
+						url: '={{"/v25/customers/" + toPathSegment($parameter["clientCustomerId"].toString().replace(/-/g, "")) + "/googleAds:search"}}',
 						body: {
 							query:
 								'={{ "' +
@@ -62,7 +62,7 @@ export const campaignOperations: INodeProperties[] = [
 								'metrics.conversions,' +
 								'metrics.cost_per_conversion,' +
 								'metrics.conversions_from_interactions_rate,' +
-								'metrics.video_views,' +
+								'metrics.video_trueview_views,' +
 								'metrics.average_cpm,' +
 								'metrics.ctr ' +
 								'from campaign ' +
@@ -89,7 +89,7 @@ export const campaignOperations: INodeProperties[] = [
 				routing: {
 					request: {
 						method: 'POST',
-						url: '={{"/v15/customers/" + $parameter["clientCustomerId"].toString().replace(/-/g, "") + "/googleAds:search"}}',
+						url: '={{"/v25/customers/" + toPathSegment($parameter["clientCustomerId"].toString().replace(/-/g, "")) + "/googleAds:search"}}',
 						returnFullResponse: true,
 						body: {
 							query:
@@ -111,7 +111,7 @@ export const campaignOperations: INodeProperties[] = [
 								'metrics.conversions,' +
 								'metrics.cost_per_conversion,' +
 								'metrics.conversions_from_interactions_rate,' +
-								'metrics.video_views,' +
+								'metrics.video_trueview_views,' +
 								'metrics.average_cpm,' +
 								'metrics.ctr ' +
 								'from campaign ' +
@@ -187,7 +187,7 @@ export const campaignFields: INodeProperties[] = [
 		},
 		default: {},
 		description: 'Additional options for fetching campaigns',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		options: [
 			{
 				displayName: 'Date Range',

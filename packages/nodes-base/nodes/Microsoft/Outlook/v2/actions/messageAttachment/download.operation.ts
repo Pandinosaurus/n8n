@@ -1,7 +1,10 @@
 import type { IExecuteFunctions, INodeExecutionData, INodeProperties } from 'n8n-workflow';
-import { microsoftApiRequest } from '../../transport';
-import { attachmentRLC, messageRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { attachmentRLC, messageRLC } from '../../descriptions';
+import { microsoftApiRequest } from '../../transport';
 
 export const properties: INodeProperties[] = [
 	messageRLC,
@@ -40,7 +43,8 @@ export async function execute(this: IExecuteFunctions, index: number, items: INo
 	const attachmentDetails = await microsoftApiRequest.call(
 		this,
 		'GET',
-		`/messages/${messageId}/attachments/${attachmentId}`,
+		requestPath`/messages/${messageId}/attachments/${attachmentId}`,
+		index,
 		undefined,
 		{ $select: 'id,name,contentType' },
 	);
@@ -54,7 +58,8 @@ export async function execute(this: IExecuteFunctions, index: number, items: INo
 	const response = await microsoftApiRequest.call(
 		this,
 		'GET',
-		`/messages/${messageId}/attachments/${attachmentId}/$value`,
+		requestPath`/messages/${messageId}/attachments/${attachmentId}/$value`,
+		index,
 		undefined,
 		{},
 		undefined,

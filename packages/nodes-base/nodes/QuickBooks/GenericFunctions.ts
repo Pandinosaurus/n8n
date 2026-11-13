@@ -1,3 +1,7 @@
+import { capitalCase } from 'change-case';
+import omit from 'lodash/omit';
+import pickBy from 'lodash/pickBy';
+import { NodeApiError, requestPath, requestUrl } from 'n8n-workflow';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -8,16 +12,11 @@ import type {
 	INodePropertyOptions,
 	IRequestOptions,
 	JsonObject,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
-
-import { capitalCase } from 'change-case';
-
-import omit from 'lodash/omit';
-import pickBy from 'lodash/pickBy';
 
 import type { CustomField, GeneralAddress, Ref } from './descriptions/Shared.interface';
-
 import type { DateFieldsUi, Option, QuickBooksOAuth2Credentials, TransactionReport } from './types';
 
 /**
@@ -26,10 +25,10 @@ import type { DateFieldsUi, Option, QuickBooksOAuth2Credentials, TransactionRepo
 export async function quickBooksApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	qs: IDataObject,
 	body: IDataObject,
-	option: IDataObject = {},
+	option: Pick<IRequestOptions, 'encoding'> = {},
 ): Promise<any> {
 	const resource = this.getNodeParameter('resource', 0) as string;
 	const operation = this.getNodeParameter('operation', 0) as string;
@@ -43,19 +42,15 @@ export async function quickBooksApiRequest(
 	const productionUrl = 'https://quickbooks.api.intuit.com';
 	const sandboxUrl = 'https://sandbox-quickbooks.api.intuit.com';
 
-	const credentials = (await this.getCredentials(
-		'quickBooksOAuth2Api',
-	)) as QuickBooksOAuth2Credentials;
+	const credentials = await this.getCredentials<QuickBooksOAuth2Credentials>('quickBooksOAuth2Api');
 
-	const options: IRequestOptions = {
-		headers: {
-			'user-agent': 'n8n',
-		},
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		method,
-		uri: `${credentials.environment === 'sandbox' ? sandboxUrl : productionUrl}${endpoint}`,
+		uri: requestUrl`${credentials.environment === 'sandbox' ? sandboxUrl : productionUrl}${endpoint}`,
 		qs,
 		body,
 		json: !isDownload,
+		headers: {},
 	};
 
 	if (!Object.keys(body).length) {
@@ -95,7 +90,7 @@ export async function quickBooksApiRequest(
 async function getCount(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	qs: IDataObject,
 ): Promise<any> {
 	const responseData = await quickBooksApiRequest.call(this, method, endpoint, qs, {});
@@ -109,7 +104,7 @@ async function getCount(
 export async function quickBooksApiRequestAllItems(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	qs: IDataObject,
 	body: IDataObject,
 	resource: string,
@@ -153,7 +148,7 @@ export async function quickBooksApiRequestAllItems(
 export async function handleListing(
 	this: IExecuteFunctions,
 	i: number,
-	endpoint: string,
+	endpoint: RequestPath,
 	resource: string,
 ): Promise<any> {
 	let responseData;
@@ -190,7 +185,7 @@ export async function getSyncToken(
 	resource: string,
 ) {
 	const resourceId = this.getNodeParameter(`${resource}Id`, i);
-	const getEndpoint = `/v3/company/${companyId}/${resource}/${resourceId}`;
+	const getEndpoint = requestPath`/v3/company/${companyId}/${resource}/${resourceId}`;
 	const propertyName = capitalCase(resource);
 	const {
 		[propertyName]: { SyncToken },
@@ -210,7 +205,7 @@ export async function getRefAndSyncToken(
 	ref: string,
 ) {
 	const resourceId = this.getNodeParameter(`${resource}Id`, i);
-	const endpoint = `/v3/company/${companyId}/${resource}/${resourceId}`;
+	const endpoint = requestPath`/v3/company/${companyId}/${resource}/${resourceId}`;
 	const responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 
 	return {
@@ -232,13 +227,13 @@ export async function handleBinaryData(
 ) {
 	const binaryProperty = this.getNodeParameter('binaryProperty', i);
 	const fileName = this.getNodeParameter('fileName', i) as string;
-	const endpoint = `/v3/company/${companyId}/${resource}/${resourceId}/pdf`;
+	const endpoint = requestPath`/v3/company/${companyId}/${resource}/${resourceId}/pdf`;
 	const data = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {}, { encoding: null });
 
 	items[i].binary = items[i].binary ?? {};
-	items[i].binary![binaryProperty] = await this.helpers.prepareBinaryData(data as Buffer);
-	items[i].binary![binaryProperty].fileName = fileName;
-	items[i].binary![binaryProperty].fileExtension = 'pdf';
+	items[i].binary[binaryProperty] = await this.helpers.prepareBinaryData(data as Buffer);
+	items[i].binary[binaryProperty].fileName = fileName;
+	items[i].binary[binaryProperty].fileExtension = 'pdf';
 
 	return items;
 }
@@ -254,10 +249,8 @@ export async function loadResource(this: ILoadOptionsFunctions, resource: string
 		oauthTokenData: {
 			callbackQueryString: { realmId },
 		},
-	} = (await this.getCredentials('quickBooksOAuth2Api')) as {
-		oauthTokenData: { callbackQueryString: { realmId: string } };
-	};
-	const endpoint = `/v3/company/${realmId}/query`;
+	} = await this.getCredentials<QuickBooksOAuth2Credentials>('quickBooksOAuth2Api');
+	const endpoint = requestPath`/v3/company/${realmId}/query`;
 
 	const resourceItems = await quickBooksApiRequestAllItems.call(
 		this,
@@ -296,12 +289,7 @@ export async function loadResource(this: ILoadOptionsFunctions, resource: string
 /**
  * Populate the `Line` property in a request body.
  */
-export function processLines(
-	this: IExecuteFunctions,
-	body: IDataObject,
-	lines: IDataObject[],
-	resource: string,
-) {
+export function processLines(this: IExecuteFunctions, lines: IDataObject[], resource: string) {
 	lines.forEach((line) => {
 		if (resource === 'bill') {
 			if (line.DetailType === 'AccountBasedExpenseLineDetail') {
@@ -341,9 +329,14 @@ export function processLines(
 					TaxCodeRef: {
 						value: line.TaxCodeRef,
 					},
+					Qty: line.Qty,
 				};
+				if (line.Qty === undefined) {
+					delete (line.SalesItemLineDetail as IDataObject).Qty;
+				}
 				delete line.itemId;
 				delete line.TaxCodeRef;
+				delete line.Qty;
 			}
 		}
 	});

@@ -1,7 +1,5 @@
 import type { ICredentialType, INodeProperties } from 'n8n-workflow';
 
-const scopes = ['read', 'write', 'issues:create', 'comments:create'];
-
 export class LinearOAuth2Api implements ICredentialType {
 	name = 'linearOAuth2Api';
 
@@ -44,17 +42,25 @@ export class LinearOAuth2Api implements ICredentialType {
 				},
 				{
 					name: 'Application',
-					value: 'application',
+					value: 'app',
 					description: 'Resources are created as the application',
 				},
 			],
 			default: 'user',
 		},
 		{
+			displayName: 'Include Admin Scope',
+			name: 'includeAdminScope',
+			type: 'boolean',
+			default: false,
+			description: 'Grants the "Admin" scope, Needed to create webhooks',
+		},
+		{
 			displayName: 'Scope',
 			name: 'scope',
 			type: 'hidden',
-			default: scopes.join(' '),
+			default:
+				'={{"read write issues:create comments:create" + ($self["includeAdminScope"] ? " admin" : "") + ($self["actor"] === "app" ? " app:mentionable" : "")}}',
 			required: true,
 		},
 		{
@@ -68,6 +74,15 @@ export class LinearOAuth2Api implements ICredentialType {
 			name: 'authentication',
 			type: 'hidden',
 			default: 'body',
+		},
+		{
+			displayName: 'Signing Secret',
+			name: 'signingSecret',
+			type: 'string',
+			typeOptions: { password: true },
+			default: '',
+			description:
+				'The signing secret is used to verify the authenticity of webhook requests sent by Linear.',
 		},
 	];
 }

@@ -1,3 +1,5 @@
+import { DateTime } from 'luxon';
+import moment from 'moment-timezone';
 import type {
 	IPollFunctions,
 	IDataObject,
@@ -5,10 +7,10 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 	JsonObject,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
 import { togglApiRequest } from './GenericFunctions';
 
 export class TogglTrigger implements INodeType {
@@ -31,7 +33,7 @@ export class TogglTrigger implements INodeType {
 		],
 		polling: true,
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
 			{
 				displayName: 'Event',
@@ -52,17 +54,17 @@ export class TogglTrigger implements INodeType {
 	async poll(this: IPollFunctions): Promise<INodeExecutionData[][] | null> {
 		const webhookData = this.getWorkflowStaticData('node');
 		const event = this.getNodeParameter('event') as string;
-		let endpoint: string;
+		let endpoint: RequestPath;
 
 		if (event === 'newTimeEntry') {
-			endpoint = '/time_entries';
+			endpoint = requestPath`/time_entries`;
 		} else {
 			throw new NodeOperationError(this.getNode(), `The defined event "${event}" is not supported`);
 		}
 
 		const qs: IDataObject = {};
 		let timeEntries = [];
-		qs.start_date = webhookData.lastTimeChecked;
+		qs.start_date = webhookData.lastTimeChecked ?? DateTime.now().toISODate();
 		qs.end_date = moment().format();
 
 		try {

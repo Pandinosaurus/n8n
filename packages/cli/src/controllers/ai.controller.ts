@@ -1,38 +1,376 @@
-import { Post, RestController } from '@/decorators';
-import { AIRequest } from '@/requests';
-import { AIService } from '@/services/ai.service';
-import { NodeTypes } from '@/NodeTypes';
-import { FailedDependencyError } from '@/errors/response-errors/failed-dependency.error';
+import type {
+	AiGatewayConfigDto,
+	AiGatewayUsageResponse,
+	AiGatewayWalletResponse,
+} from '@n8n/api-types';
+import {
+	AiChatRequestDto,
+	AiApplySuggestionRequestDto,
+	AiAskRequestDto,
+	AiFreeCreditsRequestDto,
+	AiBuilderChatRequestDto,
+	AiSessionRetrievalRequestDto,
+	AiUsageSettingsRequestDto,
+	AiTruncateMessagesRequestDto,
+	AiClearSessionRequestDto,
+	AiGatewayUsageQueryDto,
+} from '@n8n/api-types';
+import { GlobalConfig } from '@n8n/config';
+import { AuthenticatedRequest } from '@n8n/db';
+import { Body, Get, Licensed, Post, Query, RestController, GlobalScope } from '@n8n/decorators';
+import { type AiAssistantSDK, APIResponseError, NetworkError } from '@n8n_io/ai-assistant-sdk';
+import { Response } from 'express';
+import { strict as assert } from 'node:assert';
+import { WritableStream } from 'node:stream/web';
+
+import { STREAM_SEPARATOR } from '@/constants';
+import {
+	BadRequestError,
+	ContentTooLargeError,
+	InternalServerError,
+	NotFoundError,
+	ResponseError,
+	ServiceUnavailableError,
+	TooManyRequestsError,
+} from '@n8n/errors';
+import { AiGatewayService } from '@/services/ai-gateway.service';
+import { AiUsageService } from '@/services/ai-usage.service';
+import { WorkflowBuilderService } from '@/services/ai-workflow-builder.service';
+import { AiService } from '@/services/ai.service';
+import { FreeAiCreditsService } from '@/services/free-ai-credits.service';
+
+export type FlushableResponse = Response & { flush: () => void };
 
 @RestController('/ai')
-export class AIController {
+export class AiController {
 	constructor(
-		private readonly aiService: AIService,
-		private readonly nodeTypes: NodeTypes,
+		private readonly aiService: AiService,
+		private readonly workflowBuilderService: WorkflowBuilderService,
+		private readonly freeAiCreditsService: FreeAiCreditsService,
+		private readonly aiUsageService: AiUsageService,
+		private readonly aiGatewayService: AiGatewayService,
+		private readonly globalConfig: GlobalConfig,
 	) {}
 
-	/**
-	 * Suggest a solution for a given error using the AI provider.
-	 */
-	@Post('/debug-error')
-	async debugError(req: AIRequest.DebugError): Promise<{ message: string }> {
-		const { error } = req.body;
-
-		let nodeType;
-		if (error.node?.type) {
-			nodeType = this.nodeTypes.getByNameAndVersion(error.node.type, error.node.typeVersion);
+	private toAiAssistantResponseError(error: APIResponseError) {
+		switch (error.statusCode) {
+			case 413:
+				return new ContentTooLargeError(error.message);
+			case 429:
+				return new TooManyRequestsError(error.message);
+			case 404:
+				return new NotFoundError(error.message);
+			case 400:
+				return new BadRequestError(error.message);
+			default:
+				return new InternalServerError(error.message, error);
 		}
+	}
 
+	/** Maps a failure from a service call to the HTTP error the client should see. */
+	private toResponseError(error: unknown) {
+		if (error instanceof ResponseError) {
+			return error;
+		}
+		// The AI assistant service could not be reached (DNS, refused connection, timeout).
+		if (error instanceof NetworkError) {
+			return new ServiceUnavailableError(error.message);
+		}
+		if (error instanceof APIResponseError) {
+			return this.toAiAssistantResponseError(error);
+		}
+		assert(error instanceof Error);
+		return new InternalServerError(error.message, error);
+	}
+
+	// Use usesTemplates flag to bypass the send() wrapper which would cause
+	// "Cannot set headers after they are sent" error for streaming responses.
+	// This ensures errors during streaming are handled within the stream itself.
+	@Licensed('feat:aiBuilder')
+	@Post('/build', { ipRateLimit: { limit: 100 }, usesTemplates: true })
+	async build(
+		req: AuthenticatedRequest,
+		res: FlushableResponse,
+		@Body payload: AiBuilderChatRequestDto,
+	) {
 		try {
-			const message = await this.aiService.debugError(error, nodeType);
-			return {
-				message,
-			};
-		} catch (aiServiceError) {
-			throw new FailedDependencyError(
-				(aiServiceError as Error).message ||
-					'Failed to debug error due to an issue with an external dependency. Please try again later.',
+			const abortController = new AbortController();
+			const { signal } = abortController;
+
+			const handleClose = () => abortController.abort();
+
+			res.on('close', handleClose);
+
+			const { id, text, workflowContext, featureFlags, versionId } = payload.payload;
+			const aiResponse = this.workflowBuilderService.chat(
+				{
+					id,
+					message: text,
+					workflowContext: {
+						currentWorkflow: workflowContext.currentWorkflow,
+						executionData: workflowContext.executionData,
+						executionSchema: workflowContext.executionSchema,
+						expressionValues: workflowContext.expressionValues,
+						valuesExcluded: workflowContext.valuesExcluded,
+						pinnedNodes: workflowContext.pinnedNodes,
+						selectedNodes: workflowContext.selectedNodes,
+					},
+					featureFlags,
+					versionId,
+					mode: payload.payload.mode,
+					resumeData: payload.payload.resumeData,
+				},
+				req.user.toIUser(),
+				signal,
 			);
+
+			res.header('Content-type', 'application/json-lines').flush();
+
+			try {
+				// Handle the stream
+				for await (const chunk of aiResponse) {
+					res.flush();
+					res.write(JSON.stringify(chunk) + STREAM_SEPARATOR);
+				}
+			} catch (streamError) {
+				// If an error occurs during streaming, send it as part of the stream
+				// This prevents "Cannot set headers after they are sent" error
+				assert(streamError instanceof Error);
+
+				// Send error as proper error type now that frontend supports it
+				const errorChunk = {
+					messages: [
+						{
+							role: 'assistant',
+							type: 'error',
+							content: streamError.message,
+						},
+					],
+				};
+				res.write(JSON.stringify(errorChunk) + STREAM_SEPARATOR);
+			} finally {
+				// Clean up event listener
+				res.off('close', handleClose);
+			}
+
+			res.end();
+		} catch (e) {
+			// This catch block handles errors that occur before streaming starts
+			// Since headers haven't been sent yet, we can still send a proper error response
+			assert(e instanceof Error);
+			if (!res.headersSent) {
+				res.status(500).json({
+					code: 500,
+					message: e.message,
+				});
+			} else {
+				// If headers were already sent dont't send a second error response
+				res.end();
+			}
+		}
+	}
+
+	@Post('/chat', { ipRateLimit: { limit: 100 } })
+	async chat(req: AuthenticatedRequest, res: FlushableResponse, @Body payload: AiChatRequestDto) {
+		try {
+			const abortController = new AbortController();
+			const { signal } = abortController;
+
+			const handleClose = () => abortController.abort();
+			res.on('close', handleClose);
+
+			const aiResponse = await this.aiService.chat(payload, req.user.toIUser());
+			if (aiResponse.body) {
+				res.header('Content-type', 'application/json-lines').flush();
+				try {
+					await aiResponse.body.pipeTo(
+						new WritableStream({
+							write(chunk) {
+								res.write(chunk);
+								res.flush();
+							},
+						}),
+						{ signal },
+					);
+				} finally {
+					res.off('close', handleClose);
+				}
+				res.end();
+			}
+		} catch (e) {
+			if (e instanceof DOMException && e.name === 'AbortError') {
+				return;
+			}
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Post('/chat/apply-suggestion')
+	async applySuggestion(
+		req: AuthenticatedRequest,
+		_: Response,
+		@Body payload: AiApplySuggestionRequestDto,
+	): Promise<AiAssistantSDK.ApplySuggestionResponse> {
+		try {
+			return await this.aiService.applySuggestion(payload, req.user.toIUser());
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	/**
+	 * @deprecated Both callers are deprecated: the Code node's "Ask AI" tab is
+	 * hidden, and the AI Transform node is hidden and has an automated migration
+	 * to the Code node. Removed in v3.
+	 */
+	@Licensed('feat:askAi')
+	@Post('/ask-ai', { ipRateLimit: { limit: 100 } })
+	async askAi(
+		req: AuthenticatedRequest,
+		_: Response,
+		@Body payload: AiAskRequestDto,
+	): Promise<AiAssistantSDK.AskAiResponsePayload> {
+		try {
+			// oxlint-disable-next-line typescript/no-deprecated
+			return await this.aiService.askAi(payload, req.user.toIUser());
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Post('/free-credits')
+	async aiCredits(req: AuthenticatedRequest, _: Response, @Body payload: AiFreeCreditsRequestDto) {
+		try {
+			return await this.freeAiCreditsService.claim(req.user, payload?.projectId);
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Licensed('feat:aiBuilder')
+	@Post('/sessions', { ipRateLimit: { limit: 100 } })
+	async getSessions(
+		req: AuthenticatedRequest,
+		_: Response,
+		@Body payload: AiSessionRetrievalRequestDto,
+	) {
+		try {
+			const sessions = await this.workflowBuilderService.getSessions(
+				payload.workflowId,
+				req.user.toIUser(),
+				payload.codeBuilder,
+			);
+			return sessions;
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Licensed('feat:aiGateway')
+	@Get('/gateway/config')
+	async getGatewayConfig(): Promise<AiGatewayConfigDto> {
+		this.aiGatewayService.assertEnabled();
+		try {
+			return await this.aiGatewayService.getGatewayConfig();
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Licensed('feat:aiGateway')
+	@Get('/gateway/wallet')
+	async getGatewayWallet(req: AuthenticatedRequest): Promise<AiGatewayWalletResponse> {
+		this.aiGatewayService.assertEnabled();
+		try {
+			return await this.aiGatewayService.getWallet(req.user.id);
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Licensed('feat:aiGateway')
+	@Get('/gateway/usage')
+	async getGatewayUsage(
+		req: AuthenticatedRequest,
+		_: Response,
+		@Query query: AiGatewayUsageQueryDto,
+	): Promise<AiGatewayUsageResponse> {
+		this.aiGatewayService.assertEnabled();
+		try {
+			return await this.aiGatewayService.getUsage(req.user.id, query.offset, query.limit);
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Licensed('feat:aiBuilder')
+	@Get('/build/credits')
+	async getBuilderCredits(
+		req: AuthenticatedRequest,
+		_: Response,
+	): Promise<AiAssistantSDK.BuilderInstanceCreditsResponse> {
+		try {
+			return await this.workflowBuilderService.getBuilderInstanceCredits(req.user.toIUser());
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Licensed('feat:aiBuilder')
+	@Post('/build/truncate-messages', { ipRateLimit: { limit: 100 } })
+	async truncateMessages(
+		req: AuthenticatedRequest,
+		_: Response,
+		@Body payload: AiTruncateMessagesRequestDto,
+	): Promise<{ success: boolean }> {
+		try {
+			const success = await this.workflowBuilderService.truncateMessagesAfter(
+				payload.workflowId,
+				req.user.toIUser(),
+				payload.messageId,
+				payload.versionCardId,
+			);
+			return { success };
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Licensed('feat:aiBuilder')
+	@Post('/build/clear-session', { ipRateLimit: { limit: 100 } })
+	async clearSession(
+		req: AuthenticatedRequest,
+		_: Response,
+		@Body payload: AiClearSessionRequestDto,
+	): Promise<{ success: boolean }> {
+		try {
+			await this.workflowBuilderService.clearSession(payload.workflowId, req.user.toIUser());
+			return { success: true };
+		} catch (e) {
+			throw this.toResponseError(e);
+		}
+	}
+
+	@Post('/usage-settings')
+	@GlobalScope('aiAssistant:manage')
+	async updateUsageSettings(
+		_req: AuthenticatedRequest,
+		_res: Response,
+		@Body payload: AiUsageSettingsRequestDto,
+	): Promise<void> {
+		// The setting is deprecated. It can only be turned on.
+		if (!payload.allowSendingParameterValues) {
+			throw new BadRequestError('Turning off sending parameter values is no longer supported.');
+		}
+		if (!this.globalConfig.ai.allowSendingParameterValues) {
+			throw new BadRequestError(
+				'Sending parameter values is turned off by the N8N_AI_ALLOW_SENDING_PARAMETER_VALUES environment variable. Remove it and restart n8n to turn this on.',
+			);
+		}
+		try {
+			await this.aiUsageService.updateAiUsageSettings(payload.allowSendingParameterValues);
+		} catch (e) {
+			throw this.toResponseError(e);
 		}
 	}
 }

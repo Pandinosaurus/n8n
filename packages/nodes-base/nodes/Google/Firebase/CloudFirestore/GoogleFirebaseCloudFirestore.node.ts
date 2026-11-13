@@ -7,19 +7,21 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { jsonParse } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath, requestUrl } from 'n8n-workflow';
 
-import { generatePairedItemData } from '../../../../utils/utilities';
+import { parseAndResolveQueryParameters } from '@utils/query-parameters';
+
+import { collectionFields, collectionOperations } from './CollectionDescription';
+import { documentFields, documentOperations } from './DocumentDescription';
 import {
+	documentsPath,
 	fullDocumentToJson,
 	googleApiRequest,
 	googleApiRequestAllItems,
 	jsonToDocument,
+	toPathValue,
 } from './GenericFunctions';
-
-import { collectionFields, collectionOperations } from './CollectionDescription';
-
-import { documentFields, documentOperations } from './DocumentDescription';
+import { generatePairedItemData } from '../../../../utils/utilities';
 
 export class GoogleFirebaseCloudFirestore implements INodeType {
 	description: INodeTypeDescription = {
@@ -28,21 +30,54 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
 		icon: 'file:googleFirebaseCloudFirestore.png',
 		group: ['input'],
-		version: 1,
+		version: [1, 1.1, 1.2],
 		subtitle: '={{$parameter["resource"] + ": " + $parameter["operation"]}}',
 		description: 'Interact with Google Firebase - Cloud Firestore API',
+		schemaPath: 'Google/Firebase/CloudFirestore',
 		defaults: {
 			name: 'Google Cloud Firestore',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'googleFirebaseCloudFirestoreOAuth2Api',
 				required: true,
+				displayOptions: {
+					show: {
+						authentication: ['googleFirebaseCloudFirestoreOAuth2Api'],
+					},
+				},
+			},
+			{
+				name: 'googleApi',
+				required: true,
+				displayOptions: {
+					show: {
+						authentication: ['serviceAccount'],
+					},
+				},
 			},
 		],
 		properties: [
+			{
+				displayName: 'Authentication',
+				name: 'authentication',
+				type: 'options',
+				options: [
+					{
+						// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
+						name: 'OAuth2 (recommended)',
+						value: 'googleFirebaseCloudFirestoreOAuth2Api',
+					},
+					{
+						name: 'Service Account',
+						value: 'serviceAccount',
+					},
+				],
+				default: 'googleFirebaseCloudFirestoreOAuth2Api',
+			},
 			{
 				displayName: 'Resource',
 				name: 'resource',
@@ -74,10 +109,10 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 					this,
 					'results',
 					'GET',
-					'',
+					requestPath``,
 					{},
 					{},
-					'https://firebase.googleapis.com/v1beta1/projects',
+					requestUrl`https://firebase.googleapis.com/v1beta1/projects`,
 				);
 				// @ts-ignore
 				const returnData = collections.map((o) => ({
@@ -94,15 +129,27 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 		const itemData = generatePairedItemData(items.length);
 		const returnData: INodeExecutionData[] = [];
 		let responseData;
+
 		const resource = this.getNodeParameter('resource', 0);
 		const operation = this.getNodeParameter('operation', 0);
+
+		const nodeVersion = this.getNode().typeVersion;
+
+		let itemsLength = items.length ? 1 : 0;
+		let fallbackPairedItems;
+
+		if (nodeVersion >= 1.1) {
+			itemsLength = items.length;
+		} else {
+			fallbackPairedItems = generatePairedItemData(items.length);
+		}
 
 		if (resource === 'document') {
 			if (operation === 'get') {
 				const projectId = this.getNodeParameter('projectId', 0) as string;
 				const database = this.getNodeParameter('database', 0) as string;
 				const simple = this.getNodeParameter('simple', 0) as boolean;
-				const documentList = items.map((item: IDataObject, i: number) => {
+				const documentList = items.map((_: IDataObject, i: number) => {
 					const collection = this.getNodeParameter('collection', i) as string;
 					const documentId = this.getNodeParameter('documentId', i) as string;
 					return `projects/${projectId}/databases/${database}/documents/${collection}/${documentId}`;
@@ -111,7 +158,7 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 				responseData = await googleApiRequest.call(
 					this,
 					'POST',
-					`/${projectId}/databases/${database}/documents:batchGet`,
+					requestPath`/${projectId}/databases/${database}/documents:batchGet`,
 					{ documents: documentList },
 				);
 
@@ -145,11 +192,12 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 					items.map(async (item: IDataObject, i: number) => {
 						const collection = this.getNodeParameter('collection', i) as string;
 						const columns = this.getNodeParameter('columns', i) as string;
+						const documentId = this.getNodeParameter('documentId', i) as string;
 						const columnList = columns.split(',').map((column) => column.trim());
 						const document = { fields: {} };
 						columnList.map((column) => {
 							// @ts-ignore
-							if (item.json[column]) {
+							if (Object.prototype.hasOwnProperty.call(item.json, column)) {
 								// @ts-ignore
 								document.fields[column] = jsonToDocument(item.json[column] as IDataObject);
 							} else {
@@ -160,8 +208,9 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 						responseData = await googleApiRequest.call(
 							this,
 							'POST',
-							`/${projectId}/databases/${database}/documents/${collection}`,
+							documentsPath(projectId, database, collection, nodeVersion),
 							document,
+							{ documentId },
 						);
 
 						responseData.id = (responseData.name as string).split('/').pop();
@@ -179,49 +228,64 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 					}),
 				);
 			} else if (operation === 'getAll') {
-				const projectId = this.getNodeParameter('projectId', 0) as string;
-				const database = this.getNodeParameter('database', 0) as string;
-				const collection = this.getNodeParameter('collection', 0) as string;
-				const returnAll = this.getNodeParameter('returnAll', 0);
-				const simple = this.getNodeParameter('simple', 0) as boolean;
+				for (let i = 0; i < itemsLength; i++) {
+					try {
+						const projectId = this.getNodeParameter('projectId', i) as string;
+						const database = this.getNodeParameter('database', i) as string;
+						const collection = this.getNodeParameter('collection', i) as string;
+						const returnAll = this.getNodeParameter('returnAll', i);
+						const simple = this.getNodeParameter('simple', i) as boolean;
 
-				if (returnAll) {
-					responseData = await googleApiRequestAllItems.call(
-						this,
-						'documents',
-						'GET',
-						`/${projectId}/databases/${database}/documents/${collection}`,
-					);
-				} else {
-					const limit = this.getNodeParameter('limit', 0);
-					const getAllResponse = (await googleApiRequest.call(
-						this,
-						'GET',
-						`/${projectId}/databases/${database}/documents/${collection}`,
-						{},
-						{ pageSize: limit },
-					)) as IDataObject;
-					responseData = getAllResponse.documents;
+						if (returnAll) {
+							responseData = await googleApiRequestAllItems.call(
+								this,
+								'documents',
+								'GET',
+								documentsPath(projectId, database, collection, nodeVersion),
+							);
+						} else {
+							const limit = this.getNodeParameter('limit', i);
+							const getAllResponse = (await googleApiRequest.call(
+								this,
+								'GET',
+								documentsPath(projectId, database, collection, nodeVersion),
+								{},
+								{ pageSize: limit },
+							)) as IDataObject;
+							responseData = getAllResponse.documents;
+						}
+
+						responseData = responseData.map((element: IDataObject) => {
+							element.id = (element.name as string).split('/').pop();
+							return element;
+						});
+
+						if (simple) {
+							responseData = responseData.map((element: IDataObject) =>
+								fullDocumentToJson(element),
+							);
+						}
+
+						const executionData = this.helpers.constructExecutionMetaData(
+							this.helpers.returnJsonArray(responseData as IDataObject[]),
+							{ itemData: fallbackPairedItems ?? [{ item: i }] },
+						);
+
+						returnData.push(...executionData);
+					} catch (error) {
+						if (this.continueOnFail()) {
+							returnData.push({
+								json: { error: error.message },
+								pairedItem: fallbackPairedItems ?? [{ item: i }],
+							});
+							continue;
+						}
+						throw error;
+					}
 				}
-
-				responseData = responseData.map((element: IDataObject) => {
-					element.id = (element.name as string).split('/').pop();
-					return element;
-				});
-
-				if (simple) {
-					responseData = responseData.map((element: IDataObject) => fullDocumentToJson(element));
-				}
-
-				const executionData = this.helpers.constructExecutionMetaData(
-					this.helpers.returnJsonArray(responseData as IDataObject[]),
-					{ itemData },
-				);
-
-				returnData.push(...executionData);
 			} else if (operation === 'delete') {
 				await Promise.all(
-					items.map(async (item: IDataObject, i: number) => {
+					items.map(async (_: IDataObject, i: number) => {
 						const projectId = this.getNodeParameter('projectId', i) as string;
 						const database = this.getNodeParameter('database', i) as string;
 						const collection = this.getNodeParameter('collection', i) as string;
@@ -230,7 +294,7 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 						await googleApiRequest.call(
 							this,
 							'DELETE',
-							`/${projectId}/databases/${database}/documents/${collection}/${documentId}`,
+							requestPath`${documentsPath(projectId, database, collection, nodeVersion)}/${toPathValue(nodeVersion, documentId)}`,
 						);
 
 						const executionData = this.helpers.constructExecutionMetaData(
@@ -255,7 +319,7 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 					const document = {};
 					columnList.map((column) => {
 						// @ts-ignore
-						if (item.json.hasOwnProperty(column)) {
+						if (Object.prototype.hasOwnProperty.call(item.json, column)) {
 							// @ts-ignore
 							document[column] = jsonToDocument(item.json[column] as IDataObject);
 						} else {
@@ -280,7 +344,7 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 				const { writeResults, status } = await googleApiRequest.call(
 					this,
 					'POST',
-					`/${projectId}/databases/${database}/documents:batchWrite`,
+					requestPath`/${projectId}/databases/${database}/documents:batchWrite`,
 					{ writes: updates },
 				);
 
@@ -295,50 +359,26 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 
 					returnData.push(...executionData);
 				}
-
-				// } else if (operation === 'update') {
-				// 	const projectId = this.getNodeParameter('projectId', 0) as string;
-				// 	const database = this.getNodeParameter('database', 0) as string;
-				// 	const simple = this.getNodeParameter('simple', 0) as boolean;
-
-				// 	await Promise.all(items.map(async (item: IDataObject, i: number) => {
-				// 		const collection = this.getNodeParameter('collection', i) as string;
-				// 		const updateKey = this.getNodeParameter('updateKey', i) as string;
-				// 		// @ts-ignore
-				// 		const documentId = item['json'][updateKey] as string;
-				// 		const columns = this.getNodeParameter('columns', i) as string;
-				// 		const columnList = columns.split(',').map(column => column.trim()) as string[];
-				// 		const document = {};
-				// 		columnList.map(column => {
-				// 			// @ts-ignore
-				// 			document[column] = item['json'].hasOwnProperty(column) ? jsonToDocument(item['json'][column]) : jsonToDocument(null);
-				// 		});
-				// 		responseData = await googleApiRequest.call(
-				// 			this,
-				// 			'PATCH',
-				// 			`/${projectId}/databases/${database}/documents/${collection}/${documentId}`,
-				// 			{ fields: document },
-				// 			{ [`updateMask.fieldPaths`]: columnList },
-				// 		);
-				// 		if (simple === false) {
-				// 			returnData.push(responseData);
-				// 		} else {
-				// 			returnData.push(fullDocumentToJson(responseData as IDataObject));
-				// 		}
-				// 	}));
 			} else if (operation === 'query') {
 				const projectId = this.getNodeParameter('projectId', 0) as string;
 				const database = this.getNodeParameter('database', 0) as string;
 				const simple = this.getNodeParameter('simple', 0) as boolean;
 
 				await Promise.all(
-					items.map(async (item: IDataObject, i: number) => {
+					items.map(async (_: IDataObject, i: number) => {
 						const query = this.getNodeParameter('query', i) as string;
+						const queryParameters = this.getNodeParameter('queryParameters', i, '[]');
+						const body = parseAndResolveQueryParameters(
+							query,
+							queryParameters,
+							this.getNode(),
+							i,
+						) as IDataObject;
 						responseData = await googleApiRequest.call(
 							this,
 							'POST',
-							`/${projectId}/databases/${database}/documents:runQuery`,
-							jsonParse(query),
+							requestPath`/${projectId}/databases/${database}/documents:runQuery`,
+							body,
 						);
 
 						responseData = responseData.map(
@@ -369,38 +409,51 @@ export class GoogleFirebaseCloudFirestore implements INodeType {
 			}
 		} else if (resource === 'collection') {
 			if (operation === 'getAll') {
-				const projectId = this.getNodeParameter('projectId', 0) as string;
-				const database = this.getNodeParameter('database', 0) as string;
-				const returnAll = this.getNodeParameter('returnAll', 0);
+				for (let i = 0; i < itemsLength; i++) {
+					try {
+						const projectId = this.getNodeParameter('projectId', i) as string;
+						const database = this.getNodeParameter('database', i) as string;
+						const returnAll = this.getNodeParameter('returnAll', i);
 
-				if (returnAll) {
-					const getAllResponse = await googleApiRequestAllItems.call(
-						this,
-						'collectionIds',
-						'POST',
-						`/${projectId}/databases/${database}/documents:listCollectionIds`,
-					);
-					// @ts-ignore
-					responseData = getAllResponse.map((o) => ({ name: o }));
-				} else {
-					const limit = this.getNodeParameter('limit', 0);
-					const getAllResponse = (await googleApiRequest.call(
-						this,
-						'POST',
-						`/${projectId}/databases/${database}/documents:listCollectionIds`,
-						{},
-						{ pageSize: limit },
-					)) as IDataObject;
-					// @ts-ignore
-					responseData = getAllResponse.collectionIds.map((o) => ({ name: o }));
+						if (returnAll) {
+							const getAllResponse = await googleApiRequestAllItems.call(
+								this,
+								'collectionIds',
+								'POST',
+								requestPath`/${projectId}/databases/${database}/documents:listCollectionIds`,
+							);
+							// @ts-ignore
+							responseData = getAllResponse.map((o) => ({ name: o }));
+						} else {
+							const limit = this.getNodeParameter('limit', i);
+							const getAllResponse = (await googleApiRequest.call(
+								this,
+								'POST',
+								requestPath`/${projectId}/databases/${database}/documents:listCollectionIds`,
+								{},
+								{ pageSize: limit },
+							)) as IDataObject;
+							// @ts-ignore
+							responseData = getAllResponse.collectionIds.map((o) => ({ name: o }));
+						}
+
+						const executionData = this.helpers.constructExecutionMetaData(
+							this.helpers.returnJsonArray(responseData as IDataObject[]),
+							{ itemData: fallbackPairedItems ?? [{ item: i }] },
+						);
+
+						returnData.push(...executionData);
+					} catch (error) {
+						if (this.continueOnFail()) {
+							returnData.push({
+								json: { error: error.message },
+								pairedItem: fallbackPairedItems ?? [{ item: i }],
+							});
+							continue;
+						}
+						throw error;
+					}
 				}
-
-				const executionData = this.helpers.constructExecutionMetaData(
-					this.helpers.returnJsonArray(responseData as IDataObject[]),
-					{ itemData },
-				);
-
-				returnData.push(...executionData);
 			}
 		}
 

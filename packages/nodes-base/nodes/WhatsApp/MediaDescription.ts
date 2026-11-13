@@ -1,4 +1,5 @@
 import type { INodeProperties } from 'n8n-workflow';
+
 import { setupUpload } from './MediaFunctions';
 
 export const mediaFields: INodeProperties[] = [
@@ -48,7 +49,7 @@ export const mediaTypeFields: INodeProperties[] = [
 			loadOptions: {
 				routing: {
 					request: {
-						url: '={{$credentials.businessAccountId}}/phone_numbers',
+						url: '=/{{ toPathSegment($credentials.businessAccountId) }}/phone_numbers',
 						method: 'GET',
 					},
 					output: {
@@ -82,7 +83,7 @@ export const mediaTypeFields: INodeProperties[] = [
 		routing: {
 			request: {
 				method: 'POST',
-				url: '={{$value}}/media',
+				url: '=/{{ toPathSegment($value) }}/media',
 			},
 		},
 		displayOptions: {
@@ -130,7 +131,7 @@ export const mediaTypeFields: INodeProperties[] = [
 		routing: {
 			request: {
 				method: 'GET',
-				url: '=/{{$value}}',
+				url: '=/{{ toPathSegment($value) }}',
 			},
 		},
 		required: true,
@@ -153,7 +154,7 @@ export const mediaTypeFields: INodeProperties[] = [
 		routing: {
 			request: {
 				method: 'DELETE',
-				url: '=/{{$value}}',
+				url: '=/{{ toPathSegment($value) }}',
 			},
 		},
 		required: true,

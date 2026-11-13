@@ -5,6 +5,7 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { vonageApiRequest } from './GenericFunctions';
 
@@ -12,8 +13,8 @@ export class Vonage implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Vonage',
 		name: 'vonage',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
-		icon: 'file:vonage.png',
+
+		icon: { light: 'file:vonage.svg', dark: 'file:vonage.dark.svg' },
 		group: ['input'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -21,8 +22,9 @@ export class Vonage implements INodeType {
 		defaults: {
 			name: 'Vonage',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'vonageApi',
@@ -472,7 +474,7 @@ export class Vonage implements INodeType {
 							body.ttl = (body.ttl as number) * 60000;
 						}
 
-						responseData = await vonageApiRequest.call(this, 'POST', '/sms/json', body);
+						responseData = await vonageApiRequest.call(this, 'POST', requestPath`/sms/json`, body);
 
 						responseData = responseData.messages;
 					}

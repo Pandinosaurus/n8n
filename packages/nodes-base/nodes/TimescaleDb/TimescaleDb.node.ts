@@ -4,24 +4,27 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
-
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import pgPromise from 'pg-promise';
+
+import { getDateAsStringTypeParsers } from '@utils/postgres';
+
 import { pgInsert, pgQueryV2, pgUpdate } from '../Postgres/v1/genericFunctions';
 
 export class TimescaleDb implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'TimescaleDB',
 		name: 'timescaleDb',
-		icon: 'file:timescale.svg',
+		icon: { light: 'file:timescaleDb.svg', dark: 'file:timescaleDb.dark.svg' },
 		group: ['input'],
-		version: 1,
+		version: [1, 1.1],
 		description: 'Add and update data in TimescaleDB',
 		defaults: {
 			name: 'TimescaleDB',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		parameterPane: 'wide',
 		credentials: [
 			{
@@ -268,7 +271,11 @@ export class TimescaleDb implements INodeType {
 			sslmode: (credentials.ssl as string) || 'disable',
 		};
 
-		const db = pgp(config);
+		const db = pgp({
+			...config,
+			// Return date/timestamp columns as strings so node output stays JSON-safe
+			...(this.getNode().typeVersion >= 1.1 ? { types: getDateAsStringTypeParsers(pgp) } : {}),
+		});
 
 		let returnItems = [];
 

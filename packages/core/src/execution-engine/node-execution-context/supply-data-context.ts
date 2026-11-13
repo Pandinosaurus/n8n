@@ -1,0 +1,485 @@
+import { createDeferredPromise } from '@n8n/utils/promise/deferred-promise';
+import get from 'lodash/get';
+import type {
+	AINodeConnectionType,
+	CloseFunction,
+	ExecutionBaseError,
+	IExecuteData,
+	IGetNodeParameterOptions,
+	INode,
+	INodeExecutionData,
+	IRunExecutionData,
+	ISupplyDataFunctions,
+	ITaskData,
+	ITaskDataConnections,
+	ITaskMetadata,
+	IWorkflowExecuteAdditionalData,
+	Workflow,
+	WorkflowExecuteMode,
+	NodeConnectionType,
+	ISourceData,
+	NodeExecutionHint,
+} from 'n8n-workflow';
+import { jsonParse, NodeConnectionTypes } from 'n8n-workflow';
+
+import { BaseExecuteContext } from './base-execute-context';
+import {
+	assertBinaryData,
+	detectBinaryEncoding,
+	getBinaryDataBuffer,
+	getBinaryHelperFunctions,
+} from './utils/binary-helper-functions';
+import { constructExecutionMetaData } from './utils/construct-execution-metadata';
+import { copyInputItems } from './utils/copy-input-items';
+import { getDataTableHelperFunctions } from './utils/data-table-helper-functions';
+import { getDeduplicationHelperFunctions } from './utils/deduplication-helper-functions';
+import { getFileSystemHelperFunctions } from './utils/file-system-helper-functions';
+import { getInputConnectionData } from './utils/get-input-connection-data';
+import { normalizeItems } from './utils/normalize-items';
+import { getRequestHelperFunctions } from './utils/request-helper-functions';
+import { returnJsonArray } from './utils/return-json-array';
+import { getSSHTunnelFunctions } from './utils/ssh-tunnel-helper-functions';
+
+export class SupplyDataContext extends BaseExecuteContext implements ISupplyDataFunctions {
+	readonly helpers: ISupplyDataFunctions['helpers'];
+
+	readonly getNodeParameter: ISupplyDataFunctions['getNodeParameter'];
+
+	readonly parentNode?: INode;
+
+	readonly hints: NodeExecutionHint[] = [];
+
+	/**
+	 * The `additionalData` credential flags at 'input' time, per run index. The flags are
+	 * execution-shared and only reset per top-level engine node, so a sibling sub-node's
+	 * earlier resolution would otherwise be stamped onto this run's task too — stamping
+	 * only flags raised between 'input' and 'output' attributes usage to the right task.
+	 */
+	private readonly dynamicCredentialsFlagsAtInput = new Map<
+		number,
+		{ used: boolean; attempted: boolean; credentialIds: readonly string[] }
+	>();
+
+	constructor(
+		workflow: Workflow,
+		node: INode,
+		additionalData: IWorkflowExecuteAdditionalData,
+		mode: WorkflowExecuteMode,
+		runExecutionData: IRunExecutionData,
+		runIndex: number,
+		connectionInputData: INodeExecutionData[],
+		inputData: ITaskDataConnections,
+		private readonly connectionType: NodeConnectionType,
+		executeData: IExecuteData,
+		private readonly closeFunctions: CloseFunction[],
+		abortSignal?: AbortSignal,
+		parentNode?: INode,
+	) {
+		super(
+			workflow,
+			node,
+			additionalData,
+			mode,
+			runExecutionData,
+			runIndex,
+			connectionInputData,
+			inputData,
+			executeData,
+			abortSignal,
+		);
+
+		this.parentNode = parentNode;
+
+		this.helpers = {
+			createDeferredPromise,
+			copyInputItems,
+			...getRequestHelperFunctions(
+				workflow,
+				node,
+				additionalData,
+				runExecutionData,
+				connectionInputData,
+			),
+			...getSSHTunnelFunctions(),
+			...getFileSystemHelperFunctions(node),
+			...getBinaryHelperFunctions(additionalData, workflow.id),
+			...getDataTableHelperFunctions(additionalData, workflow, node),
+			...getDeduplicationHelperFunctions(workflow, node),
+			assertBinaryData: (itemIndex, propertyName) =>
+				assertBinaryData(inputData, node, itemIndex, propertyName, 0, workflow.settings.binaryMode),
+			getBinaryDataBuffer: async (itemIndex, propertyName) =>
+				await getBinaryDataBuffer(
+					inputData,
+					itemIndex,
+					propertyName,
+					0,
+					workflow.settings.binaryMode,
+				),
+			detectBinaryEncoding: (buffer: Buffer) => detectBinaryEncoding(buffer),
+
+			returnJsonArray,
+			normalizeItems,
+			constructExecutionMetaData,
+		};
+
+		this.getNodeParameter = ((
+			parameterName: string,
+			itemIndex: number,
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			fallbackValue?: any,
+			options?: IGetNodeParameterOptions,
+		) =>
+			this._getNodeParameter(
+				parameterName,
+				itemIndex,
+				fallbackValue,
+				options,
+			)) as ISupplyDataFunctions['getNodeParameter'];
+	}
+
+	cloneWith(replacements: {
+		runIndex: number;
+		inputData: INodeExecutionData[][];
+	}): SupplyDataContext {
+		const context = new SupplyDataContext(
+			this.workflow,
+			this.node,
+			this.additionalData,
+			this.mode,
+			this.runExecutionData,
+			replacements.runIndex,
+			this.connectionInputData,
+			{},
+			this.connectionType,
+			this.executeData,
+			this.closeFunctions,
+			this.abortSignal,
+			this.parentNode,
+		);
+		void context
+			.addExecutionDataFunctions(
+				'input',
+				replacements.inputData,
+				NodeConnectionTypes.AiTool,
+				context.node.name,
+				context.getNextRunIndex(),
+			)
+			.catch((error: Error) => {
+				context.logger.warn(
+					`There was a problem logging input data of node "${context.node.name}": ${error.message}`,
+				);
+			});
+		return context;
+	}
+
+	async getInputConnectionData(
+		connectionType: AINodeConnectionType,
+		itemIndex: number,
+	): Promise<unknown> {
+		return await getInputConnectionData.call(
+			this,
+			SupplyDataContext,
+			this.workflow,
+			this.runExecutionData,
+			this.runIndex,
+			this.connectionInputData,
+			this.inputData,
+			this.additionalData,
+			this.executeData,
+			this.mode,
+			this.closeFunctions,
+			connectionType,
+			itemIndex,
+			this.abortSignal,
+		);
+	}
+
+	getInputData(inputIndex = 0, connectionType = this.connectionType) {
+		if (!this.inputData.hasOwnProperty(connectionType)) {
+			// Return empty array because else it would throw error when nothing is connected to input
+			return [];
+		}
+		return super.getInputItems(inputIndex, connectionType) ?? [];
+	}
+
+	getNextRunIndex(): number {
+		const nodeName = this.node.name;
+		return this.runExecutionData.resultData.runData[nodeName]?.length ?? 0;
+	}
+
+	/** Returns true if the node is being executed as an AI Agent tool */
+	isToolExecution(): boolean {
+		return this.connectionType === NodeConnectionTypes.AiTool;
+	}
+
+	/** @deprecated create a context object with inputData for every runIndex */
+	addInputData(
+		connectionType: AINodeConnectionType,
+		data: INodeExecutionData[][],
+		runIndex?: number,
+	): { index: number } {
+		const nodeName = this.node.name;
+		const currentNodeRunIndex = this.getNextRunIndex();
+
+		this.addExecutionDataFunctions(
+			'input',
+			data,
+			connectionType,
+			nodeName,
+			currentNodeRunIndex,
+			undefined,
+			runIndex,
+		).catch((error) => {
+			this.logger.warn(
+				`There was a problem logging input data of node "${nodeName}": ${
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+					error.message
+				}`,
+			);
+		});
+
+		return { index: currentNodeRunIndex };
+	}
+
+	/** @deprecated Switch to WorkflowExecute to store output on runExecutionData.resultData.runData */
+	addOutputData(
+		connectionType: AINodeConnectionType,
+		currentNodeRunIndex: number,
+		data: INodeExecutionData[][] | ExecutionBaseError,
+		metadata?: ITaskMetadata,
+		sourceNodeRunIndex?: number,
+	): void {
+		const nodeName = this.node.name;
+		this.addExecutionDataFunctions(
+			'output',
+			data,
+			connectionType,
+			nodeName,
+			currentNodeRunIndex,
+			metadata,
+			sourceNodeRunIndex,
+		).catch((error) => {
+			this.logger.warn(
+				`There was a problem logging output data of node "${nodeName}": ${
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+					error.message
+				}`,
+			);
+		});
+	}
+
+	async addExecutionDataFunctions(
+		type: 'input' | 'output',
+		data: INodeExecutionData[][] | ExecutionBaseError,
+		connectionType: AINodeConnectionType,
+		/** Node whose run the `subRun` entry attaches to; `undefined` when there is none. */
+		sourceNodeName: string | undefined,
+		currentNodeRunIndex: number,
+		metadata?: ITaskMetadata,
+		sourceNodeRunIndex?: number,
+	): Promise<void> {
+		const {
+			additionalData,
+			runExecutionData,
+			runIndex: currentRunIndex,
+			node: { name: nodeName },
+		} = this;
+
+		let taskData: ITaskData | undefined;
+		const source: ISourceData[] = this.parentNode
+			? [
+					{
+						previousNode: this.parentNode.name,
+						previousNodeRun: sourceNodeRunIndex ?? currentRunIndex,
+					},
+				]
+			: [];
+
+		if (type === 'input') {
+			this.dynamicCredentialsFlagsAtInput.set(currentNodeRunIndex, {
+				used: additionalData.currentNodeUsedDynamicCredentials === true,
+				attempted: additionalData.currentNodeAttemptedDynamicCredentials === true,
+				credentialIds: this.reportedCredentialIds(),
+			});
+			taskData = {
+				startTime: Date.now(),
+				executionTime: 0,
+				executionIndex: additionalData.currentNodeExecutionIndex++,
+				executionStatus: 'running',
+				source,
+			};
+		} else {
+			// At the moment we expect that there is always an input sent before the output
+			taskData = get(
+				runExecutionData,
+				['resultData', 'runData', nodeName, currentNodeRunIndex],
+				undefined,
+			);
+			if (taskData === undefined) {
+				return;
+			}
+			taskData.metadata = metadata;
+			taskData.source = source;
+		}
+		taskData = taskData!;
+
+		if (data instanceof Error) {
+			// if running node was already marked as "canceled" because execution was aborted
+			// leave as "canceled" instead of showing "This operation was aborted" error
+			if (
+				!(type === 'output' && this.abortSignal?.aborted && taskData.executionStatus === 'canceled')
+			) {
+				taskData.executionStatus = 'error';
+				taskData.error = data;
+			}
+		} else {
+			if (type === 'output') {
+				taskData.executionStatus = 'success';
+			}
+			taskData.data = {
+				[connectionType]: data,
+			};
+		}
+
+		if (type === 'output') {
+			this.stampDynamicCredentialsUsage(taskData, currentNodeRunIndex);
+		}
+
+		if (type === 'input') {
+			if (!(data instanceof Error)) {
+				this.inputData[connectionType] = data;
+				// TODO: remove inputOverride
+				taskData.inputOverride = {
+					[connectionType]: data,
+				};
+			}
+
+			if (!runExecutionData.resultData.runData.hasOwnProperty(nodeName)) {
+				runExecutionData.resultData.runData[nodeName] = [];
+			}
+
+			runExecutionData.resultData.runData[nodeName][currentNodeRunIndex] = taskData;
+			await additionalData.hooks?.runHook('nodeExecuteBefore', [nodeName, taskData]);
+		} else {
+			// Outputs
+			taskData.executionTime = Date.now() - taskData.startTime;
+
+			// Add hints to task data if any were collected
+			if (this.hints.length > 0) {
+				taskData.hints = this.hints;
+			}
+
+			await additionalData.hooks?.runHook('nodeExecuteAfter', [
+				nodeName,
+				taskData,
+				this.runExecutionData,
+			]);
+
+			if (sourceNodeName === undefined) return;
+
+			this.stageSubRun(sourceNodeName, currentNodeRunIndex, currentNodeRunIndex);
+		}
+	}
+
+	/**
+	 * Notes this node's run `runIndex` as a sub-run of run `sourceNodeRunIndex` of
+	 * `sourceNodeName`. `WorkflowExecute.moveNodeMetadata` merges the note onto that run at
+	 * the end of the execution.
+	 */
+	stageSubRun(sourceNodeName: string, sourceNodeRunIndex: number, runIndex: number) {
+		const { runExecutionData } = this;
+
+		if (get(runExecutionData, 'executionData.metadata', undefined) === undefined) {
+			runExecutionData.executionData!.metadata = {};
+		}
+
+		let sourceTaskData = runExecutionData.executionData?.metadata?.[sourceNodeName];
+
+		if (!sourceTaskData) {
+			runExecutionData.executionData!.metadata[sourceNodeName] = [];
+			sourceTaskData = runExecutionData.executionData!.metadata[sourceNodeName];
+		}
+		if (!sourceTaskData[sourceNodeRunIndex]) {
+			sourceTaskData[sourceNodeRunIndex] = {
+				subRun: [],
+			};
+		}
+
+		sourceTaskData[sourceNodeRunIndex].subRun!.push({
+			node: this.node.name,
+			runIndex,
+		});
+	}
+
+	/**
+	 * Sub-node executions can run during a trigger's webhook phase (e.g. MCP Trigger tool
+	 * calls), where no engine loop stamps the per-node credential flags onto task data —
+	 * stamp them here so the persisted execution still gets redacted. Engine-phase nodes
+	 * are stamped by `WorkflowExecute` from the same `additionalData` flags. Only flags
+	 * raised since this run's 'input' write are stamped, so a sibling sub-node's earlier
+	 * resolution is not attributed to this task.
+	 */
+	private stampDynamicCredentialsUsage(taskData: ITaskData, currentNodeRunIndex: number) {
+		const { additionalData, runExecutionData } = this;
+		const atInput = this.dynamicCredentialsFlagsAtInput.get(currentNodeRunIndex) ?? {
+			used: false,
+			attempted: false,
+			credentialIds: [],
+		};
+		this.dynamicCredentialsFlagsAtInput.delete(currentNodeRunIndex);
+
+		// The credentials a sub-workflow called by this run reported, which credential
+		// usability redaction reads.
+		const usedCredentialIds = this.reportedCredentialIds().filter(
+			(id) => !atInput.credentialIds.includes(id),
+		);
+		if (usedCredentialIds.length > 0) {
+			taskData.usedCredentialIds = usedCredentialIds;
+		}
+
+		const used = additionalData.currentNodeUsedDynamicCredentials === true && !atInput.used;
+		if (used) {
+			taskData.usedDynamicCredentials = true;
+		}
+		if (additionalData.currentNodeAttemptedDynamicCredentials === true && !atInput.attempted) {
+			taskData.attemptedDynamicCredentials = true;
+		}
+		if (
+			used &&
+			additionalData.dynamicCredentialsResolvedUserId &&
+			runExecutionData.executionData?.runtimeData
+		) {
+			// Record the resolved user like the engine loop does, so the redaction layer can
+			// grant that user access to their own data (identity is execution-scoped).
+			runExecutionData.executionData.runtimeData.executedByUserId =
+				additionalData.dynamicCredentialsResolvedUserId;
+		}
+	}
+
+	/** A copy of the credential ids sub-workflows reported for the current node so far. */
+	private reportedCredentialIds(): string[] {
+		const ids = this.additionalData.currentNodeUsedCredentialIds;
+		return Array.isArray(ids) ? [...ids] : [];
+	}
+
+	logNodeOutput(...args: unknown[]): void {
+		if (this.mode === 'manual') {
+			const parsedLogArgs = args.map((arg) =>
+				typeof arg === 'string' ? jsonParse(arg, { fallbackValue: arg }) : arg,
+			);
+			this.sendMessageToUI(...parsedLogArgs);
+			return;
+		}
+
+		if (process.env.CODE_ENABLE_STDOUT === 'true') {
+			console.log(
+				`[Workflow "${this.getWorkflow().id}"][Node "${this.node.name}"]`,
+				...this.redactedConsoleArgs(args),
+			);
+		}
+	}
+
+	addExecutionHints(...hints: NodeExecutionHint[]) {
+		this.hints.push(...hints);
+	}
+}

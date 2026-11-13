@@ -5,12 +5,7 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-
-import {
-	msGraphSecurityApiRequest,
-	throwOnEmptyUpdate,
-	tolerateDoubleQuotes,
-} from './GenericFunctions';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import {
 	secureScoreControlProfileFields,
@@ -18,6 +13,11 @@ import {
 	secureScoreFields,
 	secureScoreOperations,
 } from './descriptions';
+import {
+	msGraphSecurityApiRequest,
+	throwOnEmptyUpdate,
+	tolerateDoubleQuotes,
+} from './GenericFunctions';
 
 export class MicrosoftGraphSecurity implements INodeType {
 	description: INodeTypeDescription = {
@@ -31,15 +31,49 @@ export class MicrosoftGraphSecurity implements INodeType {
 		defaults: {
 			name: 'Microsoft Graph Security',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'microsoftGraphSecurityOAuth2Api',
 				required: true,
+				displayOptions: {
+					show: {
+						authentication: ['microsoftGraphSecurityOAuth2Api'],
+					},
+				},
+			},
+			{
+				name: 'microsoftOAuth2Api',
+				required: true,
+				displayOptions: {
+					show: {
+						authentication: ['microsoftOAuth2Api'],
+					},
+				},
 			},
 		],
 		properties: [
+			{
+				displayName: 'Authentication',
+				name: 'authentication',
+				type: 'options',
+				noDataExpression: true,
+				options: [
+					{
+						name: 'Graph Security OAuth2',
+						value: 'microsoftGraphSecurityOAuth2Api',
+					},
+					{
+						name: 'Microsoft OAuth2 (Graph)',
+						value: 'microsoftOAuth2Api',
+						description:
+							'Generic Microsoft Graph credential. It must have the SecurityEvents.ReadWrite.All offline_access scope with Entra admin consent.',
+					},
+				],
+				default: 'microsoftGraphSecurityOAuth2Api',
+			},
 			{
 				displayName: 'Resource',
 				name: 'resource',
@@ -94,7 +128,7 @@ export class MicrosoftGraphSecurity implements INodeType {
 						responseData = await msGraphSecurityApiRequest.call(
 							this,
 							'GET',
-							`/secureScores/${secureScoreId}`,
+							requestPath`/secureScores/${secureScoreId}`,
 						);
 						delete responseData['@odata.context'];
 					} else if (operation === 'getAll') {
@@ -123,7 +157,7 @@ export class MicrosoftGraphSecurity implements INodeType {
 						}
 
 						responseData = (await msGraphSecurityApiRequest
-							.call(this, 'GET', '/secureScores', {}, qs)
+							.call(this, 'GET', requestPath`/secureScores`, {}, qs)
 							.then((response) => response.value)) as Array<{ controlScores: object[] }>;
 
 						if (!includeControlScores) {
@@ -146,7 +180,7 @@ export class MicrosoftGraphSecurity implements INodeType {
 							'secureScoreControlProfileId',
 							i,
 						);
-						const endpoint = `/secureScoreControlProfiles/${secureScoreControlProfileId}`;
+						const endpoint = requestPath`/secureScoreControlProfiles/${secureScoreControlProfileId}`;
 
 						responseData = await msGraphSecurityApiRequest.call(this, 'GET', endpoint);
 						delete responseData['@odata.context'];
@@ -173,7 +207,7 @@ export class MicrosoftGraphSecurity implements INodeType {
 						}
 
 						responseData = await msGraphSecurityApiRequest
-							.call(this, 'GET', '/secureScoreControlProfiles', {}, qs)
+							.call(this, 'GET', requestPath`/secureScoreControlProfiles`, {}, qs)
 							.then((response) => response.value);
 					} else if (operation === 'update') {
 						// ----------------------------------------
@@ -200,7 +234,7 @@ export class MicrosoftGraphSecurity implements INodeType {
 						}
 
 						const id = this.getNodeParameter('secureScoreControlProfileId', i);
-						const endpoint = `/secureScoreControlProfiles/${id}`;
+						const endpoint = requestPath`/secureScoreControlProfiles/${id}`;
 						const headers = { Prefer: 'return=representation' };
 
 						responseData = await msGraphSecurityApiRequest.call(

@@ -4,12 +4,14 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
-import { googleApiRequest } from '../../transport';
-import { driveRLC, folderRLC } from '../common.descriptions';
+import { updateDisplayOptions } from '@utils/utilities';
+
 import { DRIVE } from '../../helpers/interfaces';
 import { setParentFolder } from '../../helpers/utils';
-import { updateDisplayOptions } from '@utils/utilities';
+import { googleApiRequest } from '../../transport';
+import { driveRLC, folderRLC } from '../common.descriptions';
 
 const properties: INodeProperties[] = [
 	{
@@ -34,7 +36,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -102,7 +104,13 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		corpora: 'allDrives',
 	};
 
-	const response = await googleApiRequest.call(this, 'POST', '/drive/v3/files', body, qs);
+	const response = await googleApiRequest.call(
+		this,
+		'POST',
+		requestPath`/drive/v3/files`,
+		body,
+		qs,
+	);
 
 	const executionData = this.helpers.constructExecutionMetaData(
 		this.helpers.returnJsonArray(response as IDataObject[]),

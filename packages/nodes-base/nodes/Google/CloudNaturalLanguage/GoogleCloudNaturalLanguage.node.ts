@@ -1,13 +1,14 @@
-import type {
-	IExecuteFunctions,
-	INodeExecutionData,
-	INodeType,
-	INodeTypeDescription,
+import {
+	NodeConnectionTypes,
+	requestPath,
+	type IExecuteFunctions,
+	type INodeExecutionData,
+	type INodeType,
+	type INodeTypeDescription,
 } from 'n8n-workflow';
 
-import type { IData } from './Interface';
-
 import { googleApiRequest } from './GenericFunctions';
+import type { IData } from './Interface';
 
 export class GoogleCloudNaturalLanguage implements INodeType {
 	description: INodeTypeDescription = {
@@ -19,11 +20,13 @@ export class GoogleCloudNaturalLanguage implements INodeType {
 		version: 1,
 		description: 'Consume Google Cloud Natural Language API',
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
+		schemaPath: 'Google/CloudNaturalLanguage',
 		defaults: {
 			name: 'Google Cloud Natural Language',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'googleCloudNaturalLanguageOAuth2Api',
@@ -130,7 +133,7 @@ export class GoogleCloudNaturalLanguage implements INodeType {
 					},
 				},
 				default: {},
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				options: [
 					{
 						displayName: 'Document Type',
@@ -290,7 +293,7 @@ export class GoogleCloudNaturalLanguage implements INodeType {
 					const response = await googleApiRequest.call(
 						this,
 						'POST',
-						'/v1/documents:analyzeSentiment',
+						requestPath`/v1/documents:analyzeSentiment`,
 						body,
 					);
 					responseData.push(response);

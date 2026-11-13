@@ -1,33 +1,55 @@
-import { readFileSync } from 'fs';
-import { resolve, join, dirname } from 'path';
+import { setN8nVersion } from '@n8n/backend-common';
+import { MISSING_SCOPE_ERROR_MESSAGE, Time } from '@n8n/constants';
+import { readFileSync, statSync } from 'fs';
 import type { n8n } from 'n8n-core';
-import { jsonParse } from 'n8n-workflow';
+import type { ITaskDataConnections } from 'n8n-workflow';
+import {
+	ERROR_TRIGGER_NODE_TYPE,
+	EXECUTE_WORKFLOW_TRIGGER_NODE_TYPE,
+	jsonParse,
+	TRIMMED_TASK_DATA_CONNECTIONS_KEY,
+} from 'n8n-workflow';
+import { resolve, join, dirname } from 'path';
 
-const { NODE_ENV, E2E_TESTS } = process.env;
-export const inProduction = NODE_ENV === 'production';
-export const inDevelopment = !NODE_ENV || NODE_ENV === 'development';
-export const inTest = NODE_ENV === 'test';
+const { E2E_TESTS } = process.env;
 export const inE2ETests = E2E_TESTS === 'true';
 
 export const CUSTOM_API_CALL_NAME = 'Custom API Call';
 export const CUSTOM_API_CALL_KEY = '__CUSTOM_API_CALL__';
 
 export const CLI_DIR = resolve(__dirname, '..');
+export const AI_ASSISTANT_SDK_DIR = dirname(dirname(require.resolve('@n8n_io/ai-assistant-sdk')));
 export const TEMPLATES_DIR = join(CLI_DIR, 'templates');
 export const NODES_BASE_DIR = dirname(require.resolve('n8n-nodes-base'));
 export const EDITOR_UI_DIST_DIR = join(dirname(require.resolve('n8n-editor-ui')), 'dist');
 
-export function getN8nPackageJson() {
-	return jsonParse<n8n.PackageJson>(readFileSync(join(CLI_DIR, 'package.json'), 'utf8'));
-}
+const packageJsonPath = join(CLI_DIR, 'package.json');
+const aiAssistantPackageJsonPath = join(AI_ASSISTANT_SDK_DIR, 'package.json');
+const workflowSdkPackageJsonPath = require.resolve('@n8n/workflow-sdk/package.json');
+const n8nPackageJson = jsonParse<n8n.PackageJson>(readFileSync(packageJsonPath, 'utf8'));
+const aiAssistantPackageJson = jsonParse<n8n.PackageJson>(
+	readFileSync(aiAssistantPackageJsonPath, 'utf8'),
+);
+const workflowSdkPackageJson = jsonParse<n8n.PackageJson>(
+	readFileSync(workflowSdkPackageJsonPath, 'utf8'),
+);
+export const N8N_VERSION = n8nPackageJson.version;
+setN8nVersion(N8N_VERSION);
+export const AI_ASSISTANT_SDK_VERSION = aiAssistantPackageJson.version;
+export const WORKFLOW_SDK_VERSION = workflowSdkPackageJson.version;
+export const N8N_RELEASE_DATE = statSync(packageJsonPath).mtime;
 
 export const STARTING_NODES = [
 	'@n8n/n8n-nodes-langchain.manualChatTrigger',
-	'n8n-nodes-base.start',
 	'n8n-nodes-base.manualTrigger',
 ];
 
-export const N8N_VERSION = getN8nPackageJson().version;
+export const TRIGGER_COUNT_EXCLUDED_NODES = [
+	EXECUTE_WORKFLOW_TRIGGER_NODE_TYPE,
+	ERROR_TRIGGER_NODE_TYPE,
+];
+
+export const MCP_TRIGGER_NODE_TYPE = '@n8n/n8n-nodes-langchain.mcpTrigger';
 
 export const NODE_PACKAGE_PREFIX = 'n8n-nodes-';
 
@@ -48,9 +70,34 @@ export const RESPONSE_ERROR_MESSAGES = {
 	USERS_QUOTA_REACHED: 'Maximum number of users reached',
 	OAUTH2_CREDENTIAL_TEST_SUCCEEDED: 'Connection Successful!',
 	OAUTH2_CREDENTIAL_TEST_FAILED: 'This OAuth2 credential was not connected to an account.',
-};
+	MISSING_SCOPE: MISSING_SCOPE_ERROR_MESSAGE,
+} as const;
 
 export const AUTH_COOKIE_NAME = 'n8n-auth';
+export const OIDC_STATE_COOKIE_NAME = 'n8n-oidc-state';
+export const OIDC_NONCE_COOKIE_NAME = 'n8n-oidc-nonce';
+
+/**
+ * Cookies the Form nodes set on their own pages, duplicated here because the
+ * names are owned by `nodes-base/nodes/Form/utils/utils.ts`
+ * (`FORM_AUTH_COOKIE_PREFIX` / `FORM_OAUTH_COOKIE_NAME`) and this package must
+ * not reach into that package's internals. Keep both sides in step. The form
+ * auth cookie's full name appends the workflow or execution it was minted for
+ * (`<prefix>-wf-<id>` / `<prefix>-ex-<id>`), so concurrent forms don't
+ * overwrite each other's cookie.
+ */
+export const FORM_AUTH_COOKIE_PREFIX = 'n8n-form-auth';
+export const FORM_OAUTH_COOKIE_NAME = 'n8n-form-oauth';
+
+/**
+ * Cookies the Chat trigger's hosted page sets, duplicated here for the same reason
+ * as the form ones above — the names are owned by
+ * `@n8n/n8n-nodes-langchain/nodes/trigger/ChatTrigger/shell.ts`. Keep both sides in
+ * step. The `-refresh` one carries a 30-day refresh token, so it must never leak to
+ * an unrelated webhook.
+ */
+export const CHAT_OAUTH_COOKIE_NAME = 'n8n-chat-oauth';
+export const CHAT_OAUTH_REFRESH_COOKIE_NAME = 'n8n-chat-oauth-refresh';
 
 export const NPM_COMMAND_TOKENS = {
 	NPM_PACKAGE_NOT_FOUND_ERROR: '404 Not Found',
@@ -58,7 +105,7 @@ export const NPM_COMMAND_TOKENS = {
 	NPM_NO_VERSION_AVAILABLE: 'No valid versions available',
 	NPM_DISK_NO_SPACE: 'ENOSPC',
 	NPM_DISK_INSUFFICIENT_SPACE: 'insufficient space',
-};
+} as const;
 
 export const NPM_PACKAGE_STATUS_GOOD = 'OK';
 
@@ -67,78 +114,110 @@ export const UNKNOWN_FAILURE_REASON = 'Unknown failure reason';
 export const WORKFLOW_REACTIVATE_INITIAL_TIMEOUT = 1000; // 1 second
 export const WORKFLOW_REACTIVATE_MAX_TIMEOUT = 24 * 60 * 60 * 1000; // 1 day
 
+/** A reactivated trigger that stays up at least this long starts its retry backoff over. */
+export const WORKFLOW_REACTIVATE_STABLE_PERIOD = 60 * 1000; // 1 minute
+
+/** Max in-process attempts to activate a single trigger node before recording it as failed. */
+export const TRIGGER_ACTIVATION_MAX_ATTEMPTS = 5;
+
+/** Max in-process attempts to externally deregister a single webhook before abandoning it. */
+export const TRIGGER_TEARDOWN_MAX_ATTEMPTS = 3;
+
+/** Base delay between external webhook deregistration attempts; doubles per attempt. */
+export const TRIGGER_TEARDOWN_RETRY_INITIAL_DELAY_MS = 1000;
+
 export const SETTINGS_LICENSE_CERT_KEY = 'license.cert';
-
-export const LICENSE_FEATURES = {
-	SHARING: 'feat:sharing',
-	LDAP: 'feat:ldap',
-	SAML: 'feat:saml',
-	LOG_STREAMING: 'feat:logStreaming',
-	ADVANCED_EXECUTION_FILTERS: 'feat:advancedExecutionFilters',
-	VARIABLES: 'feat:variables',
-	SOURCE_CONTROL: 'feat:sourceControl',
-	API_DISABLED: 'feat:apiDisabled',
-	EXTERNAL_SECRETS: 'feat:externalSecrets',
-	SHOW_NON_PROD_BANNER: 'feat:showNonProdBanner',
-	WORKFLOW_HISTORY: 'feat:workflowHistory',
-	DEBUG_IN_EDITOR: 'feat:debugInEditor',
-	BINARY_DATA_S3: 'feat:binaryDataS3',
-	MULTIPLE_MAIN_INSTANCES: 'feat:multipleMainInstances',
-	WORKER_VIEW: 'feat:workerView',
-	ADVANCED_PERMISSIONS: 'feat:advancedPermissions',
-} as const;
-
-export const LICENSE_QUOTAS = {
-	TRIGGER_LIMIT: 'quota:activeWorkflows',
-	VARIABLES_LIMIT: 'quota:maxVariables',
-	USERS_LIMIT: 'quota:users',
-	WORKFLOW_HISTORY_PRUNE_LIMIT: 'quota:workflowHistoryPrune',
-} as const;
-export const UNLIMITED_LICENSE_QUOTA = -1;
-
-export const CREDENTIAL_BLANKING_VALUE = '__n8n_BLANK_VALUE_e5362baf-c777-4d57-a609-6eaf1f9e87f6';
 
 export const UM_FIX_INSTRUCTION =
 	'Please fix the database by running ./packages/cli/bin/n8n user-management:reset';
 
-/**
- * Units of time in milliseconds
- * @deprecated Please use constants.Time instead.
- */
-export const TIME = {
-	SECOND: 1000,
-	MINUTE: 60 * 1000,
-	HOUR: 60 * 60 * 1000,
-	DAY: 24 * 60 * 60 * 1000,
-} as const;
+/** The longest time that an editor page request waits for the settings to embed. */
+export const EMBEDDED_SETTINGS_TIMEOUT_MS = Time.seconds.toMilliseconds;
 
-/**
- * Convert time from any unit to any other unit
- *
- * Please amend conversions as necessary.
- * Eventually this will superseed `TIME` above
- */
-export const Time = {
-	seconds: {
-		toMilliseconds: 1000,
-	},
-	minutes: {
-		toMilliseconds: 60 * 1000,
-	},
-	hours: {
-		toMilliseconds: 60 * 60 * 1000,
-		toSeconds: 60 * 60,
-	},
-	days: {
-		toSeconds: 24 * 60 * 60,
-		toMilliseconds: 24 * 60 * 60 * 1000,
-	},
+export const TEST_WEBHOOK_TIMEOUT = 2 * Time.minutes.toMilliseconds;
+
+export const TEST_WEBHOOK_TIMEOUT_BUFFER = 30 * Time.seconds.toMilliseconds;
+
+/** Longest window a caller can request with `timeoutMs`. Also bounds the multi-main registrations hash TTL. */
+export const TEST_WEBHOOK_MAX_TIMEOUT = 10 * Time.minutes.toMilliseconds;
+
+export const GENERIC_OAUTH2_CREDENTIALS_WITH_EDITABLE_SCOPE = [
+	'oAuth2Api',
+	'googleOAuth2Api',
+	'microsoftOAuth2Api',
+	'atlassianOAuth2Api',
+	'highLevelOAuth2Api',
+	'mcpOAuth2Api',
+	'snowflakeOAuth2Api',
+	'facebookGraphApiOAuth2Api',
+	'facebookGraphAppOAuth2Api',
+	'stravaOAuth2Api',
+	'wordpressOAuth2Api',
+	'figmaOAuth2Api',
+	'gumroadOAuth2Api',
+	'googleCloudStorageOAuth2Api',
+	'googleCalendarOAuth2Api',
+	'googleSheetsOAuth2Api',
+	'googleBigQueryOAuth2Api',
+	'zendeskOAuth2Api',
+	'gmailOAuth2',
+	'gSuiteAdminOAuth2Api',
+	'googleAdsOAuth2Api',
+	'googleAnalyticsOAuth2',
+	'googleBooksOAuth2Api',
+	'googleBusinessProfileOAuth2Api',
+	'googleChatOAuth2Api',
+	'googleCloudNaturalLanguageOAuth2Api',
+	'googleContactsOAuth2Api',
+	'googleDocsOAuth2Api',
+	'googleDriveOAuth2Api',
+	'googleFirebaseCloudFirestoreOAuth2Api',
+	'googleFirebaseRealtimeDatabaseOAuth2Api',
+	'googlePerspectiveOAuth2Api',
+	'googleSheetsTriggerOAuth2Api',
+	'googleSlidesOAuth2Api',
+	'googleTasksOAuth2Api',
+	'googleTranslateOAuth2Api',
+	'youTubeOAuth2Api',
+	'typeformOAuth2Api',
+];
+
+export const ARTIFICIAL_TASK_DATA = {
+	main: [
+		[
+			{
+				json: { isArtificialRecoveredEventItem: true },
+				pairedItem: undefined,
+			},
+		],
+	],
 };
 
-export const MIN_PASSWORD_CHAR_LENGTH = 8;
+/**
+ * Connections for an item standing in for a manual execution data item too
+ * large to be sent live via pubsub. This signals to the client to direct the
+ * user to the execution history.
+ */
+export const TRIMMED_TASK_DATA_CONNECTIONS: ITaskDataConnections = {
+	main: [
+		[
+			{
+				json: { [TRIMMED_TASK_DATA_CONNECTIONS_KEY]: true },
+				pairedItem: undefined,
+			},
+		],
+	],
+};
 
-export const MAX_PASSWORD_CHAR_LENGTH = 64;
+export const WsStatusCodes = {
+	CloseNormal: 1000,
+	CloseGoingAway: 1001,
+	CloseProtocolError: 1002,
+	CloseUnsupportedData: 1003,
+	CloseAbnormal: 1006,
+	CloseInvalidData: 1007,
+} as const;
 
-export const TEST_WEBHOOK_TIMEOUT = 2 * TIME.MINUTE;
+export const FREE_AI_CREDITS_CREDENTIAL_NAME = 'n8n free OpenAI API credits';
 
-export const TEST_WEBHOOK_TIMEOUT_BUFFER = 30 * TIME.SECOND;
+export const STREAM_SEPARATOR = '⧉⇋⇋➽⌑⧉§§\n';

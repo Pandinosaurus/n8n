@@ -6,10 +6,11 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeApiError, requestPath } from 'n8n-workflow';
+
+import { eventFields, eventOperations } from './EventDescripion';
 import { validateJSON, veroApiRequest } from './GenericFunctions';
 import { userFields, userOperations } from './UserDescription';
-import { eventFields, eventOperations } from './EventDescripion';
 
 export class Vero implements INodeType {
 	description: INodeTypeDescription = {
@@ -23,8 +24,9 @@ export class Vero implements INodeType {
 		defaults: {
 			name: 'Vero',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'veroApi',
@@ -101,7 +103,12 @@ export class Vero implements INodeType {
 							}
 						}
 						try {
-							responseData = await veroApiRequest.call(this, 'POST', '/users/track', body);
+							responseData = await veroApiRequest.call(
+								this,
+								'POST',
+								requestPath`/users/track`,
+								body,
+							);
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
 						}
@@ -115,7 +122,12 @@ export class Vero implements INodeType {
 							new_id: newId,
 						};
 						try {
-							responseData = await veroApiRequest.call(this, 'PUT', '/users/reidentify', body);
+							responseData = await veroApiRequest.call(
+								this,
+								'PUT',
+								requestPath`/users/reidentify`,
+								body,
+							);
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
 						}
@@ -133,7 +145,12 @@ export class Vero implements INodeType {
 							id,
 						};
 						try {
-							responseData = await veroApiRequest.call(this, 'POST', `/users/${operation}`, body);
+							responseData = await veroApiRequest.call(
+								this,
+								'POST',
+								requestPath`/users/${operation}`,
+								body,
+							);
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
 						}
@@ -153,7 +170,12 @@ export class Vero implements INodeType {
 							body.remove = JSON.stringify(tags);
 						}
 						try {
-							responseData = await veroApiRequest.call(this, 'PUT', '/users/tags/edit', body);
+							responseData = await veroApiRequest.call(
+								this,
+								'PUT',
+								requestPath`/users/tags/edit`,
+								body,
+							);
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
 						}
@@ -210,7 +232,12 @@ export class Vero implements INodeType {
 							}
 						}
 						try {
-							responseData = await veroApiRequest.call(this, 'POST', '/events/track', body);
+							responseData = await veroApiRequest.call(
+								this,
+								'POST',
+								requestPath`/events/track`,
+								body,
+							);
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
 						}

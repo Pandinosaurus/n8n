@@ -1,0 +1,165 @@
+import { computed } from 'vue';
+import { defineStore } from 'pinia';
+import { saveAs } from 'file-saver';
+import type { IWorkflowDb } from '@/Interface';
+import type { WorkflowDataUpdate } from '@n8n/rest-api-client/api/workflows';
+import type {
+	WorkflowHistory,
+	WorkflowVersion,
+	WorkflowHistoryRequestParams,
+	WorkflowVersionId,
+	UpdateWorkflowHistoryVersion,
+	PublishTimelineEvent,
+} from '@n8n/rest-api-client/api/workflowHistory';
+import * as whApi from '@n8n/rest-api-client/api/workflowHistory';
+import { getFirstAdoptionDate } from '@n8n/rest-api-client/api/instance-version-history';
+import { useRootStore } from '@n8n/stores/useRootStore';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import { useWorkflowsStore } from '@/app/stores/workflows.store';
+import { useWorkflowsListStore } from '@/app/stores/workflowsList.store';
+import { getNewWorkflow } from '@/app/api/workflows';
+import { useEmptyCanvasGroupsFlag } from '@/features/workflows/canvas/composables/useEmptyCanvasGroupsFlag';
+import { removeEmptyCanvasGroupsFromWorkflowData } from '@/features/workflows/canvas/emptyGroup.utils';
+
+export const useWorkflowHistoryStore = defineStore('workflowHistory', () => {
+	const rootStore = useRootStore();
+	const settingsStore = useSettingsStore();
+	const workflowsStore = useWorkflowsStore();
+	const workflowsListStore = useWorkflowsListStore();
+	const emptyCanvasGroupsEnabled = useEmptyCanvasGroupsFlag();
+
+	const licensePruneTime = computed(() => settingsStore.settings.workflowHistory?.licensePruneTime);
+	// pruneTime is already evaluated by backend (getWorkflowHistoryPruneTime)
+	const evaluatedPruneTime = computed(() => settingsStore.settings.workflowHistory?.pruneTime);
+
+	// Show retention message with upgrade link when license is the limiting factor
+	// (Don't show if user explicitly configured a shorter retention via config)
+	const shouldUpgrade = computed(
+		() => licensePruneTime.value !== -1 && licensePruneTime.value === evaluatedPruneTime.value,
+	);
+
+	const getWorkflowHistory = async (
+		workflowId: string,
+		queryParams: WorkflowHistoryRequestParams,
+	): Promise<WorkflowHistory[]> =>
+		await whApi.getWorkflowHistory(rootStore.restApiContext, workflowId, queryParams);
+
+	const getWorkflowVersion = async (
+		workflowId: string,
+		versionId: string,
+	): Promise<WorkflowVersion> =>
+		await whApi.getWorkflowVersion(rootStore.restApiContext, workflowId, versionId);
+
+	const downloadVersion = async (
+		workflowId: string,
+		workflowVersionId: WorkflowVersionId,
+		data: { formattedCreatedAt: string },
+	) => {
+		const [workflow, workflowVersion] = await Promise.all([
+			workflowsListStore.fetchWorkflow(workflowId),
+			getWorkflowVersion(workflowId, workflowVersionId),
+		]);
+		const { connections, nodes, nodeGroups } = workflowVersion;
+		const workflowData: WorkflowDataUpdate = {
+			...workflow,
+			nodes,
+			connections,
+			nodeGroups: nodeGroups ?? [],
+		};
+		if (!emptyCanvasGroupsEnabled.value) {
+			removeEmptyCanvasGroupsFromWorkflowData(workflowData);
+		}
+		const blob = new Blob([JSON.stringify(workflowData, null, 2)], {
+			type: 'application/json;charset=utf-8',
+		});
+		saveAs(blob, `${workflow.name}(${data.formattedCreatedAt}).json`);
+	};
+
+	const cloneIntoNewWorkflow = async (
+		workflowId: string,
+		workflowVersionId: string,
+		data: { formattedCreatedAt: string },
+	): Promise<IWorkflowDb> => {
+		const [workflow, workflowVersion] = await Promise.all([
+			workflowsListStore.fetchWorkflow(workflowId),
+			getWorkflowVersion(workflowId, workflowVersionId),
+		]);
+		const { connections, nodes, nodeGroups } = workflowVersion;
+		const { name } = workflow;
+		const newWorkflow = await getNewWorkflow(rootStore.restApiContext, {
+			name: `${name} (${data.formattedCreatedAt})`,
+		});
+		const newWorkflowData: WorkflowDataUpdate = {
+			nodes,
+			connections,
+			nodeGroups: nodeGroups ?? [],
+			name: newWorkflow.name,
+		};
+		if (!emptyCanvasGroupsEnabled.value) {
+			removeEmptyCanvasGroupsFromWorkflowData(newWorkflowData);
+		}
+		return await workflowsStore.createNewWorkflow(newWorkflowData);
+	};
+
+	const restoreWorkflow = async (
+		workflowId: string,
+		workflowVersionId: string,
+	): Promise<IWorkflowDb> => {
+		const workflowVersion = await getWorkflowVersion(workflowId, workflowVersionId);
+		const { connections, nodes, nodeGroups } = workflowVersion;
+		const updateData: WorkflowDataUpdate = {
+			connections,
+			nodes,
+			nodeGroups: nodeGroups ?? [],
+			// Lets the server keep this version's nodes, including credentials the user cannot use.
+			restoredFromVersionId: workflowVersionId,
+		};
+
+		return await workflowsStore
+			.updateWorkflow(workflowId, updateData, true)
+			.catch(async (error) => {
+				if (
+					error.httpStatusCode === 400 &&
+					typeof error.message === 'string' &&
+					error.message.includes('can not be activated')
+				) {
+					return await workflowsListStore.fetchWorkflow(workflowId);
+				} else {
+					throw new Error(error);
+				}
+			});
+	};
+
+	const updateWorkflowHistoryVersion = async (
+		workflowId: string,
+		versionId: string,
+		data: UpdateWorkflowHistoryVersion,
+	): Promise<void> => {
+		await whApi.updateWorkflowHistoryVersion(rootStore.restApiContext, workflowId, versionId, data);
+	};
+
+	const getPublishTimeline = async (
+		workflowId: string,
+		queryParams: WorkflowHistoryRequestParams,
+	): Promise<PublishTimelineEvent[]> =>
+		await whApi.getPublishTimeline(rootStore.restApiContext, workflowId, queryParams);
+
+	const getVersionFirstAdoptionDate = async (version: {
+		major: number;
+		minor: number;
+		patch: number;
+	}): Promise<string | null> => await getFirstAdoptionDate(rootStore.restApiContext, version);
+
+	return {
+		getWorkflowHistory,
+		getWorkflowVersion,
+		downloadVersion,
+		cloneIntoNewWorkflow,
+		restoreWorkflow,
+		updateWorkflowHistoryVersion,
+		getPublishTimeline,
+		getVersionFirstAdoptionDate,
+		evaluatedPruneTime,
+		shouldUpgrade,
+	};
+});

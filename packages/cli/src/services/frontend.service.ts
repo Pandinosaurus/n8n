@@ -1,44 +1,134 @@
-import { Container, Service } from 'typedi';
-import uniq from 'lodash/uniq';
+import type { FrontendSettings, ITelemetrySettings, N8nEnvFeatFlags } from '@n8n/api-types';
+import { LicenseState, Logger, ModuleRegistry } from '@n8n/backend-common';
+import { GlobalConfig, SecurityConfig } from '@n8n/config';
+import { LICENSE_FEATURES, LICENSE_QUOTAS, Time } from '@n8n/constants';
+import { WorkflowRepository } from '@n8n/db';
+import { Container, Service } from '@n8n/di';
 import { createWriteStream } from 'fs';
 import { mkdir } from 'fs/promises';
+import uniq from 'lodash/uniq';
+import { BinaryDataConfig, InstanceSettings, type Types } from 'n8n-core';
+import type { ICredentialType, INodeTypeBaseDescription, INodeTypeDescription } from 'n8n-workflow';
 import path from 'path';
 
-import type {
-	ICredentialType,
-	IN8nUISettings,
-	INodeTypeBaseDescription,
-	ITelemetrySettings,
-} from 'n8n-workflow';
-import { InstanceSettings } from 'n8n-core';
+import { UrlService } from '@n8n/backend-services';
+
+import { AiUsageService } from './ai-usage.service';
+import { WorkflowReviewPolicyService } from './workflow-review-policy.service';
 
 import config from '@/config';
-import { LICENSE_FEATURES } from '@/constants';
-import { CredentialsOverwrites } from '@/CredentialsOverwrites';
-import { CredentialTypes } from '@/CredentialTypes';
-import { LoadNodesAndCredentials } from '@/LoadNodesAndCredentials';
-import { License } from '@/License';
-import { getCurrentAuthenticationMethod } from '@/sso/ssoHelpers';
-import { getLdapLoginLabel } from '@/Ldap/helpers';
-import { getSamlLoginLabel } from '@/sso/saml/samlHelpers';
-import { getVariablesLimit } from '@/environments/variables/environmentHelpers';
+import { inE2ETests, N8N_VERSION } from '@/constants';
+import { CredentialTypes } from '@/credential-types';
+import { CredentialsOverwrites } from '@/credentials-overwrites';
+import { resolveEvaluationConcurrencyLimit } from '@/evaluation.ee/evaluation-concurrency.helper';
+import { License } from '@/license';
+import { LoadNodesAndCredentials } from '@/load-nodes-and-credentials';
+import { MfaService } from '@/mfa/mfa.service';
+import { CommunityPackagesConfig } from '@/modules/community-packages/community-packages.config';
+import { InboxService } from '@/modules/inbox/inbox.service';
+import { isApiKeyAuthEnabled } from '@/public-api';
+import { PushConfig } from '@/push/push.config';
+import { OwnershipService } from '@/services/ownership.service';
+import { getSamlLoginLabel, getCurrentAuthenticationMethod } from '@/sso.ee/sso-helpers';
+import { UserManagementMailer } from '@/user-management/email';
+import { resolveFrontendHealthEndpointPath } from '@/utils/health-endpoint.util';
 import {
 	getWorkflowHistoryLicensePruneTime,
 	getWorkflowHistoryPruneTime,
-} from '@/workflows/workflowHistory/workflowHistoryHelper.ee';
-import { UserManagementMailer } from '@/UserManagement/email';
-import type { CommunityPackagesService } from '@/services/communityPackages.service';
-import { Logger } from '@/Logger';
-import { UrlService } from './url.service';
-import { InternalHooks } from '@/InternalHooks';
+} from '@/workflows/workflow-history/workflow-history-helper';
+
+const DYNAMIC_BANNER_FILTERS_CACHE_TTL = 30 * Time.seconds.toMilliseconds;
+
+/**
+ * IMPORTANT: Only add settings that are absolutely necessary for non-authenticated pages
+ */
+export type PublicFrontendSettings = {
+	/** Controls initialization flow in settings store */
+	settingsMode: FrontendSettings['settingsMode'];
+
+	/** Used to localize login page UI */
+	defaultLocale: FrontendSettings['defaultLocale'];
+
+	/** Used to bypass authentication on the workflows/demo page */
+	previewMode: FrontendSettings['previewMode'];
+
+	/** Lets the editor load its expression engine before the user signs in */
+	expressionEngine: FrontendSettings['expressionEngine'];
+
+	authCookie: {
+		/** Blocks insecure access incompatible with the authentication cookie. */
+		secure: FrontendSettings['authCookie']['secure'];
+	};
+
+	userManagement: {
+		/** Used to control login page UI behaviour and conditional SSO Login display */
+		authenticationMethod: FrontendSettings['userManagement']['authenticationMethod'];
+
+		/** Enables initial owner setup */
+		showSetupOnFirstLoad: FrontendSettings['userManagement']['showSetupOnFirstLoad'];
+
+		/** Determines forgot password page UX */
+		smtpSetup: FrontendSettings['userManagement']['smtpSetup'];
+
+		/** Configurable minimum password length for password requirement display */
+		passwordMinLength: FrontendSettings['userManagement']['passwordMinLength'];
+	};
+
+	enterprise: {
+		/** License check for SAML for SSO button visibility */
+		saml: FrontendSettings['enterprise']['saml'];
+
+		/** License check for OIDC for SSO button visibility */
+		oidc: FrontendSettings['enterprise']['oidc'];
+
+		/** License check for LDAP authentication */
+		ldap: FrontendSettings['enterprise']['ldap'];
+	};
+
+	sso: {
+		saml: {
+			/** Config flag for SSO button*/
+			loginEnabled: FrontendSettings['sso']['saml']['loginEnabled'];
+		};
+		ldap: {
+			/** Config flag for LDAP authentication */
+			loginEnabled: FrontendSettings['sso']['ldap']['loginEnabled'];
+
+			/** Customizes login form label (defaults to "Email") */
+			loginLabel: FrontendSettings['sso']['ldap']['loginLabel'];
+		};
+		oidc: {
+			/** Config flag for SSO button*/
+			loginEnabled: FrontendSettings['sso']['oidc']['loginEnabled'];
+
+			/** Required for OIDC authentication redirect URL */
+			loginUrl: FrontendSettings['sso']['oidc']['loginUrl'];
+		};
+	};
+	/** Used to fetch community nodes on preview instance */
+	communityNodesEnabled: FrontendSettings['communityNodesEnabled'];
+
+	/** Lets the editor know the active backend modules before its first request */
+	activeModules: FrontendSettings['activeModules'];
+
+	mfa?: {
+		enabled: boolean;
+		enforced: boolean;
+	};
+};
 
 @Service()
 export class FrontendService {
-	settings: IN8nUISettings;
+	private settings: FrontendSettings;
 
-	private communityPackagesService?: CommunityPackagesService;
+	private publishedWorkflowCountCache?: { value: number; expiresAt: number };
+
+	private publishedWorkflowCountRequest?: Promise<number>;
+
+	private writeQueue: Promise<void> = Promise.resolve();
 
 	constructor(
+		private readonly globalConfig: GlobalConfig,
 		private readonly logger: Logger,
 		private readonly loadNodesAndCredentials: LoadNodesAndCredentials,
 		private readonly credentialTypes: CredentialTypes,
@@ -47,92 +137,149 @@ export class FrontendService {
 		private readonly mailer: UserManagementMailer,
 		private readonly instanceSettings: InstanceSettings,
 		private readonly urlService: UrlService,
-		private readonly internalHooks: InternalHooks,
+		private readonly securityConfig: SecurityConfig,
+		private readonly pushConfig: PushConfig,
+		private readonly binaryDataConfig: BinaryDataConfig,
+		private readonly licenseState: LicenseState,
+		private readonly moduleRegistry: ModuleRegistry,
+		private readonly mfaService: MfaService,
+		private readonly ownershipService: OwnershipService,
+		private readonly aiUsageService: AiUsageService,
+		private readonly workflowRepository: WorkflowRepository,
+		private readonly workflowReviewPolicyService: WorkflowReviewPolicyService,
+		private readonly inboxService: InboxService,
 	) {
 		loadNodesAndCredentials.addPostProcessor(async () => await this.generateTypes());
+		credentialsOverwrites.registerReloadHandler(async () => await this.generateTypes());
 		void this.generateTypes();
-
-		this.initSettings();
-
-		if (config.getEnv('nodes.communityPackages.enabled')) {
-			// eslint-disable-next-line @typescript-eslint/naming-convention
-			void import('@/services/communityPackages.service').then(({ CommunityPackagesService }) => {
-				this.communityPackagesService = Container.get(CommunityPackagesService);
-			});
-		}
 	}
 
-	private initSettings() {
+	private collectEnvFeatureFlags(): N8nEnvFeatFlags {
+		const envFeatureFlags: N8nEnvFeatFlags = {};
+
+		for (const [key, value] of Object.entries(process.env)) {
+			if (key.startsWith('N8N_ENV_FEAT_') && value !== undefined) {
+				envFeatureFlags[key as keyof N8nEnvFeatFlags] = value;
+			}
+		}
+
+		return envFeatureFlags;
+	}
+
+	private async getShowSetupOnFirstLoad() {
+		const previewMode = process.env.N8N_PREVIEW_MODE === 'true';
+		const hasInstanceOwner = await this.ownershipService.hasInstanceOwner();
+		// In preview mode, skip the setup redirect to allow accessing demo routes
+		return previewMode ? false : !hasInstanceOwner;
+	}
+
+	private async initSettings() {
 		const instanceBaseUrl = this.urlService.getInstanceBaseUrl();
-		const restEndpoint = config.getEnv('endpoints.rest');
+		const restEndpoint = this.globalConfig.endpoints.rest;
 
 		const telemetrySettings: ITelemetrySettings = {
-			enabled: config.getEnv('diagnostics.enabled'),
+			enabled: this.globalConfig.diagnostics.enabled,
 		};
 
 		if (telemetrySettings.enabled) {
-			const conf = config.getEnv('diagnostics.config.frontend');
+			const conf = this.globalConfig.diagnostics.frontendConfig;
 			const [key, url] = conf.split(';');
+			const proxy = `${instanceBaseUrl}/${restEndpoint}/telemetry/proxy`;
+			const sourceConfig = `${instanceBaseUrl}/${restEndpoint}/telemetry/rudderstack`;
 
 			if (!key || !url) {
 				this.logger.warn('Diagnostics frontend config is invalid');
 				telemetrySettings.enabled = false;
 			}
 
-			telemetrySettings.config = { key, url };
+			telemetrySettings.config = { key, url, proxy, sourceConfig };
 		}
 
+		const previewMode = process.env.N8N_PREVIEW_MODE === 'true';
+
 		this.settings = {
-			previewMode: process.env.N8N_PREVIEW_MODE === 'true',
-			endpointForm: config.getEnv('endpoints.form'),
-			endpointFormTest: config.getEnv('endpoints.formTest'),
-			endpointFormWaiting: config.getEnv('endpoints.formWaiting'),
-			endpointWebhook: config.getEnv('endpoints.webhook'),
-			endpointWebhookTest: config.getEnv('endpoints.webhookTest'),
-			saveDataErrorExecution: config.getEnv('executions.saveDataOnError'),
-			saveDataSuccessExecution: config.getEnv('executions.saveDataOnSuccess'),
-			saveManualExecutions: config.getEnv('executions.saveDataManualExecutions'),
-			executionTimeout: config.getEnv('executions.timeout'),
-			maxExecutionTimeout: config.getEnv('executions.maxTimeout'),
-			workflowCallerPolicyDefaultOption: config.getEnv('workflows.callerPolicyDefaultOption'),
-			timezone: config.getEnv('generic.timezone'),
+			settingsMode: 'authenticated',
+			inE2ETests,
+			isDocker: this.instanceSettings.isDocker,
+			databaseType: this.globalConfig.database.type,
+			previewMode,
+			endpointForm: this.globalConfig.endpoints.form,
+			endpointFormTest: this.globalConfig.endpoints.formTest,
+			endpointFormWaiting: this.globalConfig.endpoints.formWaiting,
+			endpointMcp: this.globalConfig.endpoints.mcp,
+			endpointMcpTest: this.globalConfig.endpoints.mcpTest,
+			endpointWebhook: this.globalConfig.endpoints.webhook,
+			endpointWebhookTest: this.globalConfig.endpoints.webhookTest,
+			endpointWebhookWaiting: this.globalConfig.endpoints.webhookWaiting,
+			endpointHealth: resolveFrontendHealthEndpointPath(this.globalConfig),
+			healthCheckTimeoutMs: this.globalConfig.endpoints.frontendHealthCheckTimeoutMs,
+			saveDataErrorExecution: this.globalConfig.executions.saveDataOnError,
+			saveDataSuccessExecution: this.globalConfig.executions.saveDataOnSuccess,
+			saveManualExecutions: this.globalConfig.executions.saveDataManualExecutions,
+			saveExecutionProgress: this.globalConfig.executions.saveExecutionProgress,
+			executionTimeout: this.globalConfig.executions.timeout,
+			maxExecutionTimeout: this.globalConfig.executions.maxTimeout,
+			workflowCallerPolicyDefaultOption: this.globalConfig.workflows.callerPolicyDefaultOption,
+			excludeNodes: this.globalConfig.nodes.exclude,
+			timezone: this.globalConfig.generic.timezone,
 			urlBaseWebhook: this.urlService.getWebhookBaseUrl(),
 			urlBaseEditor: instanceBaseUrl,
-			binaryDataMode: config.getEnv('binaryDataManager.mode'),
-			versionCli: '',
+			urlBaseWebhookTest: this.urlService.getTestWebhookBaseUrl(),
+			binaryDataMode: this.binaryDataConfig.mode,
+			nodeJsVersion: process.version.replace(/^v/, ''),
+			nodeEnv: process.env.NODE_ENV,
+			versionCli: N8N_VERSION,
+			concurrency: this.globalConfig.executions.concurrency.productionLimit,
+			evaluationConcurrencyLimit: resolveEvaluationConcurrencyLimit(
+				this.globalConfig.executions,
+				this.license,
+			),
 			authCookie: {
-				secure: config.getEnv('secure_cookie'),
+				secure: this.globalConfig.auth.cookie.secure,
 			},
-			releaseChannel: config.getEnv('generic.releaseChannel'),
+			releaseChannel: this.globalConfig.generic.releaseChannel,
 			oauthCallbackUrls: {
 				oauth1: `${instanceBaseUrl}/${restEndpoint}/oauth1-credential/callback`,
 				oauth2: `${instanceBaseUrl}/${restEndpoint}/oauth2-credential/callback`,
 			},
+			jwksUri: `${instanceBaseUrl}/${restEndpoint}/.well-known/jwks.json`,
 			versionNotifications: {
-				enabled: config.getEnv('versionNotifications.enabled'),
-				endpoint: config.getEnv('versionNotifications.endpoint'),
-				infoUrl: config.getEnv('versionNotifications.infoUrl'),
+				enabled: this.globalConfig.versionNotifications.enabled,
+				endpoint: this.globalConfig.versionNotifications.endpoint,
+				whatsNewEnabled: this.globalConfig.versionNotifications.whatsNewEnabled,
+				whatsNewEndpoint: this.globalConfig.versionNotifications.whatsNewEndpoint,
+				infoUrl: this.globalConfig.versionNotifications.infoUrl,
+			},
+			dynamicBanners: {
+				endpoint: this.globalConfig.dynamicBanners.endpoint,
+				enabled: this.globalConfig.dynamicBanners.enabled && this.globalConfig.diagnostics.enabled,
+				filters: {
+					publishedWorkflowCount: 0,
+				},
 			},
 			instanceId: this.instanceSettings.instanceId,
 			telemetry: telemetrySettings,
 			posthog: {
-				enabled: config.getEnv('diagnostics.enabled'),
-				apiHost: config.getEnv('diagnostics.config.posthog.apiHost'),
-				apiKey: config.getEnv('diagnostics.config.posthog.apiKey'),
-				autocapture: false,
-				disableSessionRecording: config.getEnv('deployment.type') !== 'cloud',
-				debug: config.getEnv('logs.level') === 'debug',
+				enabled: this.globalConfig.diagnostics.enabled,
+				apiHost: this.globalConfig.diagnostics.posthogConfig.apiHost,
+				apiKey: this.globalConfig.diagnostics.posthogConfig.apiKey,
+				disableSessionRecording: this.globalConfig.deployment.type !== 'cloud',
+				proxy: `${instanceBaseUrl}/${restEndpoint}/ph`,
+				debug: this.globalConfig.logging.level === 'debug',
 			},
 			personalizationSurveyEnabled:
-				config.getEnv('personalization.enabled') && config.getEnv('diagnostics.enabled'),
-			defaultLocale: config.getEnv('defaultLocale'),
+				this.globalConfig.personalization.enabled && this.globalConfig.diagnostics.enabled,
+			defaultLocale: this.globalConfig.defaultLocale,
 			userManagement: {
+				// oxlint-disable-next-line typescript/no-deprecated
 				quota: this.license.getUsersLimit(),
-				showSetupOnFirstLoad: !config.getEnv('userManagement.isInstanceOwnerSetUp'),
+				showSetupOnFirstLoad: await this.getShowSetupOnFirstLoad(),
 				smtpSetup: this.mailer.isEmailSetUp,
 				authenticationMethod: getCurrentAuthenticationMethod(),
+				passwordMinLength: this.globalConfig.userManagement.password.minLength,
 			},
 			sso: {
+				managedByEnv: this.globalConfig.instanceSettingsLoader.ssoManagedByEnv,
 				saml: {
 					loginEnabled: false,
 					loginLabel: '',
@@ -141,30 +288,56 @@ export class FrontendService {
 					loginEnabled: false,
 					loginLabel: '',
 				},
-			},
-			publicApi: {
-				enabled: !config.get('publicApi.disabled') && !this.license.isAPIDisabled(),
-				latestVersion: 1,
-				path: config.getEnv('publicApi.path'),
-				swaggerUi: {
-					enabled: !config.getEnv('publicApi.swaggerUi.disabled'),
+				oidc: {
+					loginEnabled: false,
+					loginUrl: `${instanceBaseUrl}/${restEndpoint}/sso/oidc/login`,
+					callbackUrl: `${instanceBaseUrl}/${restEndpoint}/sso/oidc/callback`,
 				},
 			},
-			workflowTagsDisabled: config.getEnv('workflowTagsDisabled'),
-			logLevel: config.getEnv('logs.level'),
-			hiringBannerEnabled: config.getEnv('hiringBanner.enabled'),
+			logStreaming: {
+				managedByEnv: this.globalConfig.instanceSettingsLoader.logStreamingManagedByEnv,
+			},
+			dataTables: {
+				maxSize: this.globalConfig.dataTable.maxSize,
+			},
+			publicApi: {
+				enabled: isApiKeyAuthEnabled(),
+				latestVersion: 1,
+				path: this.globalConfig.publicApi.path,
+				swaggerUi: {
+					enabled: !this.globalConfig.publicApi.swaggerUiDisabled,
+				},
+			},
+			workflowTagsDisabled: this.globalConfig.tags.disabled,
+			workflowsAutosaveDisabled: this.globalConfig.workflows.autosaveDisabled,
+			workflowsGroupsWithTriggersEnabled: this.globalConfig.workflows.groupsWithTriggersEnabled,
+			workflowsGroupsWithManyBoundariesEnabled:
+				this.globalConfig.workflows.groupsWithManyBoundariesEnabled,
+			useWorkflowPublicationService: this.globalConfig.workflows.useWorkflowPublicationService,
+			logLevel: this.globalConfig.logging.level,
+			hiringBannerEnabled: this.globalConfig.hiringBanner.enabled,
+			aiAssistant: {
+				enabled: false,
+				setup: false,
+				cloudUbbEnabled: false,
+			},
 			templates: {
-				enabled: config.getEnv('templates.enabled'),
-				host: config.getEnv('templates.host'),
+				enabled: this.globalConfig.templates.enabled,
+				host: this.globalConfig.templates.host,
 			},
-			onboardingCallPromptEnabled: config.getEnv('onboardingCallPrompt.enabled'),
-			executionMode: config.getEnv('executions.mode'),
-			pushBackend: config.getEnv('push.backend'),
-			communityNodesEnabled: config.getEnv('nodes.communityPackages.enabled'),
+			executionMode: this.globalConfig.executions.mode,
+			isMultiMain: this.instanceSettings.isMultiMain,
+			pushBackend: this.pushConfig.backend,
+
+			// @TODO: Move to community-packages module
+			communityNodesEnabled: Container.get(CommunityPackagesConfig).enabled,
+			unverifiedCommunityNodesEnabled: Container.get(CommunityPackagesConfig).unverifiedEnabled,
+			communityNodesManagedByEnv:
+				this.globalConfig.instanceSettingsLoader.communityPackagesManagedByEnv,
+
 			deployment: {
-				type: config.getEnv('deployment.type'),
+				type: this.globalConfig.deployment.type,
 			},
-			isNpmAvailable: false,
 			allowedModules: {
 				builtIn: process.env.NODE_FUNCTION_ALLOW_BUILTIN?.split(',') ?? undefined,
 				external: process.env.NODE_FUNCTION_ALLOW_EXTERNAL?.split(',') ?? undefined,
@@ -173,6 +346,8 @@ export class FrontendService {
 				sharing: false,
 				ldap: false,
 				saml: false,
+				oidc: false,
+				mfaEnforcement: false,
 				logStreaming: false,
 				advancedExecutionFilters: false,
 				variables: false,
@@ -182,70 +357,155 @@ export class FrontendService {
 				showNonProdBanner: false,
 				debugInEditor: false,
 				binaryDataS3: false,
-				workflowHistory: false,
 				workerView: false,
 				advancedPermissions: false,
+
+				workflowDiffs: false,
+				namedVersions: false,
+				provisioning: false,
+				projects: {
+					team: {
+						limit: 0,
+					},
+				},
+				customRoles: false,
+				personalSpacePolicy: false,
+				dataRedaction: false,
+				otelCustomSpanAttributes: false,
+				workflowReviews: false,
 			},
 			mfa: {
 				enabled: false,
+				enforced: false,
 			},
-			hideUsagePage: config.getEnv('hideUsagePage'),
+			hideUsagePage: this.globalConfig.hideUsagePage,
 			license: {
-				environment: config.getEnv('license.tenantId') === 1 ? 'production' : 'staging',
+				consumerId: 'unknown',
+				environment: this.globalConfig.license.tenantId === 1 ? 'production' : 'staging',
 			},
 			variables: {
 				limit: 0,
 			},
-			expressions: {
-				evaluator: config.getEnv('expression.evaluator'),
-			},
 			banners: {
 				dismissed: [],
 			},
+			askAi: {
+				enabled: false,
+			},
+			aiBuilder: {
+				enabled: false,
+				setup: false,
+			},
+			aiCredits: {
+				enabled: false,
+				credits: 0,
+				setup: false,
+			},
 			ai: {
-				enabled: config.getEnv('ai.enabled'),
-				provider: config.getEnv('ai.provider'),
-				errorDebugging: !!config.getEnv('ai.openAIApiKey'),
+				allowSendingParameterValues: true,
 			},
 			workflowHistory: {
-				pruneTime: -1,
-				licensePruneTime: -1,
+				pruneTime: getWorkflowHistoryPruneTime(),
+				licensePruneTime: getWorkflowHistoryLicensePruneTime(),
 			},
+			pruning: {
+				isEnabled: this.globalConfig.executions.pruneData,
+				maxAge: this.globalConfig.executions.pruneDataMaxAge,
+				maxCount: this.globalConfig.executions.pruneDataMaxCount,
+			},
+			security: {
+				blockFileAccessToN8nFiles: this.securityConfig.blockFileAccessToN8nFiles,
+				postMessageAllowedOrigins: this.securityConfig.postMessageAllowedOrigins
+					.split(',')
+					.map((origin) => origin.trim())
+					.filter((origin) => origin !== '')
+					// Normalize to a serialized origin (lowercase scheme/host, no trailing
+					// slash or default port) so config values match `MessageEvent.origin`.
+					// URLs with an opaque origin serialize to 'null', which would match any
+					// opaque-origin sender — keep the raw value for those instead.
+					.map((origin) => {
+						try {
+							const normalized = new URL(origin).origin;
+							return normalized === 'null' ? origin : normalized;
+						} catch {
+							return origin;
+						}
+					}),
+			},
+			chatTrigger: {
+				disablePublicChat: this.globalConfig.chatTrigger.disablePublicChat,
+			},
+			easyAIWorkflowOnboarded: false,
+			folders: {
+				enabled: false,
+			},
+			workerPools: {
+				enabled: false,
+			},
+			evaluation: {
+				quota: this.licenseState.getMaxWorkflowsWithEvaluations(),
+				collectionsEnabled: this.globalConfig.evaluation.collectionsEnabled,
+				configEvalsEnabled: this.globalConfig.evaluation.configEvalsEnabled,
+				agentEvalsEnabled: this.globalConfig.evaluation.agentEvalsEnabled,
+				forceAgentWorthTesting: this.globalConfig.evaluation.forceAgentWorthTesting,
+			},
+			activeModules: this.moduleRegistry.getActiveModules(),
+			canvasOnly: this.globalConfig.canvasOnly.enabled,
+			collaboration: {
+				crdt: this.globalConfig.collaboration.crdt,
+			},
+			envFeatureFlags: this.collectEnvFeatureFlags(),
+			expressionEngine: this.globalConfig.expressionEngine.frontendEngine,
 		};
 	}
 
 	async generateTypes() {
 		this.overwriteCredentialsProperties();
 
+		const types = await this.loadNodesAndCredentials.collectTypes();
+		await this.enqueueWrite(types);
+	}
+
+	private async enqueueWrite(types: Types) {
+		const write = this.writeQueue.then(async () => await this.writeTypesFiles(types));
+		this.writeQueue = write.catch(() => {});
+		await write;
+	}
+
+	private async writeTypesFiles({ credentials, nodes }: Types) {
 		const { staticCacheDir } = this.instanceSettings;
 		// pre-render all the node and credential types as static json files
 		await mkdir(path.join(staticCacheDir, 'types'), { recursive: true });
-		const { credentials, nodes } = this.loadNodesAndCredentials.types;
-		this.writeStaticJSON('nodes', nodes);
-		this.writeStaticJSON('credentials', credentials);
+		await this.writeStaticJSON('nodes', nodes);
+		const nodeVersionIdentifiers = this.getNodeVersionIdentifiers(nodes);
+		await this.writeStaticJSON('node-versions', nodeVersionIdentifiers);
+		await this.writeStaticJSON('credentials', credentials);
 	}
 
-	getSettings(pushRef?: string): IN8nUISettings {
-		void this.internalHooks.onFrontendSettingsAPI(pushRef);
+	async getSettings(): Promise<FrontendSettings> {
+		if (!this.settings) {
+			await this.initSettings();
+		}
+		const restEndpoint = this.globalConfig.endpoints.rest;
 
-		const restEndpoint = config.getEnv('endpoints.rest');
-
-		// Update all urls, in case `WEBHOOK_URL` was updated by `--tunnel`
 		const instanceBaseUrl = this.urlService.getInstanceBaseUrl();
 		this.settings.urlBaseWebhook = this.urlService.getWebhookBaseUrl();
 		this.settings.urlBaseEditor = instanceBaseUrl;
+		this.settings.urlBaseWebhookTest = this.urlService.getTestWebhookBaseUrl();
 		this.settings.oauthCallbackUrls = {
 			oauth1: `${instanceBaseUrl}/${restEndpoint}/oauth1-credential/callback`,
 			oauth2: `${instanceBaseUrl}/${restEndpoint}/oauth2-credential/callback`,
 		};
+		this.settings.jwksUri = `${instanceBaseUrl}/${restEndpoint}/.well-known/jwks.json`;
+		this.settings.dynamicBanners.filters.publishedWorkflowCount =
+			await this.getPublishedWorkflowCountForDynamicBanners();
 
 		// refresh user management status
 		Object.assign(this.settings.userManagement, {
+			// oxlint-disable-next-line typescript/no-deprecated
 			quota: this.license.getUsersLimit(),
 			authenticationMethod: getCurrentAuthenticationMethod(),
-			showSetupOnFirstLoad:
-				!config.getEnv('userManagement.isInstanceOwnerSetUp') &&
-				!config.getEnv('deployment.type').startsWith('desktop_'),
+			showSetupOnFirstLoad: await this.getShowSetupOnFirstLoad(),
 		});
 
 		let dismissedBanners: string[] = [];
@@ -257,90 +517,314 @@ export class FrontendService {
 		}
 
 		this.settings.banners.dismissed = dismissedBanners;
+		try {
+			this.settings.easyAIWorkflowOnboarded = config.getEnv('easyAIWorkflowOnboarded') ?? false;
+		} catch {
+			this.settings.easyAIWorkflowOnboarded = false;
+		}
+		try {
+			this.settings.ai.allowSendingParameterValues =
+				await this.aiUsageService.isParameterValueSharingAllowed();
+		} catch {
+			this.settings.ai.allowSendingParameterValues =
+				this.globalConfig.ai.allowSendingParameterValues;
+		}
 
-		const isS3Selected = config.getEnv('binaryDataManager.mode') === 's3';
-		const isS3Available = config.getEnv('binaryDataManager.availableModes').includes('s3');
+		const isS3Selected = this.binaryDataConfig.mode === 's3';
+		const isS3Available = this.binaryDataConfig.availableModes.includes('s3');
+		// oxlint-disable-next-line typescript/no-deprecated
 		const isS3Licensed = this.license.isBinaryDataS3Licensed();
+		// oxlint-disable-next-line typescript/no-deprecated
+		const isAiAssistantEnabled = this.license.isAiAssistantEnabled();
+		// oxlint-disable-next-line typescript/no-deprecated
+		const isAskAiEnabled = this.license.isAskAiEnabled();
+		// oxlint-disable-next-line typescript/no-deprecated
+		const isAiCreditsEnabled = this.license.isAiCreditsEnabled();
+		const isAiBuilderEnabled = this.license.isLicensed(LICENSE_FEATURES.AI_BUILDER);
+
+		this.settings.license.planName = this.license.getPlanName();
+		this.settings.license.consumerId = this.license.getConsumerId();
+
+		// Re-resolve on every settings fetch so a license upgrade/downgrade
+		// (and the tier-default it implies) propagates to the FE without an
+		// instance restart. The env override still wins inside the resolver.
+		this.settings.evaluationConcurrencyLimit = resolveEvaluationConcurrencyLimit(
+			this.globalConfig.executions,
+			this.license,
+		);
 
 		// refresh enterprise status
 		Object.assign(this.settings.enterprise, {
+			// oxlint-disable-next-line typescript/no-deprecated
 			sharing: this.license.isSharingEnabled(),
+			// oxlint-disable-next-line typescript/no-deprecated
 			logStreaming: this.license.isLogStreamingEnabled(),
+			// oxlint-disable-next-line typescript/no-deprecated
 			ldap: this.license.isLdapEnabled(),
+			// oxlint-disable-next-line typescript/no-deprecated
 			saml: this.license.isSamlEnabled(),
+			oidc: this.licenseState.isOidcLicensed(),
+			mfaEnforcement: this.licenseState.isMFAEnforcementLicensed(),
+			provisioning: false, // temporarily disabled until this feature is ready for release
+			// oxlint-disable-next-line typescript/no-deprecated
 			advancedExecutionFilters: this.license.isAdvancedExecutionFiltersEnabled(),
+			// oxlint-disable-next-line typescript/no-deprecated
 			variables: this.license.isVariablesEnabled(),
+			// oxlint-disable-next-line typescript/no-deprecated
 			sourceControl: this.license.isSourceControlLicensed(),
+			// oxlint-disable-next-line typescript/no-deprecated
 			externalSecrets: this.license.isExternalSecretsEnabled(),
-			showNonProdBanner: this.license.isFeatureEnabled(LICENSE_FEATURES.SHOW_NON_PROD_BANNER),
+			showNonProdBanner: this.license.isLicensed(LICENSE_FEATURES.SHOW_NON_PROD_BANNER),
+			// oxlint-disable-next-line typescript/no-deprecated
 			debugInEditor: this.license.isDebugInEditorLicensed(),
 			binaryDataS3: isS3Available && isS3Selected && isS3Licensed,
-			workflowHistory:
-				this.license.isWorkflowHistoryLicensed() && config.getEnv('workflowHistory.enabled'),
+			// oxlint-disable-next-line typescript/no-deprecated
 			workerView: this.license.isWorkerViewLicensed(),
+			// oxlint-disable-next-line typescript/no-deprecated
 			advancedPermissions: this.license.isAdvancedPermissionsLicensed(),
+
+			workflowDiffs: this.licenseState.isWorkflowDiffsLicensed(),
+			namedVersions: this.license.isLicensed(LICENSE_FEATURES.NAMED_VERSIONS),
+			customRoles: this.licenseState.isCustomRolesLicensed(),
+			personalSpacePolicy: this.licenseState.isPersonalSpacePolicyLicensed(),
+			dataRedaction: this.licenseState.isDataRedactionLicensed(),
+			otelCustomSpanAttributes: this.licenseState.isOtelCustomSpanAttributesLicensed(),
+			workflowReviews: this.licenseState.isWorkflowReviewsLicensed(),
 		});
 
+		this.settings.workerPools.enabled =
+			this.globalConfig.queue.workerPool.enabled && this.licenseState.isWorkerPoolsLicensed();
+
+		// oxlint-disable-next-line typescript/no-deprecated
 		if (this.license.isLdapEnabled()) {
 			Object.assign(this.settings.sso.ldap, {
-				loginLabel: getLdapLoginLabel(),
-				loginEnabled: config.getEnv('sso.ldap.loginEnabled'),
+				loginLabel: this.globalConfig.sso.ldap.loginLabel,
+				loginEnabled: this.globalConfig.sso.ldap.loginEnabled,
 			});
 		}
 
+		// oxlint-disable-next-line typescript/no-deprecated
 		if (this.license.isSamlEnabled()) {
 			Object.assign(this.settings.sso.saml, {
 				loginLabel: getSamlLoginLabel(),
-				loginEnabled: config.getEnv('sso.saml.loginEnabled'),
+				loginEnabled: this.globalConfig.sso.saml.loginEnabled,
 			});
 		}
 
+		if (this.licenseState.isOidcLicensed()) {
+			Object.assign(this.settings.sso.oidc, {
+				loginEnabled: this.globalConfig.sso.oidc.loginEnabled,
+			});
+		}
+
+		// oxlint-disable-next-line typescript/no-deprecated
 		if (this.license.isVariablesEnabled()) {
-			this.settings.variables.limit = getVariablesLimit();
+			// oxlint-disable-next-line typescript/no-deprecated
+			this.settings.variables.limit = this.license.getVariablesLimit();
 		}
 
-		if (this.license.isWorkflowHistoryLicensed() && config.getEnv('workflowHistory.enabled')) {
-			Object.assign(this.settings.workflowHistory, {
-				pruneTime: getWorkflowHistoryPruneTime(),
-				licensePruneTime: getWorkflowHistoryLicensePruneTime(),
-			});
+		if (isAiAssistantEnabled) {
+			this.settings.aiAssistant.enabled = isAiAssistantEnabled;
+			this.settings.aiAssistant.setup =
+				!!this.globalConfig.aiAssistant.baseUrl || !!process.env.N8N_AI_ANTHROPIC_KEY;
+			this.settings.aiAssistant.cloudUbbEnabled =
+				this.licenseState.isAiAssistantCloudUbbEntitlementLicensed();
 		}
 
-		if (this.communityPackagesService) {
-			this.settings.missingPackages = this.communityPackagesService.hasMissingPackages;
+		if (isAskAiEnabled) {
+			// oxlint-disable-next-line typescript/no-deprecated
+			this.settings.askAi.enabled = isAskAiEnabled;
 		}
 
-		this.settings.mfa.enabled = config.get('mfa.enabled');
+		if (isAiCreditsEnabled) {
+			this.settings.aiCredits.enabled = isAiCreditsEnabled;
+			// oxlint-disable-next-line typescript/no-deprecated
+			this.settings.aiCredits.credits = this.license.getAiCredits();
+			this.settings.aiCredits.setup = !!this.globalConfig.aiAssistant.baseUrl;
+		}
 
-		this.settings.executionMode = config.getEnv('executions.mode');
+		const isAiGatewayEnabled =
+			this.globalConfig.aiGateway.enabled &&
+			this.licenseState.isAiGatewayLicensed() &&
+			!!this.globalConfig.aiAssistant.baseUrl;
+		if (isAiGatewayEnabled) {
+			this.settings.aiGateway = {
+				enabled: true,
+				budget: this.license.getValue(LICENSE_QUOTAS.AI_GATEWAY_BUDGET) ?? 0,
+				cloudUbbEnabled: this.licenseState.isAiGatewayCloudUbbLicensed(),
+			};
+		}
 
-		this.settings.binaryDataMode = config.getEnv('binaryDataManager.mode');
+		if (isAiBuilderEnabled) {
+			this.settings.aiBuilder.enabled = isAiBuilderEnabled;
+			this.settings.aiBuilder.setup =
+				!!this.globalConfig.aiAssistant.baseUrl || !!this.globalConfig.aiBuilder.apiKey;
+		}
+
+		this.settings.mfa.enabled = this.globalConfig.mfa.enabled;
+
+		// TODO: read from settings
+		this.settings.mfa.enforced = await this.mfaService.isMFAEnforced();
+
+		if (this.licenseState.isWorkflowReviewsLicensed()) {
+			this.settings.workflowReviews = await this.workflowReviewPolicyService.get();
+		} else {
+			delete this.settings.workflowReviews;
+		}
+		this.settings.inbox = this.moduleRegistry.isActive('inbox')
+			? await this.inboxService.getSettings()
+			: { enabled: false, availableTypes: [], failedTypes: [] };
+
+		this.settings.executionMode = this.globalConfig.executions.mode;
+
+		this.settings.binaryDataMode = this.binaryDataConfig.mode;
+
+		// oxlint-disable-next-line typescript/no-deprecated
+		this.settings.enterprise.projects.team.limit = this.license.getTeamProjectLimit();
+
+		// oxlint-disable-next-line typescript/no-deprecated
+		this.settings.folders.enabled = this.license.isFoldersEnabled();
+
+		// Refresh evaluation settings
+		this.settings.evaluation.quota = this.licenseState.getMaxWorkflowsWithEvaluations();
+
+		// Refresh environment feature flags
+		this.settings.envFeatureFlags = this.collectEnvFeatureFlags();
 
 		return this.settings;
 	}
 
-	addToSettings(newSettings: Record<string, unknown>) {
-		this.settings = { ...this.settings, ...newSettings };
+	private async getPublishedWorkflowCountForDynamicBanners(): Promise<number> {
+		if (!this.settings.dynamicBanners.enabled) return 0;
+
+		const now = Date.now();
+		if (this.publishedWorkflowCountCache && this.publishedWorkflowCountCache.expiresAt > now) {
+			return this.publishedWorkflowCountCache.value;
+		}
+
+		try {
+			this.publishedWorkflowCountRequest ??= this.workflowRepository
+				.getPublishedCount()
+				.finally(() => {
+					this.publishedWorkflowCountRequest = undefined;
+				});
+
+			const value = await this.publishedWorkflowCountRequest;
+			this.publishedWorkflowCountCache = {
+				value,
+				expiresAt: Date.now() + DYNAMIC_BANNER_FILTERS_CACHE_TTL,
+			};
+
+			return value;
+		} catch (error) {
+			this.logger.warn('Failed to fetch published workflow count for dynamic banners', { error });
+			return this.publishedWorkflowCountCache?.value ?? 0;
+		}
 	}
 
-	private writeStaticJSON(name: string, data: INodeTypeBaseDescription[] | ICredentialType[]) {
+	/**
+	 * Only add settings that are absolutely necessary for non-authenticated pages
+	 * @returns Public settings for unauthenticated users
+	 */
+	async getPublicSettings(includeMfaSettings: boolean): Promise<PublicFrontendSettings> {
+		// Get full settings to ensure all required properties are initialized
+		const {
+			defaultLocale,
+			userManagement: { authenticationMethod, showSetupOnFirstLoad, smtpSetup, passwordMinLength },
+			sso: { saml: ssoSaml, ldap: ssoLdap, oidc: ssoOidc },
+			authCookie,
+			previewMode,
+			enterprise: { saml, ldap, oidc },
+			mfa,
+			communityNodesEnabled,
+			activeModules,
+			expressionEngine,
+		} = await this.getSettings();
+		const publicSettings: PublicFrontendSettings = {
+			settingsMode: 'public',
+			defaultLocale,
+			userManagement: {
+				authenticationMethod,
+				showSetupOnFirstLoad,
+				smtpSetup,
+				passwordMinLength,
+			},
+			sso: {
+				saml: {
+					loginEnabled: ssoSaml.loginEnabled,
+				},
+				ldap: ssoLdap,
+				oidc: {
+					loginEnabled: ssoOidc.loginEnabled,
+					loginUrl: ssoOidc.loginUrl,
+				},
+			},
+			authCookie,
+			previewMode,
+			enterprise: { saml, ldap, oidc },
+			communityNodesEnabled,
+			activeModules,
+			expressionEngine,
+		};
+		if (includeMfaSettings) {
+			publicSettings.mfa = mfa;
+		}
+		return publicSettings;
+	}
+
+	getModuleSettings() {
+		return Object.fromEntries(this.moduleRegistry.settings);
+	}
+
+	getNodeVersionIdentifiers(nodes: INodeTypeDescription[]): string[] {
+		const identifiers = new Set<string>();
+
+		for (const node of nodes) {
+			if (!node?.name || node.version === undefined) continue;
+
+			const versions = Array.isArray(node.version) ? node.version : [node.version];
+			for (const version of versions) {
+				if (version === undefined) continue;
+				identifiers.add(`${node.name}@${String(version)}`);
+			}
+		}
+
+		return Array.from(identifiers);
+	}
+
+	private async writeStaticJSON(
+		name: string,
+		data: Array<INodeTypeBaseDescription | ICredentialType | string>,
+	): Promise<void> {
 		const { staticCacheDir } = this.instanceSettings;
 		const filePath = path.join(staticCacheDir, `types/${name}.json`);
 		const stream = createWriteStream(filePath, 'utf-8');
-		stream.write('[\n');
-		data.forEach((entry, index) => {
-			stream.write(JSON.stringify(entry));
-			if (index !== data.length - 1) stream.write(',');
-			stream.write('\n');
+
+		return await new Promise<void>((resolve, reject) => {
+			stream.on('error', reject);
+			stream.on('finish', resolve);
+
+			stream.write('[\n');
+			data.forEach((entry, index) => {
+				stream.write(JSON.stringify(entry));
+				if (index !== data.length - 1) stream.write(',');
+				stream.write('\n');
+			});
+			stream.write(']\n');
+			stream.end();
 		});
-		stream.write(']\n');
-		stream.end();
 	}
 
 	private overwriteCredentialsProperties() {
 		const { credentials } = this.loadNodesAndCredentials.types;
 		const credentialsOverwrites = this.credentialsOverwrites.getAll();
+		const { showScopes = [], skipTypes } = this.globalConfig.credentials.overwrite;
 		for (const credential of credentials) {
+			// Clear any existing overwritten properties to prevent stale data
+			delete credential.__overwrittenProperties;
+			delete credential.__skipManagedCreation;
+			delete credential.__showManagedOAuthScopes;
+
 			const overwrittenProperties = [];
 			this.credentialTypes
 				.getParentTypes(credential.name)
@@ -354,8 +838,39 @@ export class FrontendService {
 				overwrittenProperties.push(...Object.keys(credentialsOverwrites[credential.name]));
 			}
 
+			overwrittenProperties.push(
+				...this.credentialsOverwrites.getNewerAppProperties(credential.name),
+			);
+
 			if (overwrittenProperties.length) {
 				credential.__overwrittenProperties = uniq(overwrittenProperties);
+			}
+
+			// For skip-list types, prevent managed credential creation in the frontend
+			// (overwrite is conditional on stored data; users should provide their own credentials)
+			if (skipTypes.includes(credential.name)) {
+				credential.__skipManagedCreation = true;
+			}
+
+			if (showScopes.includes(credential.name)) {
+				credential.__showManagedOAuthScopes = true;
+			}
+
+			// Inject the per-instance JWKS URI as the default of any `jwksUri`
+			// property on `oAuth2Api` itself or any credential that extends it
+			// and explicitly re-declares the field. Inheritance is blocked by
+			// `doNotInherit: true` on both `jweEnabled` and `jwksUri` so that
+			// extending credentials don't silently inherit half a dependency
+			// pair (which would crash `getParameterResolveOrder`); custom
+			// JWE-aware OAuth2 extensions can re-declare both fields together.
+			const isOAuth2Credential =
+				credential.name === 'oAuth2Api' ||
+				this.credentialTypes.getParentTypes(credential.name).includes('oAuth2Api');
+			if (isOAuth2Credential && credential.properties) {
+				const jwksUri = this.urlService.getInstanceJwksUri();
+				credential.properties = credential.properties.map((property) =>
+					property.name === 'jwksUri' ? { ...property, default: jwksUri } : property,
+				);
 			}
 		}
 	}

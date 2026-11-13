@@ -1,0 +1,30 @@
+{
+    "type": "object",
+    "properties": {
+        "_attachments": {
+            "type": "string"
+        },
+        "_etag": {
+            "type": "string"
+        },
+        "_rid": {
+            "type": "string"
+        },
+        "_self": {
+            "type": "string"
+        },
+        "_ts": {
+            "type": "integer"
+        },
+        "createdAt": {
+            "type": "string"
+        },
+        "id": {
+            "type": "string"
+        },
+        "threadId": {
+            "type": "string"
+        }
+    },
+    "version": 2
+}

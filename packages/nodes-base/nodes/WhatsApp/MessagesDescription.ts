@@ -1,5 +1,6 @@
 import countryCodes from 'currency-codes';
-import type { INodeProperties } from 'n8n-workflow';
+import { SEND_AND_WAIT_OPERATION, type INodeProperties } from 'n8n-workflow';
+
 import {
 	cleanPhoneNumber,
 	componentsRequest,
@@ -30,6 +31,11 @@ export const messageFields: INodeProperties[] = [
 				name: 'Send',
 				value: 'send',
 				action: 'Send message',
+			},
+			{
+				name: 'Send and Wait for Response',
+				value: SEND_AND_WAIT_OPERATION,
+				action: 'Send message and wait for response',
 			},
 			{
 				name: 'Send Template',
@@ -79,7 +85,7 @@ export const messageFields: INodeProperties[] = [
 			loadOptions: {
 				routing: {
 					request: {
-						url: '={{$credentials.businessAccountId}}/phone_numbers',
+						url: '=/{{ toPathSegment($credentials.businessAccountId) }}/phone_numbers',
 						method: 'GET',
 					},
 					output: {
@@ -116,7 +122,7 @@ export const messageFields: INodeProperties[] = [
 		routing: {
 			request: {
 				method: 'POST',
-				url: '={{$value}}/messages',
+				url: '=/{{ toPathSegment($value) }}/messages',
 			},
 		},
 		displayOptions: {
@@ -555,6 +561,11 @@ export const messageTypeFields: INodeProperties[] = [
 							{
 								displayName: 'Type',
 								name: 'type',
+								displayOptions: {
+									show: {
+										'@version': [1],
+									},
+								},
 								type: 'options',
 								options: [
 									{
@@ -591,6 +602,45 @@ export const messageTypeFields: INodeProperties[] = [
 								},
 							},
 							{
+								displayName: 'Type',
+								name: 'type',
+								displayOptions: {
+									show: {
+										'@version': [{ _cnd: { gt: 1 } }],
+									},
+								},
+								type: 'options',
+								options: [
+									{
+										name: 'Cell',
+										value: 'CELL',
+									},
+									{
+										name: 'Home',
+										value: 'HOME',
+									},
+									{
+										name: 'Iphone',
+										value: 'IPHONE',
+									},
+									{
+										name: 'Main',
+										value: 'MAIN',
+									},
+									{
+										name: 'Work',
+										value: 'WORK',
+									},
+								],
+								default: 'CELL',
+								routing: {
+									send: {
+										property: '=contacts[0].phones[{{$index}}].type',
+										type: 'body',
+									},
+								},
+							},
+							{
 								displayName: 'Phone',
 								name: 'phone',
 								type: 'string',
@@ -599,6 +649,25 @@ export const messageTypeFields: INodeProperties[] = [
 									send: {
 										property: '=contacts[0].phones[{{$index}}].phone',
 										type: 'body',
+									},
+								},
+							},
+							{
+								displayName: 'WhatsApp User ID',
+								name: 'whatsapp_user_id',
+								type: 'string',
+								default: '',
+								description:
+									'If omitted, the message will display an Invite to WhatsApp button instead of the standard buttons',
+								routing: {
+									send: {
+										property: '=contacts[0].phones[{{$index}}].wa_id',
+										type: 'body',
+									},
+								},
+								displayOptions: {
+									hide: {
+										'@version': [{ _cnd: { lt: 1.1 } }],
 									},
 								},
 							},
@@ -1046,6 +1115,8 @@ export const messageTypeFields: INodeProperties[] = [
 	//         type: template
 	// ----------------------------------
 	{
+		// WhatsApp identifies templates by name and language, not by ID.
+		// eslint-disable-next-line n8n-nodes-base/node-param-display-name-wrong-for-dynamic-options
 		displayName: 'Template',
 		name: 'template',
 		default: '',
@@ -1057,40 +1128,12 @@ export const messageTypeFields: INodeProperties[] = [
 			},
 		},
 		typeOptions: {
-			loadOptions: {
-				routing: {
-					request: {
-						url: '={{$credentials.businessAccountId}}/message_templates',
-						method: 'GET',
-					},
-					output: {
-						postReceive: [
-							{
-								type: 'rootProperty',
-								properties: {
-									property: 'data',
-								},
-							},
-							{
-								type: 'setKeyValue',
-								properties: {
-									name: '={{$responseItem.name}} - {{$responseItem.language}}',
-									value: '={{$responseItem.name}}|{{$responseItem.language}}',
-								},
-							},
-							{
-								type: 'sort',
-								properties: {
-									key: 'name',
-								},
-							},
-						],
-					},
-				},
-			},
+			loadOptionsMethod: 'getTemplates',
 		},
 		required: true,
-		description: 'Name of the template',
+		// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
+		description:
+			'Select a template from the list, or use an expression in the format <code>name|language</code>',
 		routing: {
 			send: {
 				type: 'body',

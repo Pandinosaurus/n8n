@@ -1,0 +1,502 @@
+<script lang="ts" setup>
+import { isIconOrEmoji, type IconOrEmoji, type SelectSize } from '@n8n/design-system';
+import { useI18n } from '@n8n/i18n';
+import type { AllRolesMap } from '@n8n/permissions';
+import { useDebounceFn } from '@vueuse/core';
+import { computed, ref, watch, onMounted } from 'vue';
+import { ProjectTypes, type ProjectListItem, type ProjectSharingData } from '../projects.types';
+import { compareSharingEntries, type ProjectSearchFn } from '../projects.utils';
+import ProjectSharingInfo from './ProjectSharingInfo.vue';
+import { getDebounceTime } from '@n8n/composables/useDebounce';
+import { DEBOUNCE_TIME, MODAL_CONFIRM } from '@/app/constants';
+import { useMessage } from '@/app/composables/useMessage';
+
+import {
+	N8nBadge,
+	N8nButton,
+	N8nIcon,
+	N8nOption,
+	N8nSelect,
+	N8nText,
+	N8nTooltip,
+} from '@n8n/design-system';
+
+const locale = useI18n();
+
+type Props = {
+	searchFn: ProjectSearchFn;
+	filterFn?: (project: ProjectListItem) => boolean;
+	homeProject?: ProjectSharingData;
+	roles?: AllRolesMap['workflow' | 'credential' | 'project'];
+	readonly?: boolean;
+	static?: boolean;
+	placeholder?: string;
+	emptyOptionsText?: string;
+	size?: SelectSize;
+	clearable?: boolean;
+	canShareGlobally?: boolean;
+	isSharedGlobally?: boolean;
+	allUsersLabel?: string;
+	disabledTooltip?: string;
+	teleported?: boolean;
+	// Show the dropdown chevron even in remote+filterable mode (element-plus hides it by default)
+	showSuffix?: boolean;
+	roleDescriptions?: Record<string, string>;
+	/**
+	 * List the entries in a stable order, people first, then projects, each by
+	 * name, so sharing with one does not move it.
+	 */
+	sortSelected?: boolean;
+	/**
+	 * Projects not shared with yet, listed among the shared ones. The
+	 * `unshared-actions` slot renders what can be done with each.
+	 */
+	unsharedProjects?: Array<{ project: ProjectSharingData; subtitle: string }>;
+	confirmRemoval?: (project: ProjectSharingData) => {
+		title: string;
+		message: string;
+		confirmButtonText?: string;
+		cancelButtonText?: string;
+	};
+};
+
+const props = withDefaults(defineProps<Props>(), {
+	teleported: true,
+});
+
+const message = useMessage();
+
+// Keep an in-place popper outside a scroll container's clipping area.
+const inPlacePopperOptions: { strategy: 'fixed' } = { strategy: 'fixed' };
+
+const GLOBAL_GROUP: ProjectListItem = {
+	id: 'all_users',
+	name: props.allUsersLabel ?? locale.baseText('projects.sharing.allUsers'),
+	type: 'public',
+	icon: { type: 'icon', value: 'globe' },
+	role: 'member',
+	createdAt: `${Date.now()}`,
+	updatedAt: `${Date.now()}`,
+};
+
+const model = defineModel<(ProjectSharingData | null) | ProjectSharingData[]>({
+	required: true,
+});
+
+const emit = defineEmits<{
+	projectAdded: [value: ProjectSharingData];
+	projectRemoved: [value: ProjectSharingData];
+	clear: [];
+	'update:shareWithAllUsers': [value: boolean];
+}>();
+
+const selectedProject = ref(Array.isArray(model.value) ? '' : (model.value?.id ?? ''));
+
+type ListEntry =
+	| { kind: 'shared'; project: ProjectSharingData }
+	| { kind: 'unshared'; project: ProjectSharingData; subtitle: string };
+
+const listEntries = computed((): ListEntry[] | null => {
+	if (!Array.isArray(model.value)) {
+		return null;
+	}
+
+	const entries: ListEntry[] = [
+		...model.value.map((project): ListEntry => ({ kind: 'shared', project })),
+		...(props.unsharedProjects ?? []).map(
+			({ project, subtitle }): ListEntry => ({ kind: 'unshared', project, subtitle }),
+		),
+	];
+	if (props.sortSelected) {
+		entries.sort((entryA, entryB) => compareSharingEntries(entryA.project, entryB.project));
+	}
+
+	return props.isSharedGlobally ? [{ kind: 'shared', project: GLOBAL_GROUP }, ...entries] : entries;
+});
+
+const selectPlaceholder = computed(
+	() => props.placeholder ?? locale.baseText('projects.sharing.select.placeholder'),
+);
+const noDataText = computed(
+	() => props.emptyOptionsText ?? locale.baseText('projects.sharing.noMatchingUsers'),
+);
+
+// ── Search state ──
+const searchResults = ref<ProjectListItem[]>([]);
+const searchCount = ref(0);
+const filter = ref('');
+
+const filteredProjects = computed(() => {
+	let list = searchResults.value;
+
+	// Apply consumer's filterFn
+	if (props.filterFn) {
+		list = list.filter(props.filterFn);
+	}
+
+	// Exclude homeProject from the dropdown (it's shown separately as "owner")
+	if (props.homeProject) {
+		list = list.filter((p) => p.id !== props.homeProject!.id);
+	}
+
+	// Exclude already-selected projects (multi-select mode)
+	if (Array.isArray(model.value)) {
+		const selected = model.value;
+		list = list.filter((p) => !selected.find((s) => s.id === p.id));
+	}
+
+	return list;
+});
+
+const sortedProjects = computed((): ProjectListItem[] => {
+	const projects = [...filteredProjects.value].sort((projectA, projectB) =>
+		(projectA.name ?? '').localeCompare(projectB.name ?? ''),
+	);
+	return [
+		...(props.canShareGlobally && !props.isSharedGlobally ? [GLOBAL_GROUP] : []),
+		...projects,
+	];
+});
+
+const moreResultsCount = computed(() => {
+	return Math.max(0, searchCount.value - searchResults.value.length);
+});
+const showSearchHint = computed(
+	() => filter.value === '' && sortedProjects.value.length === 0 && moreResultsCount.value > 0,
+);
+
+const projectIcon = computed<IconOrEmoji>(() => {
+	const defaultIcon: IconOrEmoji = { type: 'icon', value: 'layers' };
+	const project = searchResults.value.find((p) => p.id === selectedProject.value);
+
+	if (project?.type === ProjectTypes.Personal) {
+		return { type: 'icon', value: 'user' };
+	} else if (project?.type === ProjectTypes.Team) {
+		return isIconOrEmoji(project.icon) ? project.icon : defaultIcon;
+	}
+
+	return defaultIcon;
+});
+
+// ── Search logic ──
+let searchGeneration = 0;
+
+const executeSearch = async (query: string) => {
+	const generation = ++searchGeneration;
+	try {
+		const result = await props.searchFn(query);
+		if (generation !== searchGeneration) return; // stale response, discard
+		searchResults.value = result.data ?? [];
+		searchCount.value = result.count ?? 0;
+	} catch {
+		if (generation !== searchGeneration) return;
+		searchResults.value = [];
+		searchCount.value = 0;
+	}
+};
+
+const debouncedSearch = useDebounceFn(executeSearch, getDebounceTime(DEBOUNCE_TIME.INPUT.SEARCH));
+
+const setFilter = (query: string) => {
+	filter.value = query;
+	void debouncedSearch(query);
+};
+
+// Load initial results
+onMounted(() => {
+	void executeSearch('');
+});
+
+const onProjectSelected = (projectId: string) => {
+	if (projectId === GLOBAL_GROUP.id) {
+		emit('update:shareWithAllUsers', true);
+		return;
+	}
+
+	const project = searchResults.value.find((p) => p.id === projectId);
+
+	if (!project) {
+		return;
+	}
+
+	if (Array.isArray(model.value)) {
+		model.value = [...model.value, project];
+	} else {
+		model.value = project;
+	}
+	emit('projectAdded', project);
+};
+
+const showStaticRole = computed(() => !!props.roleDescriptions && !!props.roles?.length);
+const staticRole = computed(() => (showStaticRole.value ? props.roles?.[0] : undefined));
+const staticRoleDescription = computed(() =>
+	staticRole.value ? props.roleDescriptions?.[staticRole.value.slug] : undefined,
+);
+
+const canRemoveProject = (project: ProjectSharingData) =>
+	!(project.id === GLOBAL_GROUP.id && !props.canShareGlobally);
+
+const onRoleAction = async (project: ProjectSharingData, role: string) => {
+	if (!Array.isArray(model.value) || props.readonly) {
+		return;
+	}
+
+	if (project.id === GLOBAL_GROUP.id && role === 'remove') {
+		emit('update:shareWithAllUsers', false);
+
+		return;
+	}
+
+	if (role === 'remove') {
+		if (props.confirmRemoval) {
+			const {
+				title,
+				message: confirmMessage,
+				confirmButtonText,
+				cancelButtonText,
+			} = props.confirmRemoval(project);
+			const confirmed = await message.confirm(confirmMessage, title, {
+				confirmButtonText,
+				cancelButtonText,
+			});
+			if (confirmed !== MODAL_CONFIRM) {
+				return;
+			}
+		}
+
+		model.value = model.value.filter((p) => p.id !== project.id);
+		emit('projectRemoved', project);
+	}
+};
+
+watch(
+	() => model.value,
+	() => {
+		if (model.value === null || Array.isArray(model.value)) {
+			selectedProject.value = '';
+		} else {
+			selectedProject.value = model.value.id;
+		}
+	},
+	{ immediate: true },
+);
+</script>
+<template>
+	<div>
+		<N8nTooltip :disabled="!props.disabledTooltip" placement="top">
+			<template #content>{{ props.disabledTooltip }}</template>
+			<N8nSelect
+				v-if="!props.static || props.disabledTooltip"
+				:model-value="selectedProject"
+				data-test-id="project-sharing-select"
+				filterable
+				remote
+				:remote-show-suffix="props.showSuffix"
+				:remote-method="setFilter"
+				:placeholder="selectPlaceholder"
+				:default-first-option="true"
+				:no-data-text="noDataText"
+				:size="size ?? 'medium'"
+				:disabled="props.readonly || !!props.disabledTooltip"
+				:clearable
+				:teleported="props.teleported"
+				:popper-options="props.teleported ? undefined : inPlacePopperOptions"
+				:popper-class="$style.popper"
+				@update:model-value="onProjectSelected"
+				@clear="emit('clear')"
+			>
+				<template #prefix>
+					<N8nIcon v-if="projectIcon.type === 'icon'" :icon="projectIcon.value" color="text-dark" />
+					<N8nText
+						v-else-if="projectIcon.type === 'emoji'"
+						color="text-light"
+						:class="$style.emoji"
+					>
+						{{ projectIcon.value }}
+					</N8nText>
+				</template>
+				<N8nOption
+					v-for="project in sortedProjects"
+					:key="project.id"
+					:value="project.id"
+					:label="project.name ?? ''"
+				>
+					<ProjectSharingInfo :project="project" />
+				</N8nOption>
+				<N8nOption
+					v-if="showSearchHint || moreResultsCount > 0"
+					:key="'more-results'"
+					:value="''"
+					:label="''"
+					disabled
+					:class="$style.searchNotice"
+				>
+					<N8nText size="small" color="text-light">
+						{{
+							showSearchHint
+								? locale.baseText('projects.sharing.startTypingToSearch', {
+										interpolate: { count: searchCount },
+									})
+								: locale.baseText('projects.sharing.moreResults', {
+										interpolate: { count: moreResultsCount },
+									})
+						}}
+					</N8nText>
+				</N8nOption>
+			</N8nSelect>
+		</N8nTooltip>
+		<ul v-if="listEntries" :class="$style.selectedProjects">
+			<li v-if="props.homeProject" :class="$style.project" data-test-id="project-sharing-owner">
+				<ProjectSharingInfo :project="props.homeProject">
+					<span v-if="showStaticRole" :class="$style.rectBadge">
+						{{ locale.baseText('auth.roles.owner') }}
+					</span>
+					<N8nBadge v-else variant="outline">
+						{{ locale.baseText('auth.roles.owner') }}
+					</N8nBadge></ProjectSharingInfo
+				>
+			</li>
+			<template v-for="entry in listEntries" :key="entry.project.id">
+				<li
+					v-if="entry.kind === 'unshared'"
+					:class="$style.project"
+					data-test-id="project-sharing-unshared-item"
+				>
+					<ProjectSharingInfo :project="entry.project" :subtitle="entry.subtitle">
+						<slot name="unshared-actions" :project="entry.project" />
+					</ProjectSharingInfo>
+				</li>
+				<li v-else :class="$style.project" data-test-id="project-sharing-list-item">
+					<ProjectSharingInfo :project="entry.project">
+						<span v-if="staticRole" :class="$style.trailingRow">
+							<N8nText
+								color="text-light"
+								:title="staticRoleDescription"
+								data-test-id="project-sharing-static-role"
+							>
+								{{ staticRole.displayName }}
+							</N8nText>
+							<N8nTooltip
+								v-if="canRemoveProject(entry.project)"
+								:content="locale.baseText('projects.sharing.removeAccess')"
+								placement="top"
+							>
+								<N8nButton
+									variant="outline"
+									icon-only
+									native-type="button"
+									icon="trash-2"
+									:aria-label="locale.baseText('projects.sharing.removeAccess')"
+									:disabled="props.readonly"
+									data-test-id="project-sharing-remove"
+									@click="onRoleAction(entry.project, 'remove')"
+								/>
+							</N8nTooltip>
+						</span>
+					</ProjectSharingInfo>
+					<N8nSelect
+						v-if="
+							props.roles?.length &&
+							!props.static &&
+							!showStaticRole &&
+							canRemoveProject(entry.project)
+						"
+						:class="$style.projectRoleSelect"
+						:model-value="props.roles[0]"
+						:disabled="props.readonly"
+						data-test-id="project-sharing-role-select"
+						size="small"
+						@update:model-value="onRoleAction(entry.project, $event)"
+					>
+						<N8nOption
+							v-for="role in roles"
+							:key="role.slug"
+							:value="role.slug"
+							:label="role.displayName"
+						/>
+					</N8nSelect>
+					<N8nTooltip
+						v-if="!props.static && !showStaticRole && canRemoveProject(entry.project)"
+						:content="locale.baseText('projects.sharing.removeAccess')"
+						placement="top"
+					>
+						<N8nButton
+							variant="outline"
+							icon-only
+							native-type="button"
+							icon="trash-2"
+							:aria-label="locale.baseText('projects.sharing.removeAccess')"
+							:disabled="props.readonly"
+							data-test-id="project-sharing-remove"
+							@click="onRoleAction(entry.project, 'remove')"
+						/>
+					</N8nTooltip>
+				</li>
+			</template>
+		</ul>
+	</div>
+</template>
+
+<style lang="scss" module>
+.project {
+	display: flex;
+	width: 100%;
+	align-items: center;
+	padding: var(--spacing--2xs) 0;
+	gap: var(--spacing--2xs);
+}
+
+.rectBadge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	white-space: nowrap;
+	height: var(--height--sm);
+	padding-inline: var(--spacing--2xs);
+	border: 1px solid var(--border-color);
+	border-radius: var(--radius);
+	font-size: var(--font-size--xs);
+	font-weight: var(--font-weight--bold);
+	color: var(--text-color);
+}
+
+.trailingRow {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	gap: var(--spacing--2xs);
+	white-space: nowrap;
+}
+
+.selectedProjects {
+	li {
+		padding: 0;
+		border-bottom: var(--border);
+
+		&:first-child {
+			padding-top: var(--spacing--md);
+		}
+
+		&:last-child {
+			border-bottom: none;
+		}
+	}
+}
+
+.projectRoleSelect {
+	width: auto;
+}
+
+.popper :global(.el-scrollbar__wrap) {
+	scrollbar-width: none; // <-- hides scrollbar but maintains scrolling
+}
+
+.emoji {
+	font-size: var(--font-size--sm);
+}
+
+.searchNotice {
+	cursor: default;
+	text-align: center;
+}
+</style>

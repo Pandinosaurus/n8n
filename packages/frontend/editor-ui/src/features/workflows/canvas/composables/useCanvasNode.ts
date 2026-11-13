@@ -1,0 +1,112 @@
+import { CanvasNodeKey } from '@/app/constants';
+import { computed, inject } from 'vue';
+import { isCommunityPackageName } from 'n8n-workflow';
+import type { CanvasNodeData } from '../canvas.types';
+import { CanvasNodeRenderType, CanvasConnectionMode } from '../canvas.types';
+import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
+import { useNodeTypeRestriction } from '@n8n/frontend-module-type-availability-policies';
+
+export function useCanvasNode() {
+	const node = inject(CanvasNodeKey);
+	const data = computed(
+		() =>
+			node?.data.value ??
+			({
+				id: '',
+				name: '',
+				subtitle: '',
+				type: '',
+				typeVersion: 1,
+				disabled: false,
+				connections: { [CanvasConnectionMode.Input]: {}, [CanvasConnectionMode.Output]: {} },
+				issues: { validation: [], visible: false },
+				execution: {
+					running: false,
+				},
+				runData: { iterations: 0, outputMap: {}, visible: false },
+				render: {
+					type: CanvasNodeRenderType.Default,
+					options: {},
+				},
+			} satisfies CanvasNodeData),
+	);
+
+	const id = computed(() => node?.id.value ?? '');
+	const label = computed(() => node?.label.value ?? '');
+
+	const subtitle = computed(() => data.value.subtitle);
+	const name = computed(() => data.value.name);
+	const connections = computed(() => data.value.connections);
+
+	const isDisabled = computed(() => data.value.disabled);
+	const isReadOnly = computed(() => node?.readOnly.value);
+	const isSelected = computed(() => node?.selected.value);
+
+	const validationErrors = computed(() => data.value.issues.validation ?? []);
+	const hasIssues = computed(() => data.value.issues.visible);
+	const hasValidationErrors = computed(() => data.value.issues.validation.length > 0);
+
+	const executionStatus = computed(() => data.value.execution.status);
+	const executionWaiting = computed(() => data.value.execution.waiting);
+	const executionWaitingForNext = computed(() => data.value.execution.waitingForNext);
+	const executionRunning = computed(() => data.value.execution.running);
+
+	const runDataOutputMap = computed(() => data.value.runData.outputMap);
+	const runDataIterations = computed(() => data.value.runData.iterations);
+	const hasRunData = computed(() => data.value.runData.visible);
+
+	const render = computed(() => data.value.render);
+
+	const isDeprecated = computed(() =>
+		data.value.render.type === CanvasNodeRenderType.Default
+			? Boolean(data.value.render.options.deprecated)
+			: false,
+	);
+
+	const deprecatedReplacementName = computed(() =>
+		data.value.render.type === CanvasNodeRenderType.Default
+			? data.value.render.options.deprecatedReplacementName
+			: undefined,
+	);
+
+	const eventBus = computed(() => node?.eventBus.value);
+
+	// verified community nodes are checked by communityNodeType()
+	// unverified community nodes are checked by getNodeType()
+	const isNotInstalledCommunityNode = computed(
+		() =>
+			isCommunityPackageName(data.value.type) &&
+			!useNodeTypesStore().getIsNodeInstalled(data.value.type),
+	);
+
+	const { isRestricted, restrictionScope } = useNodeTypeRestriction(() => data.value.type);
+
+	return {
+		node,
+		id,
+		name,
+		label,
+		subtitle,
+		connections,
+		isDisabled,
+		isReadOnly,
+		isSelected,
+		runDataIterations,
+		runDataOutputMap,
+		hasRunData,
+		validationErrors,
+		hasIssues,
+		hasValidationErrors,
+		executionStatus,
+		executionWaiting,
+		executionWaitingForNext,
+		executionRunning,
+		render,
+		isDeprecated,
+		deprecatedReplacementName,
+		eventBus,
+		isNotInstalledCommunityNode,
+		isRestricted,
+		restrictionScope,
+	};
+}

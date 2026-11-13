@@ -1,11 +1,13 @@
 import { createHmac } from 'crypto';
-import type {
-	IHookFunctions,
-	IWebhookFunctions,
-	IDataObject,
-	INodeType,
-	INodeTypeDescription,
-	IWebhookResponseData,
+import {
+	type IHookFunctions,
+	type IWebhookFunctions,
+	type IDataObject,
+	type INodeType,
+	type INodeTypeDescription,
+	type IWebhookResponseData,
+	NodeConnectionTypes,
+	requestPath,
 } from 'n8n-workflow';
 
 import { shopifyApiRequest } from './GenericFunctions';
@@ -23,7 +25,7 @@ export class ShopifyTrigger implements INodeType {
 			name: 'Shopify Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'shopifyApi',
@@ -335,7 +337,7 @@ export class ShopifyTrigger implements INodeType {
 				const topic = this.getNodeParameter('topic') as string;
 				const webhookData = this.getWorkflowStaticData('node');
 				const webhookUrl = this.getNodeWebhookUrl('default');
-				const endpoint = '/webhooks';
+				const endpoint = requestPath`/webhooks`;
 
 				const { webhooks } = await shopifyApiRequest.call(this, 'GET', endpoint, {}, { topic });
 				for (const webhook of webhooks) {
@@ -350,7 +352,7 @@ export class ShopifyTrigger implements INodeType {
 				const webhookUrl = this.getNodeWebhookUrl('default');
 				const topic = this.getNodeParameter('topic') as string;
 				const webhookData = this.getWorkflowStaticData('node');
-				const endpoint = '/webhooks.json';
+				const endpoint = requestPath`/webhooks.json`;
 				const body = {
 					webhook: {
 						topic,
@@ -372,9 +374,13 @@ export class ShopifyTrigger implements INodeType {
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				if (webhookData.webhookId !== undefined) {
-					const endpoint = `/webhooks/${webhookData.webhookId}.json`;
 					try {
-						await shopifyApiRequest.call(this, 'DELETE', endpoint, {});
+						await shopifyApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/webhooks/${webhookData.webhookId}.json`,
+							{},
+						);
 					} catch (error) {
 						return false;
 					}

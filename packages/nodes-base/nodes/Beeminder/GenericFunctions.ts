@@ -6,23 +6,40 @@ import type {
 	IWebhookFunctions,
 	IHttpRequestMethods,
 	IRequestOptions,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
+import { requestUrl } from 'n8n-workflow';
 
-const BEEMINDER_URI = 'https://www.beeminder.com/api/v1';
+function isValidAuthenticationMethod(value: unknown): value is 'apiToken' | 'oAuth2' {
+	return typeof value === 'string' && ['apiToken', 'oAuth2'].includes(value);
+}
 
 export async function beeminderApiRequest(
 	this: IExecuteFunctions | IWebhookFunctions | IHookFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},
 ): Promise<any> {
-	const options: IRequestOptions = {
+	const authenticationMethod = this.getNodeParameter('authentication', 0, 'apiToken');
+
+	if (!isValidAuthenticationMethod(authenticationMethod)) {
+		throw new UserError(`Invalid authentication method: ${authenticationMethod}`);
+	}
+
+	let credentialType = 'beeminderApi';
+	if (authenticationMethod === 'oAuth2') {
+		credentialType = 'beeminderOAuth2Api';
+	}
+
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		method,
 		body,
 		qs: query,
-		uri: `${BEEMINDER_URI}${endpoint}`,
+		uri: requestUrl`https://www.beeminder.com/api/v1${endpoint}`,
 		json: true,
 	};
 
@@ -34,13 +51,13 @@ export async function beeminderApiRequest(
 		delete options.qs;
 	}
 
-	return await this.helpers.requestWithAuthentication.call(this, 'beeminderApi', options);
+	return await this.helpers.requestWithAuthentication.call(this, credentialType, options);
 }
 
 export async function beeminderApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions | IHookFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},

@@ -9,14 +9,16 @@ import type {
 	IWebhookResponseData,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, requestPath } from 'n8n-workflow';
+
 import { mailchimpApiRequest } from './GenericFunctions';
+import { verifySignature } from './MailchimpTriggerHelpers';
 
 export class MailchimpTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Mailchimp Trigger',
 		name: 'mailchimpTrigger',
-		icon: 'file:mailchimp.svg',
+		icon: { light: 'file:mailchimp.svg', dark: 'file:mailchimp.dark.svg' },
 		group: ['trigger'],
 		version: 1,
 		description: 'Handle Mailchimp events via webhooks',
@@ -24,7 +26,7 @@ export class MailchimpTrigger implements INodeType {
 			name: 'Mailchimp Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'mailchimpApi',
@@ -83,7 +85,7 @@ export class MailchimpTrigger implements INodeType {
 				required: true,
 				default: '',
 				description:
-					'The list that is gonna fire the event. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The list that is gonna fire the event. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 				typeOptions: {
 					loadOptionsMethod: 'getLists',
 				},
@@ -167,7 +169,7 @@ export class MailchimpTrigger implements INodeType {
 			// select them easily
 			async getLists(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const response = await mailchimpApiRequest.call(this, '/lists', 'GET');
+				const response = await mailchimpApiRequest.call(this, requestPath`/lists`, 'GET');
 				const lists = response.lists;
 				for (const list of lists) {
 					const listName = list.name;
@@ -192,7 +194,7 @@ export class MailchimpTrigger implements INodeType {
 					// No webhook id is set so no webhook can exist
 					return false;
 				}
-				const endpoint = `/lists/${listId}/webhooks/${webhookData.webhookId}`;
+				const endpoint = requestPath`/lists/${listId}/webhooks/${webhookData.webhookId}`;
 				try {
 					await mailchimpApiRequest.call(this, endpoint, 'GET');
 				} catch (error) {
@@ -213,7 +215,6 @@ export class MailchimpTrigger implements INodeType {
 			},
 
 			async create(this: IHookFunctions): Promise<boolean> {
-				let webhook;
 				const webhookUrl = this.getNodeWebhookUrl('default');
 				const listId = this.getNodeParameter('list') as string;
 				const events = this.getNodeParameter('events', []) as string[];
@@ -231,12 +232,8 @@ export class MailchimpTrigger implements INodeType {
 						return object;
 					}, {}),
 				};
-				const endpoint = `/lists/${listId}/webhooks`;
-				try {
-					webhook = await mailchimpApiRequest.call(this, endpoint, 'POST', body);
-				} catch (error) {
-					throw error;
-				}
+				const endpoint = requestPath`/lists/${listId}/webhooks`;
+				const webhook = await mailchimpApiRequest.call(this, endpoint, 'POST', body);
 				if (webhook.id === undefined) {
 					return false;
 				}
@@ -244,6 +241,11 @@ export class MailchimpTrigger implements INodeType {
 				webhookData.webhookId = webhook.id as string;
 				webhookData.events = events;
 				webhookData.sources = sources;
+				if (typeof webhook.signing_secret === 'string') {
+					webhookData.webhookSecret = webhook.signing_secret;
+				} else {
+					delete webhookData.webhookSecret;
+				}
 				return true;
 			},
 
@@ -251,7 +253,7 @@ export class MailchimpTrigger implements INodeType {
 				const webhookData = this.getWorkflowStaticData('node');
 				const listId = this.getNodeParameter('list') as string;
 				if (webhookData.webhookId !== undefined) {
-					const endpoint = `/lists/${listId}/webhooks/${webhookData.webhookId}`;
+					const endpoint = requestPath`/lists/${listId}/webhooks/${webhookData.webhookId}`;
 					try {
 						await mailchimpApiRequest.call(this, endpoint, 'DELETE', {});
 					} catch (error) {
@@ -260,6 +262,7 @@ export class MailchimpTrigger implements INodeType {
 					delete webhookData.webhookId;
 					delete webhookData.events;
 					delete webhookData.sources;
+					delete webhookData.webhookSecret;
 				}
 				return true;
 			},
@@ -277,6 +280,14 @@ export class MailchimpTrigger implements INodeType {
 				noWebhookResponse: true,
 			};
 		}
+		if (!verifySignature.call(this)) {
+			const res = this.getResponseObject();
+			res.status(401).send('Unauthorized').end();
+			return {
+				noWebhookResponse: true,
+			};
+		}
+
 		const req = this.getRequestObject();
 		if (req.body.id !== webhookData.id) {
 			return {};

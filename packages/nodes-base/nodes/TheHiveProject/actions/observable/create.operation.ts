@@ -1,16 +1,18 @@
+import FormData from 'form-data';
 import {
-	NodeOperationError,
 	type IDataObject,
 	type IExecuteFunctions,
 	type INodeExecutionData,
 	type INodeProperties,
+	NodeOperationError,
+	requestPath,
 } from 'n8n-workflow';
-import FormData from 'form-data';
-import { theHiveApiRequest } from '../../transport';
 
-import { fixFieldType, prepareInputItem } from '../../helpers/utils';
-import { alertRLC, attachmentsUi, caseRLC } from '../../descriptions';
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { alertRLC, attachmentsUi, caseRLC } from '../../descriptions';
+import { fixFieldType, prepareInputItem } from '../../helpers/utils';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	{
@@ -54,7 +56,7 @@ const properties: INodeProperties[] = [
 		name: 'dataType',
 		type: 'options',
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		required: true,
 		default: 'file',
 		typeOptions: {
@@ -113,7 +115,7 @@ export async function execute(
 
 	const createIn = this.getNodeParameter('createIn', i) as string;
 	const id = this.getNodeParameter('id', i, '', { extractValue: true }) as string;
-	const endpoint = `/v1/${createIn}/${id}/observable`;
+	const endpoint = requestPath`/v1/${createIn}/${id}/observable`;
 
 	const dataMode = this.getNodeParameter('observableFields.mappingMode', i) as string;
 

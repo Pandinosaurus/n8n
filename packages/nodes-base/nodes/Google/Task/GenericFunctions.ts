@@ -5,26 +5,29 @@ import type {
 	ILoadOptionsFunctions,
 	IRequestOptions,
 	JsonObject,
+	RequestPath,
+	RequestUrl,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
 export async function googleApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
-	uri?: string,
+	uri?: RequestUrl,
 	headers: IDataObject = {},
 ): Promise<any> {
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		headers: {
 			'Content-Type': 'application/json',
 		},
 		method,
 		body,
 		qs,
-		uri: uri || `https://www.googleapis.com${resource}`,
+		uri: uri ?? requestUrl`https://www.googleapis.com${resource}`,
 		json: true,
 	};
 
@@ -35,7 +38,6 @@ export async function googleApiRequest(
 		if (Object.keys(body).length === 0) {
 			delete options.body;
 		}
-		//@ts-ignore
 		return await this.helpers.requestOAuth2.call(this, 'googleTasksOAuth2Api', options);
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject);
@@ -46,7 +48,7 @@ export async function googleApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	query: IDataObject = {},
 ): Promise<any> {

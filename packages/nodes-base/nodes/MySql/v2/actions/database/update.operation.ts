@@ -4,14 +4,18 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { NodeOperationError } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
 
 import type { QueryRunner, QueryValues, QueryWithValues } from '../../helpers/interfaces';
 import { AUTO_MAP, DATA_MODE } from '../../helpers/interfaces';
-
-import { escapeSqlIdentifier, replaceEmptyStringsByNulls } from '../../helpers/utils';
-
+import {
+	escapeSqlIdentifier,
+	prepareErrorItem,
+	replaceEmptyStringsByNulls,
+} from '../../helpers/utils';
 import { optionsCollection } from '../common.descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 const properties: INodeProperties[] = [
 	{
@@ -55,7 +59,7 @@ const properties: INodeProperties[] = [
 		required: true,
 		// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/" target="_blank">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/" target="_blank">expression</a>',
 		typeOptions: {
 			loadOptionsMethod: 'getColumns',
 			loadOptionsDependsOn: ['schema.value', 'table.value'],
@@ -103,7 +107,7 @@ const properties: INodeProperties[] = [
 						type: 'options',
 						// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/" target="_blank">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/" target="_blank">expression</a>',
 						typeOptions: {
 							loadOptionsMethod: 'getColumnsWithoutColumnToMatchOn',
 							loadOptionsDependsOn: ['schema.value', 'table.value'],
@@ -147,56 +151,69 @@ export async function execute(
 	const queries: QueryWithValues[] = [];
 
 	for (let i = 0; i < items.length; i++) {
-		const table = this.getNodeParameter('table', i, undefined, {
-			extractValue: true,
-		}) as string;
+		try {
+			const table = this.getNodeParameter('table', i, undefined, {
+				extractValue: true,
+			}) as string;
 
-		const columnToMatchOn = this.getNodeParameter('columnToMatchOn', i) as string;
+			const columnToMatchOn = this.getNodeParameter('columnToMatchOn', i) as string;
 
-		const dataMode = this.getNodeParameter('dataMode', i) as string;
+			const dataMode = this.getNodeParameter('dataMode', i) as string;
 
-		let item: IDataObject = {};
-		let valueToMatchOn: string | IDataObject = '';
+			let item: IDataObject = {};
+			let valueToMatchOn: string | IDataObject = '';
 
-		if (dataMode === DATA_MODE.AUTO_MAP) {
-			item = items[i].json;
-			valueToMatchOn = item[columnToMatchOn] as string;
+			if (dataMode === DATA_MODE.AUTO_MAP) {
+				item = items[i].json;
+				valueToMatchOn = item[columnToMatchOn] as string;
+			}
+
+			if (dataMode === DATA_MODE.MANUAL) {
+				const valuesToSend = (this.getNodeParameter('valuesToSend', i, []) as IDataObject)
+					.values as IDataObject[];
+
+				item = valuesToSend.reduce((acc, { column, value }) => {
+					acc[column as string] = value;
+					return acc;
+				}, {} as IDataObject);
+
+				valueToMatchOn = this.getNodeParameter('valueToMatchOn', i) as string;
+			}
+
+			const values: QueryValues = [];
+
+			const updateColumns = Object.keys(item).filter((column) => column !== columnToMatchOn);
+
+			const updates: string[] = [];
+
+			for (const column of updateColumns) {
+				updates.push(`${escapeSqlIdentifier(column)} = ?`);
+				values.push(item[column] as string);
+			}
+
+			const condition = `${escapeSqlIdentifier(columnToMatchOn)} = ?`;
+			values.push(valueToMatchOn);
+
+			const query = `UPDATE ${escapeSqlIdentifier(table)} SET ${updates.join(
+				', ',
+			)} WHERE ${condition}`;
+
+			queries.push({ query, values, itemIndex: i });
+		} catch (error) {
+			if (!this.continueOnFail()) throw error;
+
+			const nodeError =
+				error instanceof NodeOperationError
+					? error
+					: new NodeOperationError(this.getNode(), error as Error, { itemIndex: i });
+
+			returnData.push(prepareErrorItem(items[i].json, nodeError, i));
 		}
-
-		if (dataMode === DATA_MODE.MANUAL) {
-			const valuesToSend = (this.getNodeParameter('valuesToSend', i, []) as IDataObject)
-				.values as IDataObject[];
-
-			item = valuesToSend.reduce((acc, { column, value }) => {
-				acc[column as string] = value;
-				return acc;
-			}, {} as IDataObject);
-
-			valueToMatchOn = this.getNodeParameter('valueToMatchOn', i) as string;
-		}
-
-		const values: QueryValues = [];
-
-		const updateColumns = Object.keys(item).filter((column) => column !== columnToMatchOn);
-
-		const updates: string[] = [];
-
-		for (const column of updateColumns) {
-			updates.push(`${escapeSqlIdentifier(column)} = ?`);
-			values.push(item[column] as string);
-		}
-
-		const condition = `${escapeSqlIdentifier(columnToMatchOn)} = ?`;
-		values.push(valueToMatchOn);
-
-		const query = `UPDATE ${escapeSqlIdentifier(table)} SET ${updates.join(
-			', ',
-		)} WHERE ${condition}`;
-
-		queries.push({ query, values });
 	}
 
-	returnData = await runQueries(queries);
+	if (queries.length > 0) {
+		returnData = returnData.concat(await runQueries(queries));
+	}
 
 	return returnData;
 }

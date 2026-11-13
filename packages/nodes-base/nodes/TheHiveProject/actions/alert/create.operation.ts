@@ -1,17 +1,18 @@
+import FormData from 'form-data';
+import set from 'lodash/set';
 import type {
 	IDataObject,
 	IExecuteFunctions,
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
-import set from 'lodash/set';
-
-import FormData from 'form-data';
-import { theHiveApiRequest } from '../../transport';
-import { fixFieldType, prepareInputItem, splitAndTrim } from '../../helpers/utils';
-import { observableTypeOptions } from '../../descriptions';
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { observableTypeOptions } from '../../descriptions';
+import { fixFieldType, prepareInputItem, splitAndTrim } from '../../helpers/utils';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	{
@@ -173,7 +174,7 @@ export async function execute(
 		responseData = await theHiveApiRequest.call(
 			this,
 			'POST',
-			'/v1/alert',
+			requestPath`/v1/alert`,
 			undefined,
 			undefined,
 			undefined,
@@ -185,7 +186,7 @@ export async function execute(
 			},
 		);
 	} else {
-		responseData = await theHiveApiRequest.call(this, 'POST', '/v1/alert' as string, body);
+		responseData = await theHiveApiRequest.call(this, 'POST', requestPath`/v1/alert`, body);
 	}
 
 	const executionData = this.helpers.constructExecutionMetaData(wrapData(responseData), {

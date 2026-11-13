@@ -9,7 +9,7 @@ import type {
 	JsonObject,
 	IHttpRequestMethods,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError, requestUrl } from 'n8n-workflow';
 
 import { googleApiRequest, googleApiRequestAllItems } from './GenericFunctions';
 
@@ -19,14 +19,16 @@ export class GoogleFirebaseRealtimeDatabase implements INodeType {
 		name: 'googleFirebaseRealtimeDatabase',
 		icon: 'file:googleFirebaseRealtimeDatabase.svg',
 		group: ['input'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		subtitle: '={{$parameter["operation"]}}',
 		description: 'Interact with Google Firebase - Realtime Database API',
 		defaults: {
 			name: 'Google Cloud Realtime Database',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'googleFirebaseRealtimeDatabaseOAuth2Api',
@@ -42,7 +44,7 @@ export class GoogleFirebaseRealtimeDatabase implements INodeType {
 					loadOptionsMethod: 'getProjects',
 				},
 				description:
-					'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 				required: true,
 			},
 			{
@@ -143,7 +145,7 @@ export class GoogleFirebaseRealtimeDatabase implements INodeType {
 					{},
 					{},
 					{},
-					'https://firebase.googleapis.com/v1beta1/projects',
+					requestUrl`https://firebase.googleapis.com/v1beta1/projects`,
 				);
 
 				const returnData = projects

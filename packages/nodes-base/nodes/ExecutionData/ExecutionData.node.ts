@@ -1,29 +1,33 @@
 import type {
-	IDataObject,
 	IExecuteFunctions,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+
+type DataToSave = {
+	values: Array<{ key: string; value: string }>;
+};
 
 export class ExecutionData implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Execution Data',
 		name: 'executionData',
-		icon: 'fa:tasks',
+		icon: 'node:execution-data',
 		group: ['input'],
-		version: 1,
+		iconColor: 'light-green',
+		version: [1, 1.1],
 		description: 'Add execution data for search',
 		defaults: {
 			name: 'Execution Data',
-			color: '#29A568',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
 			{
 				displayName:
-					"Use this node to save fields you want to use later to easily find an execution (e.g. a user ID). You'll be able to search by this data in the 'executions' tab.<br>This feature is available on our Pro and Enterprise plans. <a href='https://n8n.io/pricing/' target='_blank'>More Info</a>.",
+					"Save important data using this node. It will be displayed on each execution for easy reference and you can filter by it.<br />Filtering is available on Pro and Enterprise plans. <a href='https://n8n.io/pricing/' target='_blank'>More Info</a>",
 				name: 'notice',
 				type: 'notice',
 				default: '',
@@ -36,9 +40,9 @@ export class ExecutionData implements INodeType {
 				noDataExpression: true,
 				options: [
 					{
-						name: 'Save Execution Data for Search',
+						name: 'Save Highlight Data (for Search/review)',
 						value: 'save',
-						action: 'Save execution data for search',
+						action: 'Save Highlight Data (for search/review)',
 					},
 				],
 			},
@@ -68,6 +72,7 @@ export class ExecutionData implements INodeType {
 								type: 'string',
 								default: '',
 								placeholder: 'e.g. myKey',
+								requiresDataPath: 'single',
 							},
 							{
 								displayName: 'Value',
@@ -81,29 +86,71 @@ export class ExecutionData implements INodeType {
 				],
 			},
 		],
+		hints: [
+			{
+				type: 'warning',
+				message: 'Some keys are longer than 50 characters. They will be truncated.',
+				displayCondition: '={{ $parameter.dataToSave.values.some((x) => x.key.length > 50) }}',
+				whenToDisplay: 'beforeExecution',
+				location: 'outputPane',
+			},
+			{
+				type: 'warning',
+				message: 'Some values are longer than 512 characters. They will be truncated.',
+				displayCondition: '={{ $parameter.dataToSave.values.some((x) => x.value.length > 512) }}',
+				whenToDisplay: 'beforeExecution',
+				location: 'outputPane',
+			},
+		],
 	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
-		const context = this.getWorkflowDataProxy(0);
+		const nodeVersion = this.getNode().typeVersion;
 
 		const items = this.getInputData();
 		const operations = this.getNodeParameter('operation', 0);
 
+		const returnData: INodeExecutionData[] = [];
+
 		if (operations === 'save') {
 			for (let i = 0; i < items.length; i++) {
-				const dataToSave =
-					((this.getNodeParameter('dataToSave', i, {}) as IDataObject).values as IDataObject[]) ||
-					[];
+				try {
+					const dataToSave =
+						(this.getNodeParameter('dataToSave', i, {}) as DataToSave).values || [];
 
-				const values = dataToSave.reduce((acc, { key, value }) => {
-					acc[key as string] = value;
-					return acc;
-				}, {} as IDataObject);
+					const values = dataToSave.reduce(
+						(acc, { key, value }) => {
+							// Expressions can resolve to booleans or numbers. Keep falsy values
+							// such as `false` and `0`, only nullish values become empty strings.
+							// The metadata setter converts valid values and rejects objects.
+							acc[key] = nodeVersion >= 1.1 ? (value ?? '') : value;
+							return acc;
+						},
+						{} as { [key: string]: string },
+					);
 
-				context.$execution.customData.setAll(values);
+					this.customData.setAll(values);
+
+					returnData.push(items[i]);
+				} catch (error) {
+					if (this.continueOnFail()) {
+						returnData.push({
+							json: {
+								error: error.message,
+							},
+							pairedItem: {
+								item: i,
+							},
+						});
+						continue;
+					}
+					throw new NodeOperationError(this.getNode(), error);
+				}
 			}
+		} else {
+			return [items];
 		}
 
-		return [items];
+		return [returnData];
 	}
 }

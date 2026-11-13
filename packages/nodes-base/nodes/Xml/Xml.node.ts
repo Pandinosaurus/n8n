@@ -1,27 +1,27 @@
-import { Builder, Parser } from 'xml2js';
 import type {
 	IExecuteFunctions,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError, deepCopy } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, deepCopy, sanitizeXmlName } from 'n8n-workflow';
+import { Builder, Parser } from 'xml2js';
 
 export class Xml implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'XML',
 		name: 'xml',
-		icon: 'fa:file-code',
+		icon: 'node:xml',
+		iconColor: 'purple',
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["mode"]==="jsonToxml" ? "JSON to XML" : "XML to JSON"}}',
 		description: 'Convert data from and to XML',
 		defaults: {
 			name: 'XML',
-			color: '#333377',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
 			{
 				displayName: 'Mode',
@@ -75,7 +75,7 @@ export class Xml implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				displayOptions: {
 					show: {
 						mode: ['jsonToxml'],
@@ -149,7 +149,7 @@ export class Xml implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				displayOptions: {
 					show: {
 						mode: ['xmlToJson'],
@@ -235,6 +235,26 @@ export class Xml implements INodeType {
 		const dataPropertyName = this.getNodeParameter('dataPropertyName', 0);
 		const options = this.getNodeParameter('options', 0, {});
 
+		const forbiddenKeys = ['__proto__', 'constructor', 'prototype'];
+		if (options.attrkey !== undefined) {
+			options.attrkey = String(options.attrkey);
+			if (forbiddenKeys.includes(options.attrkey)) {
+				throw new NodeOperationError(
+					this.getNode(),
+					`The "Attribute Key" option value "${options.attrkey}" is not allowed`,
+				);
+			}
+		}
+		if (options.charkey !== undefined) {
+			options.charkey = String(options.charkey);
+			if (forbiddenKeys.includes(options.charkey)) {
+				throw new NodeOperationError(
+					this.getNode(),
+					`The "Character Key" option value "${options.charkey}" is not allowed`,
+				);
+			}
+		}
+
 		let item: INodeExecutionData;
 		const returnData: INodeExecutionData[] = [];
 		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
@@ -248,6 +268,10 @@ export class Xml implements INodeType {
 							explicitArray: false,
 						},
 						options,
+						{
+							tagNameProcessors: [sanitizeXmlName],
+							attrNameProcessors: [sanitizeXmlName],
+						},
 					);
 
 					const parser = new Parser(parserOptions);

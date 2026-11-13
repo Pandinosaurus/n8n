@@ -1,52 +1,202 @@
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'fs';
+import { fileURLToPath, pathToFileURL } from 'url';
 import shell from 'shelljs';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { rawTimeZones } from '@vvo/tzdb';
+import glob from 'fast-glob';
+import cliPackageJson from '../package.json' with { type: 'json' };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SPEC_FILENAME = 'openapi.yml';
-const SPEC_THEME_FILENAME = 'swaggerTheme.css';
+const SPEC_THEME_FILENAME = 'swagger-theme.css';
+
+const YAML_STRINGIFY_OPTS = { singleQuote: true, aliasDuplicateObjects: false, lineWidth: 0 };
 
 const publicApiEnabled = process.env.N8N_PUBLIC_API_DISABLED !== 'true';
 
-copyUserManagementEmailTemplates();
+generateUserManagementEmailTemplates();
+generateTimezoneData();
+copyAgentIntegrationAssets();
 
 if (publicApiEnabled) {
+	createPublicApiDirectory();
 	copySwaggerTheme();
-	bundleOpenApiSpecs();
+
+	await buildPublicApiSpec();
 }
 
-function copyUserManagementEmailTemplates(rootDir = ROOT_DIR) {
-	const templates = {
-		source: path.resolve(rootDir, 'src', 'UserManagement', 'email', 'templates'),
-		destination: path.resolve(rootDir, 'dist', 'UserManagement', 'email'),
-	};
+function generateUserManagementEmailTemplates() {
+	const sourceDir = path.resolve(ROOT_DIR, 'src', 'user-management', 'email', 'templates');
+	const destinationDir = path.resolve(ROOT_DIR, 'dist', 'user-management', 'email', 'templates');
 
-	shell.cp('-r', templates.source, templates.destination);
+	shell.mkdir('-p', destinationDir);
+
+	const templates = glob.sync('*.mjml', { cwd: sourceDir }).filter((t) => !t.startsWith('_'));
+
+	// One mjml process for all templates: each `pnpm mjml` start costs about 0.3s.
+	// With several inputs, mjml writes `<name>.html` into the output directory.
+	const sources = templates.map((template) => `"${path.resolve(sourceDir, template)}"`).join(' ');
+	const result = shell.exec(`pnpm mjml ${sources} --output "${destinationDir}"`, {
+		silent: false,
+	});
+	if (result.code !== 0) {
+		throw new Error(`mjml failed to compile the email templates (exit code ${result.code})`);
+	}
+
+	for (const template of templates) {
+		const name = template.replace(/\.mjml$/, '');
+		const compiled = path.resolve(destinationDir, `${name}.html`);
+		if (!existsSync(compiled)) {
+			throw new Error(`mjml did not write ${compiled}`);
+		}
+		shell.mv(compiled, path.resolve(destinationDir, `${name}.handlebars`));
+	}
+
+	shell.cp(path.resolve(sourceDir, 'n8n-logo.png'), destinationDir);
 }
 
-function copySwaggerTheme(rootDir = ROOT_DIR, themeFilename = SPEC_THEME_FILENAME) {
+function createPublicApiDirectory() {
+	const publicApiDirectory = path.resolve(ROOT_DIR, 'dist', 'public-api', 'v1');
+	if (!existsSync(publicApiDirectory)) {
+		console.log('Creating directory', publicApiDirectory);
+		mkdirSync(publicApiDirectory, { recursive: true });
+	}
+}
+
+function copySwaggerTheme() {
 	const swaggerTheme = {
-		source: path.resolve(rootDir, 'src', 'PublicApi', themeFilename),
-		destination: path.resolve(rootDir, 'dist', 'PublicApi'),
+		source: path.resolve(ROOT_DIR, 'src', 'public-api', SPEC_THEME_FILENAME),
+		destination: path.resolve(ROOT_DIR, 'dist', 'public-api'),
 	};
 
 	shell.cp('-r', swaggerTheme.source, swaggerTheme.destination);
 }
 
-function bundleOpenApiSpecs(rootDir = ROOT_DIR, specFileName = SPEC_FILENAME) {
-	const publicApiDir = path.resolve(rootDir, 'src', 'PublicApi');
+// Builds the v1 spec. The generated root lists every `@PublicApiController` operation. The build
+// bundles it, then puts its paths and components into the hand-written envelope (`openapi.yml`).
+async function buildPublicApiSpec() {
+	const v1Dir = path.resolve(ROOT_DIR, 'src', 'public-api', 'v1');
+	const { generateDocs, assembleSpec, DECORATOR_ROOT_FILENAME } = await loadOpenApiGenerator();
 
-	shell
-		.find(publicApiDir)
-		.reduce((acc, cur) => {
-			return cur.endsWith(specFileName) ? [...acc, path.relative('./src', cur)] : acc;
-		}, [])
-		.forEach((specPath) => {
-			const distSpecPath = path.resolve(rootDir, 'dist', specPath);
-			const command = `pnpm openapi bundle src/${specPath} --output ${distSpecPath}`;
-			shell.exec(command, { silent: true });
-		});
+	// 1. Generate the operation fragments and the root from source.
+	generateDocs(v1Dir);
+
+	// 2. Bundle the generated root, resolving its $refs to the fragment files.
+	const v1DistDir = path.resolve(ROOT_DIR, 'dist', 'public-api', 'v1');
+	const generatedDistSpec = path.join(v1DistDir, DECORATOR_ROOT_FILENAME);
+	bundleSpec(path.join(v1Dir, DECORATOR_ROOT_FILENAME), generatedDistSpec);
+
+	// 3. Assemble the published spec from the envelope and the bundled root.
+	const envelope = parseYaml(readFileSync(path.join(v1Dir, SPEC_FILENAME), 'utf8'));
+	const generated = parseYaml(readFileSync(generatedDistSpec, 'utf8'));
+	const n8nVersion = cliPackageJson.version;
+
+	const openApiSpec = assembleSpec(envelope, generated, n8nVersion);
+	const openApiSpecYaml = stringifyYaml(openApiSpec, YAML_STRINGIFY_OPTS);
+
+	writeFileSync(path.join(v1DistDir, SPEC_FILENAME), openApiSpecYaml);
+
+	// 4. Remove the bundled root. Only the assembled spec is published.
+	rmSync(generatedDistSpec);
+}
+
+// Imports the already-compiled generator from dist rather than the .ts source — by the time
+// build:data runs, `tsc` has already emitted it and build.mjs has no TS loader.
+async function loadOpenApiGenerator() {
+	const generatorPath = path.resolve(
+		ROOT_DIR,
+		'dist',
+		'public-api',
+		'v1',
+		'openapi-gen',
+		'generate.js',
+	);
+	if (!existsSync(generatorPath)) {
+		throw new Error(
+			`OpenAPI doc generator not found at ${generatorPath} — did the TypeScript build run before build:data?`,
+		);
+	}
+
+	const generator = await import(pathToFileURL(generatorPath).href);
+	for (const name of ['generateDocs', 'assembleSpec', 'DECORATOR_ROOT_FILENAME']) {
+		if (generator[name] === undefined) {
+			throw new Error(
+				`OpenAPI doc generator at ${generatorPath} is missing export '${name}' — its contract may have changed.`,
+			);
+		}
+	}
+	return generator;
+}
+
+// Bundles a spec through redocly, resolving all $refs, and writes it to `distPath`.
+function bundleSpec(sourcePath, distPath) {
+	// Remove old output, so that the check below cannot pass on a stale file.
+	rmSync(distPath, { force: true });
+
+	const result = shell.exec(`pnpm openapi bundle "${sourcePath}" --output "${distPath}"`, {
+		silent: true,
+	});
+	if (result.code !== 0) {
+		throw new Error(`redocly failed to bundle ${sourcePath}:\n${result.stderr || result.stdout}`);
+	}
+	if (!existsSync(distPath)) {
+		throw new Error(`redocly did not write the bundle for ${sourcePath} to ${distPath}`);
+	}
+}
+
+function copyAgentIntegrationAssets() {
+	// tsc emits no non-TS files, so every platform's assets are copied here.
+	// Discovered rather than listed: a platform that adds an assets directory
+	// otherwise works in dev, where they are read from src, and ships without
+	// them.
+	const platformsRoot = path.resolve(
+		ROOT_DIR,
+		'src',
+		'modules',
+		'agents',
+		'integrations',
+		'platforms',
+	);
+	const sourceDirs = glob.sync('*/assets', {
+		cwd: platformsRoot,
+		onlyDirectories: true,
+		absolute: false,
+	});
+
+	if (sourceDirs.length === 0) {
+		throw new Error(`No agent integration assets directories found under: ${platformsRoot}`);
+	}
+
+	for (const relativeDir of sourceDirs) {
+		const sourceDir = path.resolve(platformsRoot, relativeDir);
+		const destinationDir = path.resolve(
+			ROOT_DIR,
+			'dist',
+			'modules',
+			'agents',
+			'integrations',
+			'platforms',
+			relativeDir,
+		);
+
+		shell.rm('-rf', destinationDir);
+		shell.mkdir('-p', path.dirname(destinationDir));
+		shell.cp('-R', sourceDir, destinationDir);
+		if (!existsSync(destinationDir)) {
+			throw new Error(`Failed to copy agent integration assets to: ${destinationDir}`);
+		}
+	}
+}
+
+function generateTimezoneData() {
+	const timezones = ['Etc/UTC', 'Etc/GMT', ...rawTimeZones.map((tz) => tz.name)];
+	const data = timezones.sort().reduce((acc, name) => {
+		acc[name] = name.replaceAll('_', ' ');
+		return acc;
+	}, {});
+	writeFileSync(path.resolve(ROOT_DIR, 'dist/timezones.json'), JSON.stringify({ data }));
 }

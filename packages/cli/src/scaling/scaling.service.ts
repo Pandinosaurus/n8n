@@ -1,0 +1,945 @@
+import { isObjectLiteral, Logger } from '@n8n/backend-common';
+import { EventService } from '@n8n/backend-services';
+import { GlobalConfig } from '@n8n/config';
+import { Time } from '@n8n/constants';
+import { ExecutionRepository } from '@n8n/db';
+import {
+	HIGHEST_SHUTDOWN_PRIORITY,
+	OnLeaderStepdown,
+	OnLeaderTakeover,
+	OnShutdown,
+} from '@n8n/decorators';
+import { Container, Service } from '@n8n/di';
+import { decodeBufferBody, ErrorReporter, InstanceSettings } from 'n8n-core';
+import { ensureError } from '@n8n/utils/errors/ensure-error';
+import { sleep } from '@n8n/utils/sleep';
+import { jsonStringify } from 'n8n-workflow';
+import { OperationalError, UnexpectedError } from '@n8n/errors';
+import type { IRun } from 'n8n-workflow';
+import assert, { strict } from 'node:assert';
+
+import { ActiveExecutions } from '@/active-executions';
+import { ExecutionCrashService } from '@/executions/execution-crash.service';
+import { ExecutionPersistence } from '@/executions/execution-persistence';
+import { assertNever } from '@/utils';
+
+import { JOB_TYPE_NAME } from './constants';
+import { JobOutcomeTracker } from './job-outcome-tracker';
+import { JobProcessor } from './job-processor';
+import { throwJobBackToQueue } from './job-return';
+import { DEFAULT_QUEUE_NAME, resolveQueueName, resolveWorkerPoolName } from './queue-name';
+import type {
+	JobQueue,
+	Job,
+	JobData,
+	JobOptions,
+	JobStatus,
+	JobId,
+	JobFinishedProps,
+	QueueRecoveryContext,
+	JobMessage,
+	JobFailedMessage,
+	JobFinishedMessage,
+} from './scaling.types';
+import { WebhookResponseRelay } from './webhook-response-relay';
+
+const DRAIN_POLL_INTERVAL_MS = 500;
+
+/** Share of the time left at the drain deadline that the cancellation write may use. */
+const CANCEL_WRITE_BUDGET_SHARE = 0.5;
+
+/** Ceiling for the cancellation write, so a long shutdown window does not stall on it. */
+const MAX_CANCEL_WRITE_TIMEOUT_MS = 3 * Time.seconds.toMilliseconds;
+
+const CURRENT_JOBS_SETTLE_TIMEOUT_MS = 5 * Time.seconds.toMilliseconds;
+
+@Service()
+export class ScalingService {
+	/** Bull queues keyed by queue name. Pool queues are created lazily. */
+	private readonly queueByName = new Map<string, JobQueue>();
+
+	private initialQueueName = DEFAULT_QUEUE_NAME;
+
+	private createBullQueue?: (name: string) => JobQueue;
+
+	private stopping = false;
+
+	constructor(
+		private readonly logger: Logger,
+		private readonly errorReporter: ErrorReporter,
+		private readonly activeExecutions: ActiveExecutions,
+		private readonly jobProcessor: JobProcessor,
+		private readonly globalConfig: GlobalConfig,
+		private readonly executionRepository: ExecutionRepository,
+		private readonly executionPersistence: ExecutionPersistence,
+		private readonly instanceSettings: InstanceSettings,
+		private readonly eventService: EventService,
+		private readonly webhookResponseRelay: WebhookResponseRelay,
+		private readonly executionCrashService: ExecutionCrashService,
+		private readonly jobOutcomeTracker: JobOutcomeTracker,
+	) {
+		this.logger = this.logger.scoped('scaling');
+	}
+
+	private get defaultQueue(): JobQueue {
+		const queue = this.queueByName.get(this.initialQueueName);
+		if (!queue) throw new UnexpectedError('This method must be called after `setupQueue`');
+		return queue;
+	}
+
+	/** Return an existing queue or lazily create a new Bull queue for the given name. */
+	async getOrCreateQueue(queueName: string): Promise<JobQueue> {
+		const existing = this.queueByName.get(queueName);
+		if (existing) return existing;
+
+		if (!this.createBullQueue) {
+			throw new UnexpectedError('This method must be called after `setupQueue`');
+		}
+
+		const queue = this.createBullQueue(queueName);
+		this.registerListenersForQueue(queue);
+		this.queueByName.set(queueName, queue);
+		this.logger.debug(`Created queue "${queueName}"`);
+		return queue;
+	}
+
+	// #region Lifecycle
+
+	async setupQueue() {
+		if (this.queueByName.size > 0) return;
+
+		const { default: BullQueue } = await import('bull');
+		const { RedisClientService } = await import('@n8n/backend-services');
+
+		const service = Container.get(RedisClientService);
+
+		// Completion events sent while the connection was down are lost, so check the DB at once
+		service.on('connection-recovered', () => {
+			void this.jobOutcomeTracker.recheckAll();
+		});
+
+		const bullPrefix = this.globalConfig.queue.bull.prefix;
+		const prefix = service.toValidPrefix(bullPrefix);
+		const settings = { ...this.globalConfig.queue.bull.settings, maxStalledCount: 0 };
+
+		this.createBullQueue = (name: string) =>
+			new BullQueue(name, {
+				prefix,
+				settings,
+				createClient: (type) => service.createClient({ type: `${type}(bull)` }),
+			});
+
+		const poolName = resolveWorkerPoolName(this.globalConfig.queue.workerPool);
+		const queueName = resolveQueueName(this.instanceSettings.instanceType, poolName);
+
+		const queue = this.createBullQueue(queueName);
+		this.registerListenersForQueue(queue);
+		this.queueByName.set(queueName, queue);
+		this.initialQueueName = queueName;
+
+		this.logger.debug('Queue setup', {
+			queueName,
+			poolName,
+			instanceType: this.instanceSettings.instanceType,
+		});
+
+		if (this.instanceSettings.isLeader) this.scheduleQueueRecovery(0);
+
+		this.scheduleQueueMetrics();
+
+		const { McpServer, QueuedExecutionStrategy, RedisSessionStore } = await import(
+			'@n8n/n8n-nodes-langchain/mcp/core'
+		);
+		const { Publisher } = await import('@n8n/backend-services');
+
+		const publisher = Container.get(Publisher);
+
+		const MCP_SESSION_TTL = 86400;
+		const getMcpSessionKey = (sessionId: string) =>
+			`${this.globalConfig.redis.prefix}:mcp-session:${sessionId}`;
+
+		const mcpServer = McpServer.instance(this.logger);
+		const redisStore = new RedisSessionStore(
+			{
+				set: async (key, value, ttl) => await publisher.set(key, value, ttl),
+				get: async (key) => await publisher.get(key),
+				clear: async (key) => await publisher.clear(key),
+			},
+			getMcpSessionKey,
+			MCP_SESSION_TTL,
+		);
+
+		mcpServer.setSessionStore(redisStore);
+		mcpServer.setExecutionStrategy(new QueuedExecutionStrategy(mcpServer.getPendingCallsManager()));
+
+		this.logger.debug('Queue setup completed');
+	}
+
+	setupWorker(concurrency: number) {
+		this.assertWorker();
+		this.assertQueue();
+
+		void this.defaultQueue.process(JOB_TYPE_NAME, concurrency, async (job: Job) => {
+			if (this.stopping) {
+				const { executionId } = job.data;
+				const jobId = job.id;
+				this.logger.warn(
+					`Worker received job ${jobId} for execution ${executionId} after it began to stop`,
+					{ executionId, jobId },
+				);
+				// A job started this late may not finish before the force exit, so another worker runs it.
+				await throwJobBackToQueue(job, this.logger);
+			}
+
+			try {
+				this.eventService.emit('job-dequeued', {
+					executionId: job.data.executionId,
+					workflowId: job.data.workflowId,
+					hostId: this.instanceSettings.hostId,
+					jobId: job.id.toString(),
+				});
+
+				if (!this.hasValidJobData(job)) {
+					throw new UnexpectedError('Worker received invalid job', {
+						extra: { jobData: jsonStringify(job, { replaceCircularRefs: true }) },
+					});
+				}
+
+				await this.jobProcessor.processJob(job);
+			} catch (error) {
+				await this.reportJobProcessingError(ensureError(error), job);
+			}
+		});
+
+		this.logger.debug('Worker setup completed');
+	}
+
+	private async reportJobProcessingError(error: Error, job: Job) {
+		const { executionId } = job.data;
+
+		this.logger.error(`Worker errored while running execution ${executionId} (job ${job.id})`, {
+			error,
+			executionId,
+			jobId: job.id,
+		});
+
+		const msg: JobFailedMessage = {
+			kind: 'job-failed',
+			executionId,
+			workerId: this.instanceSettings.hostId,
+			errorMsg: error.message,
+			errorStack: error.stack ?? '',
+		};
+
+		try {
+			await job.progress(msg);
+		} catch (progressError) {
+			// e.g. the job key was already deleted by a stall sweep - do not let
+			// this secondary error mask the original one from being reported below
+			this.logger.warn(`Failed to notify main of failed execution ${executionId} (job ${job.id})`, {
+				error: progressError,
+				executionId,
+				jobId: job.id,
+			});
+		}
+
+		this.errorReporter.error(error, { executionId });
+
+		throw error;
+	}
+
+	@OnShutdown(HIGHEST_SHUTDOWN_PRIORITY)
+	async stop() {
+		const { instanceType } = this.instanceSettings;
+
+		if (instanceType === 'main') await this.stopMain();
+		else if (instanceType === 'worker') await this.stopWorker();
+	}
+
+	private async pauseAllQueues() {
+		await Promise.all(
+			[...this.queueByName.values()].map(async (queue) => await queue.pause(true, true)),
+		);
+		this.logger.debug('Paused all queues');
+	}
+
+	private async stopMain() {
+		if (this.instanceSettings.isSingleMain) await this.pauseAllQueues();
+
+		if (this.queueRecoveryContext.timeout) this.stopQueueRecovery();
+		if (this.isQueueMetricsEnabled) this.stopQueueMetrics();
+	}
+
+	private async stopWorker() {
+		this.stopping = true;
+
+		const start = Date.now();
+
+		await this.pauseAllQueues();
+
+		const shutdownWindowMs =
+			this.globalConfig.generic.gracefulShutdownTimeout * Time.seconds.toMilliseconds;
+
+		// The budget bounds only the in-process wait. The queued-job wait stays
+		// unbounded, so a long queued execution still runs to completion.
+		const drainTimeoutMs = shutdownWindowMs * 0.8;
+
+		const hasQueuedJobsToDrain = () => this.getRunningJobsCount() !== 0;
+		const hasInProcessExecutionsToDrain = () =>
+			this.activeExecutions.getRunningExecutionIds().length !== 0;
+		const isWithinDrainBudget = () => Date.now() - start < drainTimeoutMs;
+		const getRemainingWindowMs = () => Math.max(0, shutdownWindowMs - (Date.now() - start));
+
+		if (this.globalConfig.queue.suspendExecutionsOnShutdown) {
+			this.jobProcessor.suspendRunningJobs();
+		}
+
+		let count = 0;
+
+		while (hasQueuedJobsToDrain() || (hasInProcessExecutionsToDrain() && isWithinDrainBudget())) {
+			if (count++ % 4 === 0) this.logExecutionsToDrain();
+
+			// Cap the last sleep at what is left of the budget, so the tick cannot
+			// overshoot it and leave no time to cancel before the force-exit timer.
+			const remainingBudgetMs = drainTimeoutMs - (Date.now() - start);
+			const sleepMs = hasQueuedJobsToDrain()
+				? DRAIN_POLL_INTERVAL_MS
+				: Math.max(1, Math.min(DRAIN_POLL_INTERVAL_MS, remainingBudgetMs));
+
+			await sleep(sleepMs);
+		}
+
+		await this.waitForCurrentQueueJobs(getRemainingWindowMs());
+
+		// Cancel the stragglers rather than leave them to run. The task runner stops
+		// next, so they cannot make progress.
+		if (drainTimeoutMs > 0 && hasInProcessExecutionsToDrain() && !isWithinDrainBudget()) {
+			const elapsed = Math.round((Date.now() - start) / Time.seconds.toMilliseconds);
+
+			this.logger.warn(
+				`Drain timeout reached after ${elapsed}s, shutting down with executions still active...`,
+			);
+			this.logExecutionsToDrain();
+
+			// The force-exit timer is armed at the full window, so the write gets a share of
+			// what is left of it. The rest stays for the shutdown hooks that run after this one.
+			const remainingWindowMs = getRemainingWindowMs();
+			const writeDeadlineMs = Math.min(
+				MAX_CANCEL_WRITE_TIMEOUT_MS,
+				Math.round(remainingWindowMs * CANCEL_WRITE_BUDGET_SHARE),
+			);
+
+			const cancelledExecutionIds =
+				await this.activeExecutions.cancelRunningExecutions(writeDeadlineMs);
+
+			if (cancelledExecutionIds.length > 0) {
+				this.logger.warn(
+					`Cancelled ${cancelledExecutionIds.length} in-process executions that could not finish before shutdown (execution IDs: ${cancelledExecutionIds.join(', ')})`,
+					{ executionIds: cancelledExecutionIds },
+				);
+			}
+		}
+	}
+
+	// Waits for fetches in flight at the pause, so a job that reaches the handler is returned to the queue before exit.
+	private async waitForCurrentQueueJobs(remainingWindowMs: number) {
+		let timeout: NodeJS.Timeout | undefined;
+
+		const timedOut = new Promise<void>((resolve) => {
+			timeout = setTimeout(
+				resolve,
+				// Leave the other half of what is left for the cancel step that follows.
+				Math.min(CURRENT_JOBS_SETTLE_TIMEOUT_MS, remainingWindowMs / 2),
+			);
+			timeout.unref();
+		});
+
+		const settled = Promise.all(
+			[...this.queueByName.values()].map(async (queue) => await queue.whenCurrentJobsFinished()),
+		).catch((error) => {
+			// Keep stopping; a dropped connection here must not block the cancel step.
+			this.logger.warn('Failed to wait for current queue jobs before stopping', { error });
+		});
+
+		try {
+			await Promise.race([settled, timedOut]);
+		} finally {
+			clearTimeout(timeout);
+		}
+	}
+
+	private logExecutionsToDrain() {
+		const summaries = this.jobProcessor.getRunningJobsSummary();
+		const executionIds = summaries.map((summary) => summary.executionId);
+
+		if (executionIds.length > 0) {
+			this.logger.info(
+				`Waiting for ${executionIds.length} active executions to finish... (execution IDs: ${executionIds.join(', ')})`,
+				{ executionIds },
+			);
+		}
+
+		const preflightExecutionIds = this.jobProcessor
+			.getJobsInPreflight()
+			.map(({ executionId }) => executionId);
+
+		if (preflightExecutionIds.length > 0) {
+			this.logger.info(
+				`Waiting for ${preflightExecutionIds.length} executions to start... (execution IDs: ${preflightExecutionIds.join(', ')})`,
+				{ executionIds: preflightExecutionIds },
+			);
+		}
+
+		const inProcessExecutionIds = this.activeExecutions.getRunningExecutionIds();
+
+		if (inProcessExecutionIds.length > 0) {
+			this.logger.info(
+				`Waiting for ${inProcessExecutionIds.length} in-process executions to finish... (execution IDs: ${inProcessExecutionIds.join(', ')})`,
+				{ executionIds: inProcessExecutionIds },
+			);
+		}
+	}
+
+	async pingQueue() {
+		await this.defaultQueue.client.ping();
+	}
+
+	// #endregion
+
+	// #region Jobs
+
+	/** Get and remove the result for a completed job. */
+	popJobResult(job: Job): JobFinishedProps | undefined {
+		return this.jobOutcomeTracker.popResult(job);
+	}
+
+	/** Wait until the job ends. Rejects with the failure reason, like Bull's `job.finished()`. */
+	async waitForJob(job: Job): Promise<void> {
+		await this.jobOutcomeTracker.waitFor(job);
+	}
+
+	async getPendingJobCounts() {
+		let active = 0;
+		let waiting = 0;
+		for (const queue of this.queueByName.values()) {
+			const counts = await queue.getJobCounts();
+			active += counts.active;
+			waiting += counts.waiting;
+		}
+		return { active, waiting };
+	}
+
+	/** Add a job to the given queue (or the default queue). Priority: `1` (highest) to `MAX_SAFE_INTEGER` (lowest). */
+	async addJob(
+		jobData: JobData,
+		{ priority, queueName }: { priority: number; queueName?: string },
+	) {
+		strict(priority > 0 && priority <= Number.MAX_SAFE_INTEGER);
+
+		const { keepLastCompleted, keepLastFailed } = this.globalConfig.executions.queueRetention;
+
+		const jobOptions: JobOptions = {
+			priority,
+			removeOnComplete: keepLastCompleted,
+			removeOnFail: keepLastFailed,
+		};
+
+		const targetQueue = queueName ? await this.getOrCreateQueue(queueName) : this.defaultQueue;
+
+		const job = await targetQueue.add(JOB_TYPE_NAME, jobData, jobOptions);
+
+		const { executionId } = jobData;
+		const jobId = job.id;
+
+		this.logger.info(`Enqueued execution ${executionId} (job ${jobId})`, {
+			executionId,
+			jobId,
+			...(queueName && queueName !== DEFAULT_QUEUE_NAME ? { queueName } : {}),
+		});
+		this.eventService.emit('job-enqueued', {
+			executionId,
+			workflowId: jobData.workflowId,
+			hostId: this.instanceSettings.hostId,
+			jobId: jobId.toString(),
+		});
+
+		return job;
+	}
+
+	async getJob(jobId: JobId) {
+		for (const queue of this.queueByName.values()) {
+			const job = await queue.getJob(jobId);
+			if (job) return job;
+		}
+		return null;
+	}
+
+	async findJobsByStatus(statuses: JobStatus[]) {
+		const allJobs: Job[] = [];
+		for (const queue of this.queueByName.values()) {
+			const jobs = await queue.getJobs(statuses);
+			allJobs.push(...jobs.filter((job): job is Job => job !== null));
+		}
+		return allJobs;
+	}
+
+	async stopJob(job: Job) {
+		const props = { jobId: job.id, executionId: job.data.executionId };
+
+		// A removed job emits no completion event, and the caller handles the cancellation
+		this.jobOutcomeTracker.drop(job);
+
+		try {
+			if (await job.isActive()) {
+				await job.progress({ kind: 'abort-job' }); // being processed by worker
+				this.logger.debug('Sent abort signal to worker', props);
+				return true;
+			}
+
+			await job.remove(); // not yet picked up, or waiting for next pickup (stalled)
+			this.logger.debug('Stopped inactive job', props);
+			return true;
+		} catch (error: unknown) {
+			assert(error instanceof Error);
+			this.logger.error('Failed to stop job', {
+				...props,
+				error: {
+					message: error.message,
+					name: error.name,
+					stack: error.stack,
+				},
+			});
+			return false;
+		}
+	}
+
+	getRunningJobsCount() {
+		return this.jobProcessor.getTrackedJobIds().length;
+	}
+
+	/**
+	 * Sizes of the in-memory collections, for diagnostics and tests.
+	 * `queueListeners` counts Bull event listeners across this process's queues.
+	 */
+	getDiagnosticCounts() {
+		let queueListeners = 0;
+		for (const queue of this.queueByName.values()) {
+			for (const eventName of queue.eventNames()) {
+				queueListeners += queue.listenerCount(eventName);
+			}
+		}
+
+		return {
+			...this.jobOutcomeTracker.getDiagnosticCounts(),
+			queueListeners,
+			runningJobs: this.getRunningJobsCount(),
+		};
+	}
+
+	// #endregion
+
+	// #region Listeners
+
+	private registerListenersForQueue(queue: JobQueue) {
+		const { instanceType } = this.instanceSettings;
+		if (instanceType === 'main' || instanceType === 'webhook') {
+			this.registerMainOrWebhookListeners(queue);
+		} else if (instanceType === 'worker') {
+			this.registerWorkerListeners(queue);
+		}
+	}
+
+	/**
+	 * Register listeners on a `worker` process for Bull queue events.
+	 */
+	private registerWorkerListeners(queue: JobQueue) {
+		queue.on('global:progress', (jobId: JobId, msg: unknown) => {
+			if (!this.isJobMessage(msg)) return;
+
+			if (msg.kind === 'abort-job') this.jobProcessor.stopJob(jobId);
+			// A worker can also wait for a job it enqueued
+			else if (msg.kind === 'job-finished') this.recordJobFinished(queue.name, jobId, msg);
+			else if (msg.kind === 'job-failed') this.recordJobFailed(queue.name, jobId, msg);
+		});
+
+		this.registerBullOutcomeListeners(queue);
+
+		queue.on('error', (error: Error) => {
+			if ('code' in error && error.code === 'ECONNREFUSED') return; // handled by RedisClientService.retryStrategy
+
+			/**
+			 * Non-recoverable error on worker start with Redis unavailable.
+			 * Even if Redis recovers, worker will remain unable to process jobs.
+			 */
+			if (error.message.includes('Error initializing Lua scripts')) {
+				this.logger.error('Fatal error initializing worker', { error });
+				this.logger.error('Exiting process...');
+				process.exit(1);
+			}
+
+			this.logger.error('Queue errored', { error });
+
+			throw error;
+		});
+	}
+
+	/**
+	 * Register listeners on a `main` or `webhook` process for Bull queue events.
+	 */
+	private registerMainOrWebhookListeners(queue: JobQueue) {
+		queue.on('error', (error: Error) => {
+			if ('code' in error && error.code === 'ECONNREFUSED') return; // handled by RedisClientService.retryStrategy
+
+			this.logger.error('Queue errored', { error });
+
+			throw error;
+		});
+
+		queue.on('global:progress', (jobId: JobId, msg: unknown) => {
+			if (!this.isJobMessage(msg)) return;
+
+			// completion and failure are reported via `global:progress` to convey more details
+			// than natively provided by Bull in `global:completed` and `global:failed` events
+
+			switch (msg.kind) {
+				case 'send-chunk':
+					this.activeExecutions.sendChunk(msg.executionId, msg.chunkText);
+					break;
+				case 'respond-to-webhook': {
+					const decodedResponse = decodeBufferBody(msg.response);
+					this.activeExecutions.resolveResponsePromise(msg.executionId, decodedResponse);
+					break;
+				}
+				case 'job-finished':
+					if (msg.success) {
+						this.activeExecutions.resolveResponsePromise(msg.executionId, {});
+					} else {
+						this.activeExecutions.resolveResponsePromise(msg.executionId, {
+							body: {
+								message: 'Workflow execution failed',
+							},
+							statusCode: 500,
+						});
+					}
+
+					this.recordJobFinished(queue.name, jobId, msg);
+
+					this.logger.info(`Execution ${msg.executionId} (job ${jobId}) finished`, {
+						workerId: msg.workerId,
+						executionId: msg.executionId,
+						jobId,
+						success: msg.success,
+					});
+					break;
+				case 'job-failed':
+					this.logger.error(
+						[
+							`Execution ${msg.executionId} (job ${jobId}) failed`,
+							msg.errorStack ? `\n${msg.errorStack}\n` : '',
+						].join(''),
+						{
+							workerId: msg.workerId,
+							errorMsg: msg.errorMsg,
+							executionId: msg.executionId,
+							jobId,
+						},
+					);
+
+					this.recordJobFailed(queue.name, jobId, msg);
+					break;
+				case 'abort-job':
+					break; // only for worker
+				case 'mcp-response':
+					// Route to appropriate MCP handler based on type
+					// All mains receive this; only the one with the session/pending response will handle it
+					void this.handleMcpResponse(
+						msg.executionId,
+						msg.mcpType,
+						msg.sessionId,
+						msg.messageId,
+						msg.response,
+					);
+					break;
+				default:
+					assertNever(msg);
+			}
+		});
+
+		this.registerBullOutcomeListeners(queue);
+
+		if (this.isQueueMetricsEnabled) {
+			queue.on('global:completed', () => this.jobCounters.completed++);
+			queue.on('global:failed', () => this.jobCounters.failed++);
+		}
+	}
+
+	/**
+	 * Record the outcome of a `job-finished` message. A v1 message from an
+	 * older worker carries no result, but it still ends the wait for the job.
+	 */
+	private recordJobFinished(queueName: string, jobId: JobId, msg: JobFinishedMessage) {
+		this.jobOutcomeTracker.recordFinished(
+			queueName,
+			jobId,
+			msg.executionId,
+			msg.version === 2
+				? {
+						success: msg.success,
+						error: msg.error,
+						status: msg.status,
+						lastNodeExecuted: msg.lastNodeExecuted,
+						usedDynamicCredentials: msg.usedDynamicCredentials,
+						metadata: msg.metadata,
+						...(msg.failedBeforeStart && { failedBeforeStart: true }),
+						startedAt: new Date(msg.startedAt),
+						stoppedAt: new Date(msg.stoppedAt),
+						// Dropping `waitTill` here makes the caller mistake a waiting execution
+						// for a finished one and delete it when the workflow does not
+						// save successful executions
+						waitTill: msg.waitTill ? new Date(msg.waitTill) : null,
+						nodeTimeSavedMinutes: msg.nodeTimeSavedMinutes,
+					}
+				: undefined,
+		);
+	}
+
+	private recordJobFailed(queueName: string, jobId: JobId, msg: JobFailedMessage) {
+		// The worker already reported the underlying error, so this copy is only a handled signal
+		this.jobOutcomeTracker.recordFailed(
+			queueName,
+			jobId,
+			msg.executionId,
+			new OperationalError(msg.errorMsg),
+		);
+	}
+
+	private registerBullOutcomeListeners(queue: JobQueue) {
+		// Failures such as a stall are reported only by Bull, not by the worker
+		queue.on('global:failed', (jobId: JobId, failedReason: string) => {
+			this.jobOutcomeTracker.settleByJobKey(queue.name, jobId, new OperationalError(failedReason));
+		});
+		queue.on('global:completed', (jobId: JobId) => {
+			this.jobOutcomeTracker.settleByJobKey(queue.name, jobId);
+		});
+	}
+
+	/** Whether the argument is a message sent via Bull's internal pubsub setup. */
+	private isJobMessage(candidate: unknown): candidate is JobMessage {
+		return typeof candidate === 'object' && candidate !== null && 'kind' in candidate;
+	}
+
+	/**
+	 * Handle MCP response from worker - forward to appropriate MCP handler.
+	 * For MCP Service: fetches execution data from DB and forwards IRun.
+	 * For MCP Trigger: forwards the response directly (tool result from sendResponse hook).
+	 */
+	private async handleMcpResponse(
+		executionId: string,
+		mcpType: 'service' | 'trigger',
+		sessionId: string,
+		messageId: string,
+		response: unknown,
+	): Promise<void> {
+		try {
+			if (mcpType === 'service') {
+				// For MCP Service, fetch execution data from DB
+				const executionData = await this.executionPersistence.findSingleExecution(executionId, {
+					includeData: true,
+					unflattenData: true,
+				});
+
+				if (!executionData) {
+					this.logger.error('Execution not found in DB for MCP response', { executionId });
+					return;
+				}
+
+				// Convert to IRun format
+				const runData: IRun = {
+					// oxlint-disable-next-line typescript/no-deprecated
+					finished: executionData.finished,
+					mode: executionData.mode,
+					startedAt: executionData.startedAt,
+					stoppedAt: executionData.stoppedAt,
+					status: executionData.status,
+					data: executionData.data,
+					storedAt: executionData.storedAt,
+				};
+
+				const { McpService } = await import('@/modules/mcp/mcp.service.js');
+				const mcpService = Container.get(McpService);
+				mcpService.handleWorkerResponse(executionId, runData);
+			} else {
+				const { McpServer } = await import('@n8n/n8n-nodes-langchain/mcp/core');
+				const mcpServer = McpServer.instance(this.logger);
+
+				const holdsResponse =
+					mcpServer.hasSession(sessionId) || mcpServer.hasPendingResponse(sessionId, messageId);
+
+				if (holdsResponse) {
+					// Holding the session does not make this main the sole reader: a second
+					// main recreates the transport when a request for the session lands on
+					// it. So the stored body is left in place, and execution pruning
+					// reclaims it. Restoring under this guard only spares the mains that
+					// would discard the body a read of the whole thing.
+					const decoded = decodeBufferBody(response);
+					const toolResult = await this.webhookResponseRelay.restoreOffloadedBody(decoded, {
+						reclaim: false,
+						context: { executionId },
+					});
+
+					mcpServer.handleWorkerResponse(sessionId, messageId, toolResult);
+				}
+			}
+		} catch (error) {
+			this.logger.error('Failed to handle MCP response', {
+				executionId,
+				mcpType,
+				error: ensureError(error).message,
+			});
+		}
+	}
+
+	// #endregion
+
+	private assertQueue() {
+		if (this.queueByName.size > 0) return;
+
+		throw new UnexpectedError('This method must be called after `setupQueue`');
+	}
+
+	private assertWorker() {
+		if (this.instanceSettings.instanceType === 'worker') return;
+
+		throw new UnexpectedError('This method must be called on a `worker` instance');
+	}
+
+	// #region Queue metrics
+
+	/** Counters for completed and failed jobs, reset on each interval tick. */
+	private readonly jobCounters = { completed: 0, failed: 0 };
+
+	/** Interval for collecting queue metrics to expose via Prometheus. */
+	private queueMetricsInterval: NodeJS.Timeout | undefined;
+
+	get isQueueMetricsEnabled() {
+		return (
+			this.globalConfig.endpoints.metrics.includeQueueMetrics &&
+			this.instanceSettings.instanceType === 'main'
+		);
+	}
+
+	/** Set up an interval to collect queue metrics and emit them in an event. */
+	private scheduleQueueMetrics() {
+		if (!this.isQueueMetricsEnabled || this.queueMetricsInterval) return;
+
+		this.queueMetricsInterval = setInterval(async () => {
+			const pendingJobCounts = await this.getPendingJobCounts();
+
+			this.eventService.emit('job-counts-updated', {
+				...pendingJobCounts, // active, waiting
+				...this.jobCounters, // completed, failed
+			});
+
+			this.jobCounters.completed = 0;
+			this.jobCounters.failed = 0;
+		}, this.globalConfig.endpoints.metrics.queueMetricsInterval * Time.seconds.toMilliseconds);
+	}
+
+	/** Stop collecting queue metrics. */
+	private stopQueueMetrics() {
+		if (this.queueMetricsInterval) {
+			clearInterval(this.queueMetricsInterval);
+			this.queueMetricsInterval = undefined;
+
+			this.logger.debug('Queue metrics collection stopped');
+		}
+	}
+
+	// #endregion
+
+	// #region Queue recovery
+
+	private readonly queueRecoveryContext: QueueRecoveryContext = {
+		batchSize: this.globalConfig.executions.queueRecovery.batchSize,
+		waitMs: this.globalConfig.executions.queueRecovery.interval * 60 * 1000,
+	};
+
+	@OnLeaderTakeover()
+	private scheduleQueueRecovery(waitMs = this.queueRecoveryContext.waitMs) {
+		this.queueRecoveryContext.timeout = setTimeout(async () => {
+			try {
+				const nextWaitMs = await this.recoverFromQueue();
+				this.scheduleQueueRecovery(nextWaitMs);
+			} catch (error) {
+				this.logger.error('Failed to recover dangling executions from queue', {
+					msg: this.toErrorMsg(error),
+				});
+				this.logger.error('Retrying...');
+
+				this.scheduleQueueRecovery();
+			}
+		}, waitMs);
+
+		if (waitMs === 0) return;
+
+		const wait = [this.queueRecoveryContext.waitMs / Time.minutes.toMilliseconds, 'min'].join(' ');
+
+		this.logger.debug(`Scheduled queue recovery check for next ${wait}`);
+	}
+
+	@OnLeaderStepdown()
+	private stopQueueRecovery() {
+		if (!this.queueRecoveryContext.timeout) return;
+
+		clearTimeout(this.queueRecoveryContext.timeout);
+
+		this.logger.debug('Queue recovery stopped');
+	}
+
+	/**
+	 * Mark in-progress executions as `crashed` if stored in DB as `new` or `running`
+	 * but absent from the queue. Return time until next recovery cycle.
+	 */
+	async recoverFromQueue() {
+		const { waitMs, batchSize } = this.queueRecoveryContext;
+
+		const storedIds = await this.executionRepository.getInProgressExecutionIds(batchSize);
+
+		if (storedIds.length === 0) {
+			this.logger.debug('Completed queue recovery check, no dangling executions');
+			return waitMs;
+		}
+
+		const runningJobs = await this.findJobsByStatus(['active', 'waiting']);
+		const queuedIds = new Set(runningJobs.map((job) => job.data.executionId));
+
+		const danglingIds = storedIds.filter((id) => !queuedIds.has(id));
+		if (danglingIds.length === 0) {
+			this.logger.debug('Completed queue recovery check, no dangling executions');
+			return waitMs;
+		}
+
+		await this.executionCrashService.markAsCrashed(danglingIds, 'queue-recovery');
+
+		this.logger.info('Completed queue recovery check, recovered dangling executions', {
+			danglingIds,
+		});
+
+		// if this cycle used up the whole batch size, it is possible for there to be
+		// dangling executions outside this check, so speed up next cycle
+
+		return storedIds.length >= this.queueRecoveryContext.batchSize ? waitMs / 2 : waitMs;
+	}
+
+	private toErrorMsg(error: unknown) {
+		return error instanceof Error
+			? error.message
+			: jsonStringify(error, { replaceCircularRefs: true });
+	}
+
+	private hasValidJobData(job: Job) {
+		return isObjectLiteral(job.data) && 'executionId' in job.data && 'loadStaticData' in job.data;
+	}
+
+	// #endregion
+}

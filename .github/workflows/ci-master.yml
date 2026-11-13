@@ -1,99 +1,86 @@
-name: Test Master
+name: 'CI: Master (Build, Test, Lint)'
 
 on:
   push:
     branches:
       - master
+    paths-ignore:
+      - packages/@n8n/task-runner-python/**
+
+permissions:
+  contents: read
 
 jobs:
-  install-and-build:
-    runs-on: ubuntu-latest
-
-    timeout-minutes: 30
-
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x]
-
+  build-and-format:
+    name: Build & format
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    env:
+      NODE_OPTIONS: '--max-old-space-size=7168'
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      QA_METRICS_WEBHOOK_URL: ${{ secrets.QA_METRICS_WEBHOOK_URL }}
+      QA_METRICS_WEBHOOK_USER: ${{ secrets.QA_METRICS_WEBHOOK_USER }}
+      QA_METRICS_WEBHOOK_PASSWORD: ${{ secrets.QA_METRICS_WEBHOOK_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4.1.1
-
-      - run: corepack enable
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4.0.1
+      - uses: useblacksmith/checkout@bcec731f1eb1367240608d1c889a75b96db6ec53 # v1.5.0
+      - name: Setup and Build
+        uses: ./.github/actions/setup-nodejs
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: pnpm
+          # The default is build without typechecking, we want both
+          build-command: pnpm build
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Report build critical path
+        run: node scripts/turbo-critical-path.mjs >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build
-        run: pnpm build
-
-      - name: Cache build artifacts
-        uses: actions/cache/save@v4.0.0
-        with:
-          path: ./packages/**/dist
-          key: ${{ github.sha }}-base:${{ matrix.node-version }}-test-lint
+      - name: Run format check
+        run: pnpm format:check
 
   unit-test:
     name: Unit tests
-    uses: ./.github/workflows/units-tests-reusable.yml
-    needs: install-and-build
+    uses: ./.github/workflows/test-unit-reusable.yml
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [18.x, 20.x]
+        node-version: [24.22.2, 26.13.0]
     with:
-      ref: ${{ inputs.branch }}
+      ref: ${{ github.sha }}
       nodeVersion: ${{ matrix.node-version }}
-      cacheKey: ${{ github.sha }}-base:${{ matrix.node-version }}-test-lint
-      collectCoverage: true
+      collectCoverage: ${{ matrix.node-version == '24.22.2' }}
+    secrets: inherit
 
   lint:
-    name: Lint changes
-    runs-on: ubuntu-latest
-    needs: install-and-build
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x]
-    steps:
-      - uses: actions/checkout@v4.1.1
-        with:
-          repository: n8n-io/n8n
-          ref: ${{ inputs.branch }}
+    name: Lint
+    uses: ./.github/workflows/test-linting-reusable.yml
+    with:
+      ref: ${{ github.sha }}
 
-      - run: corepack enable
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4.0.1
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: pnpm
+  # The CodSpeed `performance` job (test-bench-reusable.yml) is removed for now:
+  # @codspeed/vitest-plugin does not support Vitest 5 yet. Add the job back, and
+  # add it to `notify-on-failure.needs`, when the plugin supports Vitest 5.
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Restore cached build artifacts
-        uses: actions/cache/restore@v4.0.0
-        with:
-          path: ./packages/**/dist
-          key: ${{ github.sha }}-base:${{ matrix.node-version }}-test-lint
-
-      - name: Lint
-        env:
-          CI_LINT_MASTER: true
-        run: pnpm lint
+  # Scoped to the packages this push touched, so it stays cheap enough to run on every commit.
+  verify-single-instance-npm:
+    name: Verify single-instance deps (npm-install)
+    uses: ./.github/workflows/test-single-instance-npm.yml
+    permissions:
+      contents: read
+    with:
+      scope: changed
+      base-ref: ${{ github.event.before }}
 
   notify-on-failure:
     name: Notify Slack on failure
     runs-on: ubuntu-latest
-    needs: [unit-test, lint]
+    needs: [unit-test, lint, build-and-format]
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
     steps:
-      - name: Notify Slack on failure
-        uses: act10ns/slack@v2.0.0
-        if: failure()
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          status: ${{ job.status }}
-          channel: '#alerts-build'
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          message: Master branch (build or test or lint) failed (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          sparse-checkout: .github/scripts/slack
+          sparse-checkout-cone-mode: false
+      - name: Notify Slack
+        env:
+          SLACK_TOKEN: ${{ secrets.QBOT_SLACK_TOKEN }}
+        run: |
+          node .github/scripts/slack/notify.mjs \
+            --channel '#alerts-build' \
+            --text '${{ github.ref_name }} branch (build or test or lint) failed (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})'

@@ -4,29 +4,25 @@ import type {
 	IHookFunctions,
 	ILoadOptionsFunctions,
 	JsonObject,
-	IRequestOptions,
+	IHttpRequestOptions,
 	IHttpRequestMethods,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
 export async function ouraApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
-	uri?: string,
-	option: IDataObject = {},
 ) {
-	const credentials = await this.getCredentials('ouraApi');
-	let options: IRequestOptions = {
-		headers: {
-			Authorization: `Bearer ${credentials.accessToken}`,
-		},
+	const options: WithRequestTarget<IHttpRequestOptions> = {
 		method,
 		qs,
 		body,
-		uri: uri || `https://api.ouraring.com/v1${resource}`,
+		url: requestUrl`https://api.ouraring.com/v2${resource}`,
 		json: true,
 	};
 
@@ -38,10 +34,8 @@ export async function ouraApiRequest(
 		delete options.qs;
 	}
 
-	options = Object.assign({}, options, option);
-
 	try {
-		return await this.helpers.request(options);
+		return await this.helpers.httpRequestWithAuthentication.call(this, 'ouraApi', options);
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject);
 	}

@@ -6,7 +6,7 @@ import type {
 	INodeTypeDescription,
 	IHttpRequestMethods,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { messageBirdApiRequest } from './GenericFunctions';
 
@@ -22,8 +22,9 @@ export class MessageBird implements INodeType {
 		defaults: {
 			name: 'MessageBird',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'messageBirdApi',
@@ -292,7 +293,7 @@ export class MessageBird implements INodeType {
 		let qs: IDataObject;
 
 		let requestMethod: IHttpRequestMethods;
-		let requestPath;
+		let endpoint;
 
 		for (let i = 0; i < items.length; i++) {
 			qs = {};
@@ -308,7 +309,7 @@ export class MessageBird implements INodeType {
 						// ----------------------------------
 
 						requestMethod = 'POST';
-						requestPath = '/messages';
+						endpoint = requestPath`/messages`;
 						const originator = this.getNodeParameter('originator', i) as string;
 						const body = this.getNodeParameter('message', i) as string;
 
@@ -366,7 +367,7 @@ export class MessageBird implements INodeType {
 					}
 				} else if (resource === 'balance') {
 					requestMethod = 'GET';
-					requestPath = '/balance';
+					endpoint = requestPath`/balance`;
 				} else {
 					throw new NodeOperationError(this.getNode(), `The resource "${resource}" is not known!`, {
 						itemIndex: i,
@@ -376,7 +377,7 @@ export class MessageBird implements INodeType {
 				const responseData = await messageBirdApiRequest.call(
 					this,
 					requestMethod,
-					requestPath,
+					endpoint,
 					bodyRequest,
 					qs,
 				);

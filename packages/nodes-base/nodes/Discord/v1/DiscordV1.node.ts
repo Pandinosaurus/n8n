@@ -1,5 +1,3 @@
-/* eslint-disable n8n-nodes-base/node-filename-against-convention */
-
 import type {
 	IExecuteFunctions,
 	INodeExecutionData,
@@ -8,10 +6,12 @@ import type {
 	INodeTypeDescription,
 	IRequestOptions,
 } from 'n8n-workflow';
-import { jsonParse, NodeApiError, NodeOperationError, sleep } from 'n8n-workflow';
+import { jsonParse, NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-import { oldVersionNotice } from '../../../utils/descriptions';
+import { sleep } from '@n8n/utils/sleep';
+
 import type { DiscordAttachment, DiscordWebhook } from './Interfaces';
+import { oldVersionNotice } from '../../../utils/descriptions';
 
 const versionDescription: INodeTypeDescription = {
 	displayName: 'Discord',
@@ -23,8 +23,8 @@ const versionDescription: INodeTypeDescription = {
 	defaults: {
 		name: 'Discord',
 	},
-	inputs: ['main'],
-	outputs: ['main'],
+	inputs: [NodeConnectionTypes.Main],
+	outputs: [NodeConnectionTypes.Main],
 	properties: [
 		oldVersionNotice,
 		{
@@ -49,7 +49,7 @@ const versionDescription: INodeTypeDescription = {
 			displayName: 'Additional Fields',
 			name: 'options',
 			type: 'collection',
-			placeholder: 'Add Option',
+			placeholder: 'Add option',
 			default: {},
 			options: [
 				{

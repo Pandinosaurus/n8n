@@ -1,0 +1,200 @@
+import {
+	createTestNode,
+	createTestTaskData,
+	createTestWorkflow,
+	createTestWorkflowExecutionResponse,
+} from '@/__tests__/mocks';
+import { createComponentRenderer } from '@/__tests__/render';
+import InputPanel, { type Props } from './InputPanel.vue';
+import { createTestingPinia } from '@pinia/testing';
+import {
+	createRunExecutionData,
+	NodeConnectionTypes,
+	type IConnections,
+	type INodeExecutionData,
+	type IRunData,
+	type RedactionInfo,
+} from 'n8n-workflow';
+import { useI18n } from '@n8n/i18n';
+import { setActivePinia } from 'pinia';
+import { computed, shallowRef } from 'vue';
+import { WorkflowDocumentStoreKey, WorkflowIdKey } from '@/app/constants/injectionKeys';
+
+import {
+	injectWorkflowDocumentStore,
+	useWorkflowDocumentStore,
+	createWorkflowDocumentId,
+} from '@/app/stores/workflowDocument.store';
+import { useWorkflowExecutionStateStore } from '@/app/stores/workflowExecutionState.store';
+
+vi.mock('@/app/stores/workflowDocument.store', async () => {
+	const actual = await vi.importActual('@/app/stores/workflowDocument.store');
+	return { ...actual, injectWorkflowDocumentStore: vi.fn() };
+});
+
+vi.mock('vue-router', () => {
+	return {
+		useRouter: () => ({}),
+		useRoute: () => ({ meta: {}, params: {} }),
+		RouterLink: vi.fn(),
+	};
+});
+
+const nodes = [
+	createTestNode({ id: 'node1', name: 'Node 1' }),
+	createTestNode({ id: 'node2', name: 'Node 2' }),
+	createTestNode({ name: 'Agent' }),
+	createTestNode({ name: 'Tool' }),
+];
+
+const render = (
+	props: Partial<Props> = {},
+	pinData?: INodeExecutionData[],
+	runData?: IRunData,
+	redactionInfo?: RedactionInfo,
+) => {
+	const connections: IConnections = {
+		[nodes[0].name]: {
+			[NodeConnectionTypes.Main]: [
+				[{ node: nodes[1].name, type: NodeConnectionTypes.Main, index: 0 }],
+			],
+		},
+		[nodes[1].name]: {
+			[NodeConnectionTypes.Main]: [
+				[{ node: nodes[2].name, type: NodeConnectionTypes.Main, index: 0 }],
+			],
+		},
+		[nodes[3].name]: {
+			[NodeConnectionTypes.AiMemory]: [
+				[{ node: nodes[2].name, type: NodeConnectionTypes.AiMemory, index: 0 }],
+			],
+		},
+	};
+
+	const pinia = createTestingPinia({
+		stubActions: false,
+	});
+	setActivePinia(pinia);
+
+	const workflow = createTestWorkflow({ nodes, connections });
+
+	const workflowDocumentStore = useWorkflowDocumentStore(createWorkflowDocumentId(workflow.id));
+	workflowDocumentStore.hydrate(workflow);
+
+	vi.mocked(injectWorkflowDocumentStore).mockReturnValue(shallowRef(workflowDocumentStore));
+
+	if (pinData) {
+		workflowDocumentStore.setPinData(Object.fromEntries(nodes.map((n) => [n.name, pinData])));
+	}
+
+	if (runData) {
+		// The component reads run data via `injectWorkflowExecutionStateStore()`,
+		// which resolves through the execution-state store keyed by the injected
+		// workflow document's id.
+		useWorkflowExecutionStateStore(createWorkflowDocumentId(workflow.id)).setWorkflowExecutionData(
+			createTestWorkflowExecutionResponse({
+				workflowData: workflow,
+				status: 'success',
+				data: createRunExecutionData({
+					resultData: { runData },
+					redactionInfo,
+				}),
+			}),
+		);
+	}
+
+	return createComponentRenderer(InputPanel, {
+		pinia,
+		props: {
+			pushRef: 'pushRef',
+			runIndex: 0,
+			currentNodeName: nodes[0].name,
+			activeNodeName: nodes[1].name,
+			displayMode: 'schema',
+			focusedMappableInput: '',
+			isMappingOnboarded: false,
+		},
+		global: {
+			provide: {
+				[WorkflowIdKey as unknown as string]: computed(() => workflow.id),
+				[WorkflowDocumentStoreKey as symbol]: shallowRef(workflowDocumentStore),
+			},
+			stubs: {
+				InputPanelPinButton: { template: '<button data-test-id="ndv-pin-data"></button>' },
+			},
+		},
+	})({ props });
+};
+
+describe('InputPanel', () => {
+	const i18n = useI18n();
+	afterEach(async () => {
+		// Tab assertions can finish while the schema view still loads.
+		await vi.dynamicImportSettled();
+	});
+
+	it('renders the schema view', async () => {
+		const { getByTestId, queryByTestId } = render({}, [{ json: { name: 'Test' } }]);
+
+		await vi.dynamicImportSettled();
+
+		expect(queryByTestId('ndv-data-size-warning')).not.toBeInTheDocument();
+		expect(getByTestId('ndv-input-panel')).toBeInTheDocument();
+		expect(getByTestId('run-data-schema-header')).toHaveTextContent('Variables and context');
+		expect(getByTestId('ndv-search')).toBeInTheDocument();
+	});
+
+	it('shows the credential cause without a share link when the viewer cannot share it', () => {
+		const { getByTestId, queryByTestId } = render(
+			{ readOnly: true },
+			undefined,
+			{
+				[nodes[0].name]: [
+					createTestTaskData({
+						data: { main: [[]] },
+					}),
+				],
+				[nodes[1].name]: [createTestTaskData({ data: { main: [[]] } })],
+			},
+			{
+				isRedacted: true,
+				reason: 'credential_inaccessible',
+				canReveal: false,
+				credentialIds: ['gmail-credential'],
+			},
+		);
+
+		expect(getByTestId('ndv-data-redacted')).toHaveTextContent(
+			i18n.baseText('ndv.redacted.shareCredential.description'),
+		);
+		expect(getByTestId('ndv-data-redacted')).not.toHaveTextContent(
+			i18n.baseText('ndv.redacted.noPermission.description'),
+		);
+		expect(queryByTestId('redacted-data-share-credential')).not.toBeInTheDocument();
+		expect(queryByTestId('ndv-reveal-redacted-data')).not.toBeInTheDocument();
+	});
+
+	it("opens mapping tab by default if the node hasn't run yet", async () => {
+		const { findByTestId } = render({ activeNodeName: 'Tool' });
+
+		expect(await findByTestId('radio-button-mapping')).toBeChecked();
+		expect(await findByTestId('radio-button-debugging')).not.toBeChecked();
+	});
+
+	it('opens debugging tab by default if the node has already run', async () => {
+		const { findByTestId } = render({ activeNodeName: 'Tool' }, undefined, {
+			Tool: [
+				{
+					startTime: 0,
+					executionTime: 0,
+					executionIndex: 0,
+					source: [],
+					data: {},
+				},
+			],
+		});
+
+		expect(await findByTestId('radio-button-mapping')).not.toBeChecked();
+		expect(await findByTestId('radio-button-debugging')).toBeChecked();
+	});
+});

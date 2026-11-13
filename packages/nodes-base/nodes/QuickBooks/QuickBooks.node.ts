@@ -1,4 +1,6 @@
 /* eslint-disable n8n-nodes-base/node-filename-against-convention */
+import { capitalCase } from 'change-case';
+import isEmpty from 'lodash/isEmpty';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -7,10 +9,8 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
-import { capitalCase } from 'change-case';
-import isEmpty from 'lodash/isEmpty';
 import {
 	billFields,
 	billOperations,
@@ -33,7 +33,6 @@ import {
 	vendorFields,
 	vendorOperations,
 } from './descriptions';
-
 import {
 	adjustTransactionDates,
 	getRefAndSyncToken,
@@ -46,7 +45,6 @@ import {
 	quickBooksApiRequest,
 	simplifyTransactionReport,
 } from './GenericFunctions';
-
 import type { QuickBooksOAuth2Credentials, TransactionFields, TransactionReport } from './types';
 
 export class QuickBooks implements INodeType {
@@ -61,8 +59,9 @@ export class QuickBooks implements INodeType {
 		defaults: {
 			name: 'QuickBooks Online',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'quickBooksOAuth2Api',
@@ -191,9 +190,8 @@ export class QuickBooks implements INodeType {
 		let responseData;
 		const returnData: INodeExecutionData[] = [];
 
-		const { oauthTokenData } = (await this.getCredentials(
-			'quickBooksOAuth2Api',
-		)) as QuickBooksOAuth2Credentials;
+		const { oauthTokenData } =
+			await this.getCredentials<QuickBooksOAuth2Credentials>('quickBooksOAuth2Api');
 		const companyId = oauthTokenData.callbackQueryString.realmId;
 
 		for (let i = 0; i < items.length; i++) {
@@ -263,13 +261,13 @@ export class QuickBooks implements INodeType {
 							},
 						} as IDataObject;
 
-						body.Line = processLines.call(this, body, lines, resource);
+						body.Line = processLines.call(this, lines, resource);
 
 						const additionalFields = this.getNodeParameter('additionalFields', i);
 
 						body = populateFields.call(this, body, additionalFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'delete') {
@@ -286,7 +284,7 @@ export class QuickBooks implements INodeType {
 							SyncToken: await getSyncToken.call(this, i, companyId, resource),
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'get') {
@@ -295,7 +293,7 @@ export class QuickBooks implements INodeType {
 						// ----------------------------------
 
 						const billId = this.getNodeParameter('billId', i);
-						const endpoint = `/v3/company/${companyId}/${resource}/${billId}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${billId}`;
 						responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'getAll') {
@@ -303,7 +301,7 @@ export class QuickBooks implements INodeType {
 						//         bill: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					} else if (operation === 'update') {
 						// ----------------------------------
@@ -340,7 +338,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, updateFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					}
@@ -364,7 +362,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, additionalFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'get') {
@@ -373,7 +371,7 @@ export class QuickBooks implements INodeType {
 						// ----------------------------------
 
 						const customerId = this.getNodeParameter('customerId', i);
-						const endpoint = `/v3/company/${companyId}/${resource}/${customerId}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${customerId}`;
 						responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'getAll') {
@@ -381,7 +379,7 @@ export class QuickBooks implements INodeType {
 						//         customer: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					} else if (operation === 'update') {
 						// ----------------------------------
@@ -406,7 +404,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, updateFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					}
@@ -429,7 +427,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, additionalFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'get') {
@@ -438,7 +436,7 @@ export class QuickBooks implements INodeType {
 						// ----------------------------------
 
 						const employeeId = this.getNodeParameter('employeeId', i);
-						const endpoint = `/v3/company/${companyId}/${resource}/${employeeId}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${employeeId}`;
 						responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'getAll') {
@@ -446,7 +444,7 @@ export class QuickBooks implements INodeType {
 						//         employee: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					} else if (operation === 'update') {
 						// ----------------------------------
@@ -471,7 +469,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, updateFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					}
@@ -528,12 +526,12 @@ export class QuickBooks implements INodeType {
 							},
 						} as IDataObject;
 
-						body.Line = processLines.call(this, body, lines, resource);
+						body.Line = processLines.call(this, lines, resource);
 						const additionalFields = this.getNodeParameter('additionalFields', i);
 
 						body = populateFields.call(this, body, additionalFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'delete') {
@@ -550,7 +548,7 @@ export class QuickBooks implements INodeType {
 							SyncToken: await getSyncToken.call(this, i, companyId, resource),
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'get') {
@@ -571,7 +569,7 @@ export class QuickBooks implements INodeType {
 								estimateId,
 							);
 						} else {
-							const endpoint = `/v3/company/${companyId}/${resource}/${estimateId}`;
+							const endpoint = requestPath`/v3/company/${companyId}/${resource}/${estimateId}`;
 							responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 							responseData = responseData[capitalCase(resource)];
 						}
@@ -580,7 +578,7 @@ export class QuickBooks implements INodeType {
 						//         estimate: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					} else if (operation === 'send') {
 						// ----------------------------------
@@ -593,7 +591,7 @@ export class QuickBooks implements INodeType {
 							sendTo: this.getNodeParameter('email', i) as string,
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}/${estimateId}/send`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${estimateId}/send`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'update') {
@@ -631,7 +629,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, updateFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					}
@@ -688,13 +686,13 @@ export class QuickBooks implements INodeType {
 							},
 						} as IDataObject;
 
-						body.Line = processLines.call(this, body, lines, resource);
+						body.Line = processLines.call(this, lines, resource);
 
 						const additionalFields = this.getNodeParameter('additionalFields', i);
 
 						body = populateFields.call(this, body, additionalFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'delete') {
@@ -711,7 +709,7 @@ export class QuickBooks implements INodeType {
 							SyncToken: await getSyncToken.call(this, i, companyId, resource),
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'get') {
@@ -732,7 +730,7 @@ export class QuickBooks implements INodeType {
 								invoiceId,
 							);
 						} else {
-							const endpoint = `/v3/company/${companyId}/${resource}/${invoiceId}`;
+							const endpoint = requestPath`/v3/company/${companyId}/${resource}/${invoiceId}`;
 							responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 							responseData = responseData[capitalCase(resource)];
 						}
@@ -741,7 +739,7 @@ export class QuickBooks implements INodeType {
 						//         invoice: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					} else if (operation === 'send') {
 						// ----------------------------------
@@ -754,7 +752,7 @@ export class QuickBooks implements INodeType {
 							sendTo: this.getNodeParameter('email', i) as string,
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}/${invoiceId}/send`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${invoiceId}/send`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'update') {
@@ -792,7 +790,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, updateFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'void') {
@@ -806,7 +804,7 @@ export class QuickBooks implements INodeType {
 							operation: 'void',
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, {});
 						responseData = responseData[capitalCase(resource)];
 					}
@@ -823,7 +821,7 @@ export class QuickBooks implements INodeType {
 						// ----------------------------------
 
 						const item = this.getNodeParameter('itemId', i);
-						const endpoint = `/v3/company/${companyId}/${resource}/${item}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${item}`;
 						responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'getAll') {
@@ -831,7 +829,7 @@ export class QuickBooks implements INodeType {
 						//         item: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					}
 				} else if (resource === 'payment') {
@@ -857,7 +855,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, additionalFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'delete') {
@@ -874,7 +872,7 @@ export class QuickBooks implements INodeType {
 							SyncToken: await getSyncToken.call(this, i, companyId, resource),
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'get') {
@@ -895,7 +893,7 @@ export class QuickBooks implements INodeType {
 								paymentId,
 							);
 						} else {
-							const endpoint = `/v3/company/${companyId}/${resource}/${paymentId}`;
+							const endpoint = requestPath`/v3/company/${companyId}/${resource}/${paymentId}`;
 							responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 							responseData = responseData[capitalCase(resource)];
 						}
@@ -904,7 +902,7 @@ export class QuickBooks implements INodeType {
 						//         payment: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					} else if (operation === 'send') {
 						// ----------------------------------
@@ -917,7 +915,7 @@ export class QuickBooks implements INodeType {
 							sendTo: this.getNodeParameter('email', i) as string,
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}/${paymentId}/send`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${paymentId}/send`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'update') {
@@ -955,7 +953,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, updateFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'void') {
@@ -969,7 +967,7 @@ export class QuickBooks implements INodeType {
 							operation: 'void',
 						} as IDataObject;
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, qs, {});
 						responseData = responseData[capitalCase(resource)];
 					}
@@ -986,7 +984,7 @@ export class QuickBooks implements INodeType {
 						// ----------------------------------
 
 						const purchaseId = this.getNodeParameter('purchaseId', i);
-						const endpoint = `/v3/company/${companyId}/${resource}/${purchaseId}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${purchaseId}`;
 						responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'getAll') {
@@ -994,7 +992,7 @@ export class QuickBooks implements INodeType {
 						//         purchase: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					}
 				} else if (resource === 'transaction') {
@@ -1038,7 +1036,7 @@ export class QuickBooks implements INodeType {
 
 						qs = adjustTransactionDates(qs);
 
-						const endpoint = `/v3/company/${companyId}/reports/TransactionList`;
+						const endpoint = requestPath`/v3/company/${companyId}/reports/TransactionList`;
 						responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, qs, {});
 
 						const simplifyResponse = this.getNodeParameter('simple', i, true) as boolean;
@@ -1071,7 +1069,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, additionalFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'get') {
@@ -1080,7 +1078,7 @@ export class QuickBooks implements INodeType {
 						// ----------------------------------
 
 						const vendorId = this.getNodeParameter('vendorId', i);
-						const endpoint = `/v3/company/${companyId}/${resource}/${vendorId}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}/${vendorId}`;
 						responseData = await quickBooksApiRequest.call(this, 'GET', endpoint, {}, {});
 						responseData = responseData[capitalCase(resource)];
 					} else if (operation === 'getAll') {
@@ -1088,7 +1086,7 @@ export class QuickBooks implements INodeType {
 						//         vendor: getAll
 						// ----------------------------------
 
-						const endpoint = `/v3/company/${companyId}/query`;
+						const endpoint = requestPath`/v3/company/${companyId}/query`;
 						responseData = await handleListing.call(this, i, endpoint, resource);
 					} else if (operation === 'update') {
 						// ----------------------------------
@@ -1113,7 +1111,7 @@ export class QuickBooks implements INodeType {
 
 						body = populateFields.call(this, body, updateFields, resource);
 
-						const endpoint = `/v3/company/${companyId}/${resource}`;
+						const endpoint = requestPath`/v3/company/${companyId}/${resource}`;
 						responseData = await quickBooksApiRequest.call(this, 'POST', endpoint, {}, body);
 						responseData = responseData[capitalCase(resource)];
 					}

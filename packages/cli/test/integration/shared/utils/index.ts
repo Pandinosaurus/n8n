@@ -1,26 +1,40 @@
-import { Container } from 'typedi';
-import { BinaryDataService } from 'n8n-core';
-import { type INode } from 'n8n-workflow';
-import { GithubApi } from 'n8n-nodes-base/credentials/GithubApi.credentials';
+import type { Logger } from '@n8n/backend-common';
+import { NodeTypesProxy } from '@n8n/backend-services';
+import { mockInstance } from '@n8n/backend-test-utils';
+import { WorkflowEntity } from '@n8n/db';
+import { Container } from '@n8n/di';
+import {
+	BinaryDataConfig,
+	BinaryDataService,
+	InstanceSettings,
+	UnrecognizedNodeTypeError,
+	type DirectoryLoader,
+	type ErrorReporter,
+} from 'n8n-core';
 import { Ftp } from 'n8n-nodes-base/credentials/Ftp.credentials';
+import { GithubApi } from 'n8n-nodes-base/credentials/GithubApi.credentials';
+import { HttpBasicAuth } from 'n8n-nodes-base/credentials/HttpBasicAuth.credentials';
+import { HttpHeaderAuth } from 'n8n-nodes-base/credentials/HttpHeaderAuth.credentials';
+import { OpenAiApi } from 'n8n-nodes-base/credentials/OpenAiApi.credentials';
 import { Cron } from 'n8n-nodes-base/nodes/Cron/Cron.node';
+import { FormTrigger } from 'n8n-nodes-base/nodes/Form/FormTrigger.node';
+import { Function as FunctionNode } from 'n8n-nodes-base/nodes/Function/Function.node';
+import { FunctionItem } from 'n8n-nodes-base/nodes/FunctionItem/FunctionItem.node';
+import { ManualTrigger } from 'n8n-nodes-base/nodes/ManualTrigger/ManualTrigger.node';
+import { ScheduleTrigger } from 'n8n-nodes-base/nodes/Schedule/ScheduleTrigger.node';
 import { Set } from 'n8n-nodes-base/nodes/Set/Set.node';
-import { Start } from 'n8n-nodes-base/nodes/Start/Start.node';
+import { Webhook as WebhookNode } from 'n8n-nodes-base/nodes/Webhook/Webhook.node';
+import type { INodeProperties, INodeType, INodeTypeData, INode } from 'n8n-workflow';
 import type request from 'supertest';
 import { v4 as uuid } from 'uuid';
+import { mock } from 'vitest-mock-extended';
 
-import config from '@/config';
-import { WorkflowEntity } from '@db/entities/WorkflowEntity';
-import { SettingsRepository } from '@db/repositories/settings.repository';
 import { AUTH_COOKIE_NAME } from '@/constants';
-import { ExecutionService } from '@/executions/execution.service';
-import { LoadNodesAndCredentials } from '@/LoadNodesAndCredentials';
+import { LoadNodesAndCredentials } from '@/load-nodes-and-credentials';
+import { NodeTypes } from '@/node-types';
 import { Push } from '@/push';
-import { OrchestrationService } from '@/services/orchestration.service';
 
-import { mockInstance } from '../../../shared/mocking';
-
-export { setupTestServer } from './testServer';
+export { setupTestServer } from './test-server';
 
 // ----------------------------------
 //          initializers
@@ -29,18 +43,18 @@ export { setupTestServer } from './testServer';
 /**
  * Initialize node types.
  */
-export async function initActiveWorkflowRunner() {
-	mockInstance(OrchestrationService, {
-		isMultiMainSetupEnabled: false,
-		shouldAddWebhooks: jest.fn().mockReturnValue(true),
+export async function initActiveWorkflowManager() {
+	mockInstance(BinaryDataConfig);
+	mockInstance(InstanceSettings, {
+		isMultiMain: false,
+		n8nFolder: '/tmp/n8n-test',
 	});
 
 	mockInstance(Push);
-	mockInstance(ExecutionService);
-	const { ActiveWorkflowRunner } = await import('@/ActiveWorkflowRunner');
-	const workflowRunner = Container.get(ActiveWorkflowRunner);
-	await workflowRunner.init();
-	return workflowRunner;
+	const { ActiveWorkflowManager } = await import('@/active-workflow-manager.js');
+	const activeWorkflowManager = Container.get(ActiveWorkflowManager);
+	await activeWorkflowManager.init();
+	return activeWorkflowManager;
 }
 
 /**
@@ -56,16 +70,58 @@ export async function initCredentialsTypes(): Promise<void> {
 			type: new Ftp(),
 			sourcePath: '',
 		},
+		openAiApi: {
+			type: new OpenAiApi(),
+			sourcePath: '',
+		},
+		httpHeaderAuth: {
+			type: new HttpHeaderAuth(),
+			sourcePath: '',
+		},
+		httpBasicAuth: {
+			type: new HttpBasicAuth(),
+			sourcePath: '',
+		},
 	};
 }
 
 /**
- * Initialize node types.
+ * A node type resolvable by name and version, and safe to publish. The empty arrays matter:
+ * publishing validates each node — resolving its parameters, scanning for webhooks and checking
+ * its credentials — and every one of those iterates a field on the description. `properties` must
+ * declare any parameter a test relies on: parameter resolution drops what the type doesn't declare.
  */
-export async function initNodeTypes() {
-	Container.get(LoadNodesAndCredentials).loaded.nodes = {
-		'n8n-nodes-base.start': {
-			type: new Start(),
+export function minimalNodeType(
+	name: string,
+	properties: INodeProperties[] = [],
+): INodeTypeData[string] {
+	// A plain object, not `mock<INodeType>`: vitest-mock-extended deep-wraps `properties` in
+	// proxies, and parameter dependency resolution then fails to converge on them.
+	return {
+		type: {
+			description: {
+				displayName: name,
+				name,
+				group: [],
+				version: 1,
+				description: '',
+				defaults: {},
+				inputs: [],
+				outputs: [],
+				properties,
+				webhooks: [],
+				credentials: [],
+			},
+		} as unknown as INodeType,
+		sourcePath: '',
+	};
+}
+
+export function buildDefaultNodes(): INodeTypeData {
+	ScheduleTrigger.prototype.trigger = async () => ({});
+	return {
+		'n8n-nodes-base.manualTrigger': {
+			type: new ManualTrigger(),
 			sourcePath: '',
 		},
 		'n8n-nodes-base.cron': {
@@ -76,19 +132,86 @@ export async function initNodeTypes() {
 			type: new Set(),
 			sourcePath: '',
 		},
+		'n8n-nodes-base.scheduleTrigger': {
+			type: new ScheduleTrigger(),
+			sourcePath: '',
+		},
+		'n8n-nodes-base.formTrigger': {
+			type: new FormTrigger(),
+			sourcePath: '',
+		},
+		'n8n-nodes-base.webhook': {
+			// The real node: publishing resolves a webhook node's parameters against its
+			// description, which a mock-wrapped description does not survive.
+			type: new WebhookNode() as unknown as INodeType,
+			sourcePath: '',
+		},
+		'n8n-nodes-base.function': {
+			type: new FunctionNode(),
+			sourcePath: '',
+		},
+		'n8n-nodes-base.functionItem': {
+			type: new FunctionItem(),
+			sourcePath: '',
+		},
+		// Minimal mocks for node types the package-import fixtures reference at typeVersion 1.
+		'n8n-nodes-base.httpRequest': minimalNodeType('n8n-nodes-base.httpRequest'),
+		'n8n-nodes-base.dataTable': minimalNodeType('n8n-nodes-base.dataTable'),
+		// `workflowId` is declared so the sub-workflow reference survives parameter resolution —
+		// publishing validates it, and a dropped parameter silently skips that check.
+		'n8n-nodes-base.executeWorkflow': minimalNodeType('n8n-nodes-base.executeWorkflow', [
+			{ displayName: 'Workflow', name: 'workflowId', type: 'workflowSelector', default: '' },
+		]),
+		// Declares the inline agent parameters so the policy can read the tools they hold.
+		'n8n-nodes-base.messageAnAgent': minimalNodeType('n8n-nodes-base.messageAnAgent', [
+			{ displayName: 'Agent Source', name: 'agentSource', type: 'string', default: '' },
+			{ displayName: 'Inline Agent', name: 'inlineAgent', type: 'json', default: '' },
+		]),
 	};
+}
+
+/**
+ * Initialize node types.
+ */
+export async function initNodeTypes(customNodes?: INodeTypeData) {
+	// Build the default mock node set only when the caller didn't supply its own. Building it
+	// eagerly is harmful even when unused: `mock<INodeType>({ description: new WebhookNode().description })`
+	// (vitest-mock-extended) deep-wraps the webhook description's property objects *in place*, and
+	// nodes that reuse those shared property definitions by reference (e.g. Wait) then inherit the
+	// mock-polluted `displayOptions`, which breaks parameter validation at execution time.
+	const nodes = customNodes ?? buildDefaultNodes();
+	const loader = mock<DirectoryLoader>();
+	loader.getNode.mockImplementation((nodeType) => {
+		const node = nodes[`n8n-nodes-base.${nodeType}`];
+		if (!node) throw new UnrecognizedNodeTypeError('n8n-nodes-base', nodeType);
+		return node;
+	});
+
+	// LoadNodesAndCredentials.getCredential() iterates all loaders and
+	// tries to check for `credentialType in loader.known.credentials`.
+	// The `in` operator throws if `known.credentials` is undefined. Set it to empty maps so
+	// the loop is safe to iterate (credentials are registered via loaded.credentials, not the loader).
+	Object.assign(loader, { known: { nodes: {}, credentials: {} } });
+
+	const loadNodesAndCredentials = Container.get(LoadNodesAndCredentials);
+	loadNodesAndCredentials.loaders = { 'n8n-nodes-base': loader };
+	loadNodesAndCredentials.loaded.nodes = nodes;
+	Container.get(NodeTypesProxy).registerProvider(Container.get(NodeTypes));
 }
 
 /**
  * Initialize a BinaryDataService for test runs.
  */
 export async function initBinaryDataService(mode: 'default' | 'filesystem' = 'default') {
-	const binaryDataService = new BinaryDataService();
-	await binaryDataService.init({
+	const config = mock<BinaryDataConfig>({
 		mode,
 		availableModes: [mode],
 		localStoragePath: '',
 	});
+	const logger = mock<Logger>();
+	const errorReporter = mock<ErrorReporter>();
+	const binaryDataService = new BinaryDataService(config, errorReporter, logger);
+	await binaryDataService.init();
 	Container.set(BinaryDataService, binaryDataService);
 }
 
@@ -96,9 +219,10 @@ export async function initBinaryDataService(mode: 'default' | 'filesystem' = 'de
  * Extract the value (token) of the auth cookie in a response.
  */
 export function getAuthToken(response: request.Response, authCookieName = AUTH_COOKIE_NAME) {
-	const cookies: string[] = response.headers['set-cookie'];
+	const cookiesHeader = response.headers['set-cookie'];
+	if (!cookiesHeader) return undefined;
 
-	if (!cookies) return undefined;
+	const cookies = Array.isArray(cookiesHeader) ? cookiesHeader : [cookiesHeader];
 
 	const authCookie = cookies.find((c) => c.startsWith(`${authCookieName}=`));
 
@@ -106,37 +230,16 @@ export function getAuthToken(response: request.Response, authCookieName = AUTH_C
 
 	const match = authCookie.match(new RegExp(`(^| )${authCookieName}=(?<token>[^;]+)`));
 
-	if (!match || !match.groups) return undefined;
+	if (!match?.groups) return undefined;
 
 	return match.groups.token;
 }
 
 // ----------------------------------
-//            settings
-// ----------------------------------
-
-export async function isInstanceOwnerSetUp() {
-	const { value } = await Container.get(SettingsRepository).findOneByOrFail({
-		key: 'userManagement.isInstanceOwnerSetUp',
-	});
-
-	return Boolean(value);
-}
-
-export const setInstanceOwnerSetUp = async (value: boolean) => {
-	config.set('userManagement.isInstanceOwnerSetUp', value);
-
-	await Container.get(SettingsRepository).update(
-		{ key: 'userManagement.isInstanceOwnerSetUp' },
-		{ value: JSON.stringify(value) },
-	);
-};
-
-// ----------------------------------
 //           community nodes
 // ----------------------------------
 
-export * from './communityNodes';
+export * from './community-nodes';
 
 // ----------------------------------
 //           workflow
@@ -165,6 +268,7 @@ export function makeWorkflow(options?: {
 
 	workflow.name = 'My Workflow';
 	workflow.active = false;
+	workflow.activeVersionId = null;
 	workflow.connections = {};
 	workflow.nodes = [node];
 

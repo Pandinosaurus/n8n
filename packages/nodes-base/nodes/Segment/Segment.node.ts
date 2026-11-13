@@ -5,18 +5,14 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 import { v4 as uuid } from 'uuid';
+
 import { segmentApiRequest } from './GenericFunctions';
-
 import { groupFields, groupOperations } from './GroupDescription';
-
 import { identifyFields, identifyOperations } from './IdentifyDescription';
-
 import type { IIdentify } from './IdentifyInterface';
-
 import { trackFields, trackOperations } from './TrackDescription';
-
 import type { IGroup, ITrack } from './TrackInterface';
 
 export class Segment implements INodeType {
@@ -31,8 +27,9 @@ export class Segment implements INodeType {
 		defaults: {
 			name: 'Segment',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'segmentApi',
@@ -215,7 +212,7 @@ export class Segment implements INodeType {
 								body.integrations!.salesforce = integrations.salesforce as boolean;
 							}
 						}
-						responseData = await segmentApiRequest.call(this, 'POST', '/group', body);
+						responseData = await segmentApiRequest.call(this, 'POST', requestPath`/group`, body);
 					}
 				}
 				if (resource === 'identify') {
@@ -347,7 +344,7 @@ export class Segment implements INodeType {
 							}
 						}
 
-						responseData = await segmentApiRequest.call(this, 'POST', '/identify', body);
+						responseData = await segmentApiRequest.call(this, 'POST', requestPath`/identify`, body);
 					}
 				}
 				if (resource === 'track') {
@@ -481,7 +478,7 @@ export class Segment implements INodeType {
 							}
 						}
 
-						responseData = await segmentApiRequest.call(this, 'POST', '/track', body);
+						responseData = await segmentApiRequest.call(this, 'POST', requestPath`/track`, body);
 					}
 					//https://segment.com/docs/connections/sources/catalog/libraries/server/http-api/#page
 					if (operation === 'page') {
@@ -612,7 +609,7 @@ export class Segment implements INodeType {
 								}
 							}
 						}
-						responseData = await segmentApiRequest.call(this, 'POST', '/page', body);
+						responseData = await segmentApiRequest.call(this, 'POST', requestPath`/page`, body);
 					}
 				}
 			} catch (error) {

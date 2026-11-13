@@ -1,0 +1,300 @@
+<script setup lang="ts">
+import { watch, reactive, toRefs, computed, onBeforeUnmount, onMounted, inject, ref } from 'vue';
+
+import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
+import { useNodeCreatorStore } from '@/features/shared/nodeCreator/nodeCreator.store';
+import SlideTransition from '@/app/components/transitions/SlideTransition.vue';
+
+import { useViewStacks } from '../composables/useViewStacks';
+import { useKeyboardNavigation } from '../composables/useKeyboardNavigation';
+import { useActionsGenerator } from '../composables/useActionsGeneration';
+import NodesListPanel from './Panel/NodesListPanel.vue';
+import { useCredentialsStore } from '@/features/credentials/credentials.store';
+import { useBannersStore } from '@/features/shared/banners/banners.store';
+import { useUIStore } from '@/app/stores/ui.store';
+import { DRAG_EVENT_DATA_KEY } from '@/app/constants';
+import { EmbeddedCanvasElementKey } from '@/app/constants/injectionKeys';
+import { useChatPanelStore } from '@/features/ai/assistant/chatPanel.store';
+import { useFocusPanelStore } from '@/app/stores/focusPanel.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import { useAiGateway } from '@/app/composables/useAiGateway';
+import type { NodeTypeSelectedPayload } from '@/Interface';
+import { onClickOutside, useElementBounding } from '@vueuse/core';
+
+import { N8nIconButton, OVERLAY_LAYER_SELECTOR } from '@n8n/design-system';
+// elements that should not trigger onClickOutside
+const OUTSIDE_CLICK_WHITELIST = [
+	// different modals
+	'.el-overlay-dialog',
+	// reka-ui overlays (N8nPopover, N8nDialog) teleport to body
+	OVERLAY_LAYER_SELECTOR,
+];
+
+export interface Props {
+	active?: boolean;
+	onNodeTypeSelected?: (value: NodeTypeSelectedPayload[]) => void;
+}
+
+const props = defineProps<Props>();
+const { resetViewStacks } = useViewStacks();
+const { registerKeyHook } = useKeyboardNavigation();
+const emit = defineEmits<{
+	closeNodeCreator: [];
+	nodeTypeSelected: [value: NodeTypeSelectedPayload[]];
+	emptyGroupSelected: [];
+}>();
+const uiStore = useUIStore();
+const bannersStore = useBannersStore();
+const chatPanelStore = useChatPanelStore();
+const focusPanelStore = useFocusPanelStore();
+const settingsStore = useSettingsStore();
+
+const nodeCreatorStore = useNodeCreatorStore();
+const { setActions, setMergeNodes, consumePendingInitialViewStack } = nodeCreatorStore;
+const { generateMergedNodesAndActions } = useActionsGenerator();
+
+const state = reactive({
+	nodeCreator: null as HTMLElement | null,
+	mousedownInsideEvent: null as MouseEvent | null,
+});
+
+const viewStacksLength = computed(() => useViewStacks().viewStacks.length);
+
+// An embedded editor (e.g. the Instance AI split view) renders its own header
+// below the page top, so the panel aligns to that editor's canvas instead.
+const embeddedCanvas = inject(EmbeddedCanvasElementKey, ref(null));
+const { top: embeddedCanvasTop } = useElementBounding(embeddedCanvas);
+
+// A replacement from the setup panel opens beside the focus panel, so the card stays in view.
+const isBesideFocusPanel = computed(
+	() =>
+		!embeddedCanvas.value &&
+		nodeCreatorStore.isReplacingFromSetupPanel &&
+		focusPanelStore.focusPanelActive,
+);
+
+const nodeCreatorInlineStyle = computed(() => {
+	const rightPosition = getRightOffset();
+	return {
+		top: `${getTopOffset()}px`,
+		'--node-creator--right': `${rightPosition}px`,
+	};
+});
+
+function getTopOffset() {
+	if (embeddedCanvas.value) {
+		return embeddedCanvasTop.value;
+	}
+
+	return settingsStore.isCanvasOnly ? 0 : bannersStore.bannersHeight + uiStore.headerHeight;
+}
+
+function getRightOffset() {
+	const chatOffset = chatPanelStore.isOpen ? chatPanelStore.width : 0;
+
+	return isBesideFocusPanel.value ? chatOffset + focusPanelStore.focusPanelWidth : chatOffset;
+}
+
+function onMouseUpOutside() {
+	if (state.mousedownInsideEvent) {
+		const clickEvent = new MouseEvent('click', {
+			bubbles: true,
+			cancelable: true,
+		});
+		state.mousedownInsideEvent.target?.dispatchEvent(clickEvent);
+		state.mousedownInsideEvent = null;
+		unBindOnMouseUpOutside();
+	}
+}
+function unBindOnMouseUpOutside() {
+	document.removeEventListener('mouseup', onMouseUpOutside);
+	document.removeEventListener('touchstart', onMouseUpOutside);
+}
+function onMouseUp() {
+	state.mousedownInsideEvent = null;
+	unBindOnMouseUpOutside();
+}
+function onMouseDown(event: MouseEvent) {
+	state.mousedownInsideEvent = event;
+	document.addEventListener('mouseup', onMouseUpOutside);
+	document.addEventListener('touchstart', onMouseUpOutside);
+}
+function onDragOver(event: DragEvent) {
+	event.preventDefault();
+}
+function onDrop(event: DragEvent) {
+	if (!event.dataTransfer) {
+		return;
+	}
+
+	const dragData = event.dataTransfer.getData(DRAG_EVENT_DATA_KEY);
+	const nodeCreatorBoundingRect = (state.nodeCreator as Element).getBoundingClientRect();
+
+	// Abort drag end event propagation if dropped inside nodes panel
+	if (
+		dragData &&
+		event.pageX >= nodeCreatorBoundingRect.x &&
+		event.pageY >= nodeCreatorBoundingRect.y
+	) {
+		event.stopPropagation();
+	}
+}
+
+const { fetchConfig: fetchAiGatewayConfig } = useAiGateway();
+
+onMounted(() => {
+	void fetchAiGatewayConfig();
+});
+
+watch(
+	() => props.active,
+	(isActive) => {
+		if (!isActive) {
+			resetViewStacks();
+			consumePendingInitialViewStack();
+		}
+	},
+);
+
+// Close node creator when the last view stacks is closed
+watch(viewStacksLength, (value) => {
+	if (value === 0) {
+		emit('closeNodeCreator');
+	}
+});
+
+registerKeyHook('NodeCreatorCloseEscape', {
+	keyboardKeys: ['Escape'],
+	handler: () => emit('closeNodeCreator'),
+});
+
+watch(
+	() => ({
+		httpOnlyCredentials: useCredentialsStore().httpOnlyCredentialTypes,
+		nodeTypes: useNodeTypesStore().visibleNodeTypes,
+	}),
+	({ nodeTypes, httpOnlyCredentials }) => {
+		const { actions, mergedNodes } = generateMergedNodesAndActions(nodeTypes, httpOnlyCredentials);
+
+		setActions(actions);
+		setMergeNodes(mergedNodes);
+	},
+	{ immediate: true },
+);
+const { nodeCreator } = toRefs(state);
+
+onBeforeUnmount(() => {
+	unBindOnMouseUpOutside();
+});
+
+onClickOutside(
+	nodeCreator,
+	(event) => {
+		// vueuse checks `ignore` only on pointerdown, which a layer can stop (the restricted node popover does).
+		if (
+			event.target instanceof Element &&
+			event.target.closest(OUTSIDE_CLICK_WHITELIST.join(', '))
+		) {
+			return;
+		}
+		emit('closeNodeCreator');
+	},
+	{ ignore: OUTSIDE_CLICK_WHITELIST },
+);
+</script>
+
+<template>
+	<div>
+		<aside :class="$style.nodeCreatorScrim" />
+		<N8nIconButton
+			variant="outline"
+			v-if="active"
+			:class="$style.close"
+			icon="x"
+			aria-label="Close Node Creator"
+			@click="emit('closeNodeCreator')"
+		/>
+		<SlideTransition>
+			<div
+				v-if="active"
+				ref="nodeCreator"
+				:class="{ [$style.nodeCreator]: true, [$style.besideFocusPanel]: isBesideFocusPanel }"
+				:style="nodeCreatorInlineStyle"
+				data-test-id="node-creator"
+				@dragover="onDragOver"
+				@drop="onDrop"
+				@mousedown="onMouseDown"
+				@mouseup="onMouseUp"
+			>
+				<NodesListPanel
+					@node-type-selected="onNodeTypeSelected"
+					@empty-group-selected="emit('emptyGroupSelected')"
+				/>
+			</div>
+		</SlideTransition>
+	</div>
+</template>
+
+<style module lang="scss">
+@use '@/app/css/variables' as *;
+
+:global(strong) {
+	font-weight: var(--font-weight--medium);
+}
+.nodeCreator {
+	--node-creator--width: #{$node-creator-width};
+	--node-creator--icon--color: var(--node--icon--color--neutral);
+	position: fixed;
+	top: $header-height;
+	bottom: 0;
+	right: var(--node-creator--right, 0);
+	z-index: var(--node-creator--z);
+	width: var(--node-creator--width);
+	color: $node-creator-text-color;
+
+	// Never push the creator past the app sidebar on a narrow window.
+	&.besideFocusPanel {
+		right: min(
+			var(--node-creator--right),
+			calc(100vw - var(--node-creator--width) - #{$sidebar-width})
+		);
+	}
+}
+
+.nodeCreatorScrim {
+	position: fixed;
+	top: $header-height;
+	right: 0;
+	bottom: 0;
+	left: $sidebar-width;
+	opacity: 0;
+	z-index: 1;
+	background: var(--dialog--overlay--color--background);
+	pointer-events: none;
+	transition: opacity 200ms ease-in-out;
+
+	&.active {
+		opacity: 0.7;
+	}
+}
+
+.close {
+	position: absolute;
+	z-index: calc(var(--node-creator--z) + 1);
+	top: var(--spacing--xs);
+	right: var(--spacing--xs);
+	background: transparent;
+	border: 0;
+	display: none;
+}
+
+@media screen and (max-width: #{$node-creator-width + $sidebar-width}) {
+	.nodeCreator {
+		--node-creator--width: calc(100vw - #{$sidebar-width});
+	}
+
+	.close {
+		display: inline-flex;
+	}
+}
+</style>

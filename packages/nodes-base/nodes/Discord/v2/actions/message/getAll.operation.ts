@@ -4,6 +4,9 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { returnAllOrLimit } from '../../../../../utils/descriptions';
 import { updateDisplayOptions } from '../../../../../utils/utilities';
 import {
 	createSimplifyFunction,
@@ -13,7 +16,6 @@ import {
 } from '../../helpers/utils';
 import { discordApiRequest } from '../../transport';
 import { channelRLC, simplifyBoolean } from '../common.description';
-import { returnAllOrLimit } from '../../../../../utils/descriptions';
 
 const properties: INodeProperties[] = [
 	channelRLC,
@@ -22,7 +24,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [simplifyBoolean],
 	},
@@ -42,7 +44,7 @@ export const description = updateDisplayOptions(displayOptions, properties);
 
 export async function execute(
 	this: IExecuteFunctions,
-	guildId: string,
+	_guildId: string,
 	userGuilds: IDataObject[],
 ): Promise<INodeExecutionData[]> {
 	const returnData: INodeExecutionData[] = [];
@@ -74,7 +76,7 @@ export async function execute(
 				response = await discordApiRequest.call(
 					this,
 					'GET',
-					`/channels/${channelId}/messages`,
+					requestPath`/channels/${channelId}/messages`,
 					undefined,
 					qs,
 				);
@@ -86,7 +88,7 @@ export async function execute(
 					responseData = await discordApiRequest.call(
 						this,
 						'GET',
-						`/channels/${channelId}/messages`,
+						requestPath`/channels/${channelId}/messages`,
 						undefined,
 						qs,
 					);

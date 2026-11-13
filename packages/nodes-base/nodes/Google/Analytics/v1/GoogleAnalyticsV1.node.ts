@@ -1,23 +1,25 @@
-/* eslint-disable n8n-nodes-base/node-filename-against-convention */
-import type {
-	IExecuteFunctions,
-	IDataObject,
-	ILoadOptionsFunctions,
-	INodeExecutionData,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeBaseDescription,
-	INodeTypeDescription,
-	IHttpRequestMethods,
+import moment from 'moment-timezone';
+import {
+	type IExecuteFunctions,
+	type IDataObject,
+	type ILoadOptionsFunctions,
+	type INodeExecutionData,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeBaseDescription,
+	type INodeTypeDescription,
+	type IHttpRequestMethods,
+	NodeConnectionTypes,
+	requestPath,
+	requestUrl,
 } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
-import { reportFields, reportOperations } from './ReportDescription';
-import { userActivityFields, userActivityOperations } from './UserActivityDescription';
+import { oldVersionNotice } from '@utils/descriptions';
+
 import { googleApiRequest, googleApiRequestAllItems, merge, simplify } from './GenericFunctions';
 import type { IData } from './Interfaces';
-
-import { oldVersionNotice } from '@utils/descriptions';
+import { reportFields, reportOperations } from './ReportDescription';
+import { userActivityFields, userActivityOperations } from './UserActivityDescription';
 
 const versionDescription: INodeTypeDescription = {
 	displayName: 'Google Analytics',
@@ -30,8 +32,8 @@ const versionDescription: INodeTypeDescription = {
 	defaults: {
 		name: 'Google Analytics',
 	},
-	inputs: ['main'],
-	outputs: ['main'],
+	inputs: [NodeConnectionTypes.Main],
+	outputs: [NodeConnectionTypes.Main],
 	credentials: [
 		{
 			name: 'googleAnalyticsOAuth2',
@@ -90,21 +92,21 @@ export class GoogleAnalyticsV1 implements INodeType {
 				const { items: dimensions } = await googleApiRequest.call(
 					this,
 					'GET',
-					'',
+					requestPath``,
 					{},
 					{},
-					'https://www.googleapis.com/analytics/v3/metadata/ga/columns',
+					requestUrl`https://www.googleapis.com/analytics/v3/metadata/ga/columns`,
 				);
 
-				for (const dimesion of dimensions) {
+				for (const dimension of dimensions) {
 					if (
-						dimesion.attributes.type === 'DIMENSION' &&
-						dimesion.attributes.status !== 'DEPRECATED'
+						dimension.attributes.type === 'DIMENSION' &&
+						dimension.attributes.status !== 'DEPRECATED'
 					) {
 						returnData.push({
-							name: dimesion.attributes.uiName,
-							value: dimesion.id,
-							description: dimesion.attributes.description,
+							name: dimension.attributes.uiName,
+							value: dimension.id,
+							description: dimension.attributes.description,
 						});
 					}
 				}
@@ -130,10 +132,10 @@ export class GoogleAnalyticsV1 implements INodeType {
 				const { items } = await googleApiRequest.call(
 					this,
 					'GET',
-					'',
+					requestPath``,
 					{},
 					{},
-					'https://www.googleapis.com/analytics/v3/management/accounts/~all/webproperties/~all/profiles',
+					requestUrl`https://www.googleapis.com/analytics/v3/management/accounts/~all/webproperties/~all/profiles`,
 				);
 
 				for (const item of items) {
@@ -156,7 +158,7 @@ export class GoogleAnalyticsV1 implements INodeType {
 
 		let method: IHttpRequestMethods = 'GET';
 		const qs: IDataObject = {};
-		let endpoint = '';
+		let endpoint = requestPath``;
 		let responseData;
 		for (let i = 0; i < items.length; i++) {
 			try {
@@ -164,7 +166,7 @@ export class GoogleAnalyticsV1 implements INodeType {
 					if (operation === 'get') {
 						//https://developers.google.com/analytics/devguides/reporting/core/v4/rest/v4/reports/batchGet
 						method = 'POST';
-						endpoint = '/v4/reports:batchGet';
+						endpoint = requestPath`/v4/reports:batchGet`;
 						const viewId = this.getNodeParameter('viewId', i) as string;
 						const returnAll = this.getNodeParameter('returnAll', 0);
 						const additionalFields = this.getNodeParameter('additionalFields', i);
@@ -256,7 +258,7 @@ export class GoogleAnalyticsV1 implements INodeType {
 					if (operation === 'search') {
 						//https://developers.google.com/analytics/devguides/reporting/core/v4/rest/v4/userActivity/search
 						method = 'POST';
-						endpoint = '/v4/userActivity:search';
+						endpoint = requestPath`/v4/userActivity:search`;
 						const viewId = this.getNodeParameter('viewId', i);
 						const userId = this.getNodeParameter('userId', i);
 						const returnAll = this.getNodeParameter('returnAll', 0);

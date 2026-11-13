@@ -1,10 +1,49 @@
-import type { INodeProperties } from 'n8n-workflow';
+import type { INodeProperties, INodePropertyOptions } from 'n8n-workflow';
+
+export const operatorOptions: INodePropertyOptions[] = [
+	{
+		name: 'Equal',
+		value: 'equal',
+	},
+	{
+		name: 'Not Equal',
+		value: '!=',
+	},
+	{
+		name: 'Like',
+		value: 'LIKE',
+	},
+	{
+		name: 'Greater Than',
+		value: '>',
+	},
+	{
+		name: 'Less Than',
+		value: '<',
+	},
+	{
+		name: 'Greater Than Or Equal',
+		value: '>=',
+	},
+	{
+		name: 'Less Than Or Equal',
+		value: '<=',
+	},
+	{
+		name: 'Is Null',
+		value: 'IS NULL',
+	},
+	{
+		name: 'Is Not Null',
+		value: 'IS NOT NULL',
+	},
+];
 
 export const optionsCollection: INodeProperties = {
 	displayName: 'Options',
 	name: 'options',
 	type: 'collection',
-	placeholder: 'Add Option',
+	placeholder: 'Add option',
 	default: {},
 	options: [
 		{
@@ -52,7 +91,7 @@ export const optionsCollection: INodeProperties = {
 					description: 'A single query for all incoming items',
 				},
 				{
-					name: 'Independently',
+					name: 'Independent',
 					value: 'independently',
 					description: 'Execute one query per incoming item of the run',
 				},
@@ -76,7 +115,31 @@ export const optionsCollection: INodeProperties = {
 			hint: 'Comma-separated list of values: reference them in your query as $1, $2, $3…',
 			placeholder: 'e.g. value1,value2,value3',
 			displayOptions: {
-				show: { '/operation': ['executeQuery'] },
+				show: { '/operation': ['executeQuery'], '@version': [{ _cnd: { lt: 2.8 } }] },
+			},
+		},
+		{
+			displayName: 'Query Parameters',
+			name: 'queryReplacement',
+			type: 'string',
+			default: '',
+			description:
+				'Comma-separated list of the values you want to use as query parameters. Each expression gives one value, also when the value contains commas. To give more than one value from an expression, return an array. <a href="https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.postgres/#use-query-parameters" target="_blank">More info</a>.',
+			hint: 'Comma-separated list of values: reference them in your query as $1, $2, $3… An expression always gives one value.',
+			placeholder: 'e.g. value1,value2,value3',
+			displayOptions: {
+				show: { '/operation': ['executeQuery'], '@version': [{ _cnd: { gte: 2.8 } }] },
+			},
+		},
+		{
+			// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
+			displayName: 'Treat query parameters in single quotes as text',
+			name: 'treatQueryParametersInSingleQuotesAsText',
+			type: 'boolean',
+			default: false,
+			description: "Whether to treat query parameters enclosed in single quotes as text e.g. '$1'",
+			displayOptions: {
+				show: { queryReplacement: [{ _cnd: { exists: true } }] },
 			},
 		},
 		{
@@ -86,7 +149,7 @@ export const optionsCollection: INodeProperties = {
 			type: 'multiOptions',
 			// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-multi-options
 			description:
-				'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/" target="_blank">expression</a>',
+				'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/" target="_blank">expression</a>',
 			typeOptions: {
 				loadOptionsMethod: 'getColumnsMultiOptions',
 				loadOptionsDependsOn: ['table.value'],
@@ -215,7 +278,7 @@ export const whereFixedCollection: INodeProperties = {
 					type: 'options',
 					// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
 					description:
-						'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/" target="_blank">expression</a>',
+						'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/" target="_blank">expression</a>',
 					default: '',
 					placeholder: 'e.g. ID',
 					typeOptions: {
@@ -230,46 +293,18 @@ export const whereFixedCollection: INodeProperties = {
 					description:
 						"The operator to check the column against. When using 'LIKE' operator percent sign ( %) matches zero or more characters, underscore ( _ ) matches any single character.",
 					// eslint-disable-next-line n8n-nodes-base/node-param-options-type-unsorted-items
-					options: [
-						{
-							name: 'Equal',
-							value: 'equal',
-						},
-						{
-							name: 'Not Equal',
-							value: '!=',
-						},
-						{
-							name: 'Like',
-							value: 'LIKE',
-						},
-						{
-							name: 'Greater Than',
-							value: '>',
-						},
-						{
-							name: 'Less Than',
-							value: '<',
-						},
-						{
-							name: 'Greater Than Or Equal',
-							value: '>=',
-						},
-						{
-							name: 'Less Than Or Equal',
-							value: '<=',
-						},
-						{
-							name: 'Is Null',
-							value: 'IS NULL',
-						},
-					],
+					options: operatorOptions,
 					default: 'equal',
 				},
 				{
 					displayName: 'Value',
 					name: 'value',
 					type: 'string',
+					displayOptions: {
+						hide: {
+							condition: ['IS NULL', 'IS NOT NULL'],
+						},
+					},
 					default: '',
 				},
 			],
@@ -298,7 +333,7 @@ export const sortFixedCollection: INodeProperties = {
 					type: 'options',
 					// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
 					description:
-						'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/" target="_blank">expression</a>',
+						'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/" target="_blank">expression</a>',
 					default: '',
 					typeOptions: {
 						loadOptionsMethod: 'getColumns',

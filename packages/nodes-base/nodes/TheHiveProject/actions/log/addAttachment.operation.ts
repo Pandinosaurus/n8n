@@ -4,9 +4,12 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { theHiveApiRequest } from '../../transport';
-import { attachmentsUi, logRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { attachmentsUi, logRLC } from '../../descriptions';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [logRLC, attachmentsUi];
 
@@ -44,7 +47,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	await theHiveApiRequest.call(
 		this,
 		'POST',
-		`/v1/log/${logId}/attachments`,
+		requestPath`/v1/log/${logId}/attachments`,
 		undefined,
 		undefined,
 		undefined,

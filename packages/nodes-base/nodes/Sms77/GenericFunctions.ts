@@ -5,8 +5,10 @@ import type {
 	IHttpRequestMethods,
 	IRequestOptions,
 	JsonObject,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
 /**
  * Make an API request to seven
@@ -17,23 +19,22 @@ import { NodeApiError } from 'n8n-workflow';
 export async function sms77ApiRequest(
 	this: IHookFunctions | IExecuteFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject,
 	qs: IDataObject = {},
 ): Promise<any> {
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		headers: {
 			SentWith: 'n8n',
 		},
 		qs,
-		uri: `https://gateway.seven.io/api${endpoint}`,
+		uri: requestUrl`https://gateway.seven.io/api${endpoint}`,
 		json: true,
 		method,
 	};
 
 	if (Object.keys(body).length) {
 		options.form = body;
-		body.json = 1;
 	}
 
 	const response = await this.helpers.requestWithAuthentication.call(this, 'sms77Api', options);

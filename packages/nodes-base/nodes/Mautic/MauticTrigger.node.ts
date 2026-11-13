@@ -1,17 +1,21 @@
+import { randomBytes } from 'crypto';
+
+import {
+	type IHookFunctions,
+	type IWebhookFunctions,
+	type IDataObject,
+	type ILoadOptionsFunctions,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeDescription,
+	type IWebhookResponseData,
+	NodeConnectionTypes,
+	requestPath,
+} from 'n8n-workflow';
 import { parse as urlParse } from 'url';
 
-import type {
-	IHookFunctions,
-	IWebhookFunctions,
-	IDataObject,
-	ILoadOptionsFunctions,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeDescription,
-	IWebhookResponseData,
-} from 'n8n-workflow';
-
 import { mauticApiRequest } from './GenericFunctions';
+import { verifySignature } from './MauticTriggerHelpers';
 
 export class MauticTrigger implements INodeType {
 	description: INodeTypeDescription = {
@@ -25,7 +29,7 @@ export class MauticTrigger implements INodeType {
 			name: 'Mautic Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'mauticApi',
@@ -76,7 +80,7 @@ export class MauticTrigger implements INodeType {
 				name: 'events',
 				type: 'multiOptions',
 				description:
-					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				required: true,
 				typeOptions: {
 					loadOptionsMethod: 'getEvents',
@@ -109,7 +113,7 @@ export class MauticTrigger implements INodeType {
 			// select them easily
 			async getEvents(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const { triggers } = await mauticApiRequest.call(this, 'GET', '/hooks/triggers');
+				const { triggers } = await mauticApiRequest.call(this, 'GET', requestPath`/hooks/triggers`);
 				for (const [key, value] of Object.entries(triggers as IDataObject)) {
 					const eventId = key;
 					const eventName = (value as IDataObject).label as string;
@@ -132,9 +136,13 @@ export class MauticTrigger implements INodeType {
 				if (webhookData.webhookId === undefined) {
 					return false;
 				}
-				const endpoint = `/hooks/${webhookData.webhookId}`;
 				try {
-					await mauticApiRequest.call(this, 'GET', endpoint, {});
+					await mauticApiRequest.call(
+						this,
+						'GET',
+						requestPath`/hooks/${webhookData.webhookId}`,
+						{},
+					);
 				} catch (error) {
 					return false;
 				}
@@ -146,32 +154,46 @@ export class MauticTrigger implements INodeType {
 				const events = this.getNodeParameter('events', 0) as string[];
 				const eventsOrder = this.getNodeParameter('eventsOrder', 0) as string;
 				const urlParts = urlParse(webhookUrl);
+				const webhookSecret = randomBytes(32).toString('hex');
 				const body: IDataObject = {
 					name: `n8n-webhook:${urlParts.path}`,
 					description: 'n8n webhook',
 					webhookUrl,
+					secret: webhookSecret,
 					triggers: events,
 					eventsOrderbyDir: eventsOrder,
 					isPublished: true,
 				};
-				const { hook } = await mauticApiRequest.call(this, 'POST', '/hooks/new', body);
+				const { hook } = await mauticApiRequest.call(this, 'POST', requestPath`/hooks/new`, body);
 				webhookData.webhookId = hook.id;
+				webhookData.webhookSecret = webhookSecret;
 				return true;
 			},
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				try {
-					await mauticApiRequest.call(this, 'DELETE', `/hooks/${webhookData.webhookId}/delete`);
+					await mauticApiRequest.call(
+						this,
+						'DELETE',
+						requestPath`/hooks/${webhookData.webhookId}/delete`,
+					);
 				} catch (error) {
 					return false;
 				}
 				delete webhookData.webhookId;
+				delete webhookData.webhookSecret;
 				return true;
 			},
 		},
 	};
 
 	async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
+		if (!verifySignature.call(this)) {
+			const res = this.getResponseObject();
+			res.status(401).send('Unauthorized').end();
+			return { noWebhookResponse: true };
+		}
+
 		const req = this.getRequestObject();
 		return {
 			workflowData: [this.helpers.returnJsonArray(req.body as IDataObject)],

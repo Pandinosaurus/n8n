@@ -5,6 +5,8 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
+
 import { hunterApiRequest, hunterApiRequestAllItems } from './GenericFunctions';
 
 export class Hunter implements INodeType {
@@ -20,8 +22,9 @@ export class Hunter implements INodeType {
 		defaults: {
 			name: 'Hunter',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'hunterApi',
@@ -85,7 +88,7 @@ export class Hunter implements INodeType {
 					},
 				},
 				default: true,
-				description: 'Whether to return only the the found emails',
+				description: 'Whether to return only the found emails',
 			},
 			{
 				displayName: 'Return All',
@@ -302,7 +305,7 @@ export class Hunter implements INodeType {
 							this,
 							'data',
 							'GET',
-							'/domain-search',
+							requestPath`/domain-search`,
 							{},
 							qs,
 						);
@@ -328,7 +331,13 @@ export class Hunter implements INodeType {
 					} else {
 						const limit = this.getNodeParameter('limit', i);
 						qs.limit = limit;
-						responseData = await hunterApiRequest.call(this, 'GET', '/domain-search', {}, qs);
+						responseData = await hunterApiRequest.call(
+							this,
+							'GET',
+							requestPath`/domain-search`,
+							{},
+							qs,
+						);
 						responseData = responseData.data;
 					}
 
@@ -354,14 +363,26 @@ export class Hunter implements INodeType {
 					qs.first_name = firstname;
 					qs.last_name = lastname;
 					qs.domain = domain;
-					responseData = await hunterApiRequest.call(this, 'GET', '/email-finder', {}, qs);
+					responseData = await hunterApiRequest.call(
+						this,
+						'GET',
+						requestPath`/email-finder`,
+						{},
+						qs,
+					);
 					responseData = responseData.data;
 				}
 				//https://hunter.io/api-documentation/v2#email-verifier
 				if (operation === 'emailVerifier') {
 					const email = this.getNodeParameter('email', i) as string;
 					qs.email = email;
-					responseData = await hunterApiRequest.call(this, 'GET', '/email-verifier', {}, qs);
+					responseData = await hunterApiRequest.call(
+						this,
+						'GET',
+						requestPath`/email-verifier`,
+						{},
+						qs,
+					);
 					responseData = responseData.data;
 				}
 

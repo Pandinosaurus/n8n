@@ -4,17 +4,20 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeOperationError, requestPath } from 'n8n-workflow';
+
+import { generatePairedItemData, processJsonInput, updateDisplayOptions } from '@utils/utilities';
+
 import type { ExcelResponse, UpdateSummary } from '../../helpers/interfaces';
 import {
 	checkRange,
+	parseAddress,
 	prepareOutput,
 	updateByAutoMaping,
 	updateByDefinedValues,
 } from '../../helpers/utils';
-import { microsoftApiRequest } from '../../transport';
+import { microsoftApiRequest, toWorkbookId } from '../../transport';
 import { workbookRLC, worksheetRLC } from '../common.descriptions';
-import { generatePairedItemData, processJsonInput, updateDisplayOptions } from '@utils/utilities';
 
 const properties: INodeProperties[] = [
 	workbookRLC,
@@ -65,7 +68,7 @@ const properties: INodeProperties[] = [
 		name: 'columnToMatchOn',
 		type: 'options',
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		typeOptions: {
 			loadOptionsDependsOn: ['worksheet.value', 'workbook.value', 'range'],
 			loadOptionsMethod: 'getWorksheetColumnRow',
@@ -114,7 +117,7 @@ const properties: INodeProperties[] = [
 						name: 'column',
 						type: 'options',
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 						typeOptions: {
 							loadOptionsDependsOn: ['columnToMatchOn', 'range'],
 							loadOptionsMethod: 'getWorksheetColumnRowSkipColumnToMatchOn',
@@ -135,7 +138,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -201,9 +204,13 @@ export async function execute(
 	const nodeVersion = this.getNode().typeVersion;
 
 	try {
-		const workbookId = this.getNodeParameter('workbook', 0, undefined, {
-			extractValue: true,
-		}) as string;
+		// Whole-batch operation: every param (including the SP target) is read at item 0.
+		const workbookId = toWorkbookId.call(
+			this,
+			this.getNodeParameter('workbook', 0, undefined, {
+				extractValue: true,
+			}) as string,
+		);
 
 		const worksheetId = this.getNodeParameter('worksheet', 0, undefined, {
 			extractValue: true,
@@ -220,7 +227,12 @@ export async function execute(
 			worksheetData = await microsoftApiRequest.call(
 				this,
 				'PATCH',
-				`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+				requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				0,
 			);
 		}
 
@@ -234,9 +246,12 @@ export async function execute(
 			worksheetData = await microsoftApiRequest.call(
 				this,
 				'GET',
-				`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/usedRange`,
+				requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/usedRange`,
 				undefined,
 				query,
+				undefined,
+				undefined,
+				0,
 			);
 
 			range = (worksheetData.address as string).split('!')[1];
@@ -251,14 +266,18 @@ export async function execute(
 			responseData = await microsoftApiRequest.call(
 				this,
 				'PATCH',
-				`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+				requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
 				{ values },
+				undefined,
+				undefined,
+				undefined,
+				0,
 			);
 		}
 
 		if (
 			dataMode !== 'raw' &&
-			(worksheetData.values === undefined || (worksheetData.values as string[][]).length <= 1)
+			(worksheetData.values === undefined || (worksheetData.values as string[][]).length < 1)
 		) {
 			throw new NodeOperationError(
 				this.getNode(),
@@ -338,32 +357,38 @@ export async function execute(
 			}
 
 			updateSummary.updatedData = updateSummary.updatedData.concat(appendValues);
-			const [rangeFrom, rangeTo] = range.split(':');
-
-			const cellDataTo = rangeTo.match(/([a-zA-Z]{1,10})([0-9]{0,10})/) || [];
-			let lastRow = cellDataTo[2];
+			const { cellFrom, cellTo } = parseAddress(range);
+			let lastRow = cellTo.row;
 
 			if (nodeVersion > 2 && !appendAfterSelectedRange) {
 				const { address } = await microsoftApiRequest.call(
 					this,
 					'GET',
-					`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/usedRange`,
+					requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/usedRange`,
 					undefined,
 					{ select: 'address' },
+					undefined,
+					undefined,
+					0,
 				);
 
-				const addressTo = (address as string).split('!')[1].split(':')[1];
-				lastRow = addressTo.match(/([a-zA-Z]{1,10})([0-9]{0,10})/)![2];
+				const usedRange = parseAddress(address as string);
+
+				lastRow = usedRange.cellTo.row;
 			}
 
-			range = `${rangeFrom}:${cellDataTo[1]}${Number(lastRow) + appendValues.length}`;
+			range = `${cellFrom.value}:${cellTo.column}${Number(lastRow) + appendValues.length}`;
 		}
 
 		responseData = await microsoftApiRequest.call(
 			this,
 			'PATCH',
-			`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+			requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
 			{ values: updateSummary.updatedData },
+			undefined,
+			undefined,
+			undefined,
+			0,
 		);
 
 		const { updatedRows } = updateSummary;

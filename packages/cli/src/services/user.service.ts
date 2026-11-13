@@ -1,89 +1,214 @@
-import { Container, Service } from 'typedi';
+import type { RoleChangeRequestDto } from '@n8n/api-types';
+import { Logger } from '@n8n/backend-common';
+import {
+	EventService,
+	UrlService,
+	RoleService,
+	JwtService,
+	PostHogClient,
+} from '@n8n/backend-services';
+import { GlobalConfig } from '@n8n/config';
+import type { AuthIdentity, OperationContext, Person, PublicUser } from '@n8n/db';
+import {
+	isPerson,
+	TransactionRunner,
+	Project,
+	ProjectRelation,
+	User,
+	UserRepository,
+	PersonRepository,
+	ProjectRepository,
+	SharedCredentialsRepository,
+	SharedWorkflowRepository,
+	Not,
+	In,
+	GLOBAL_MEMBER_ROLE,
+	GLOBAL_OWNER_ROLE,
+} from '@n8n/db';
+import { Container, Service } from '@n8n/di';
+import {
+	getGlobalScopes,
+	isBuiltInRole,
+	PROJECT_ADMIN_ROLE_SLUG,
+	PROJECT_OWNER_ROLE_SLUG,
+	PROJECT_VIEWER_ROLE_SLUG,
+	type AssignableGlobalRole,
+} from '@n8n/permissions';
 import type { IUserSettings } from 'n8n-workflow';
-import { ApplicationError, ErrorReporterProxy as ErrorReporter } from 'n8n-workflow';
+import { validate as uuidValidate } from 'uuid';
 
-import { type AssignableRole, User } from '@db/entities/User';
-import { UserRepository } from '@db/repositories/user.repository';
-import type { PublicUser } from '@/Interfaces';
-import type { PostHogClient } from '@/posthog';
-import { Logger } from '@/Logger';
-import { UserManagementMailer } from '@/UserManagement/email';
-import { InternalHooks } from '@/InternalHooks';
-import { UrlService } from '@/services/url.service';
+import { OwnershipService } from './ownership.service';
+import { ProjectService } from './project.service.ee';
+import { PublicApiKeyService } from './public-api-key.service';
+
+import { RESPONSE_ERROR_MESSAGES } from '@/constants';
+import {
+	BadRequestError,
+	ForbiddenError,
+	InternalServerError,
+	NotFoundError,
+	UserError,
+} from '@n8n/errors';
+import { loginIdOf } from '@/events/login-id';
+import { ExternalHooks } from '@/external-hooks';
+import type { Invitation } from '@/interfaces';
+import { License } from '@/license';
+import type { PolicyActor } from '@/policy/policy-enforcement-backend';
+import type { PublicApiCaller } from '@/public-api/public-api-client';
 import type { UserRequest } from '@/requests';
-import { InternalServerError } from '@/errors/response-errors/internal-server.error';
+import { ScimSwitchReader } from '@/sso.ee/scim-switch-reader';
+import { isSamlOrOidcLoginEnabled, isSsoCurrentAuthenticationMethod } from '@/sso.ee/sso-helpers';
+import { UserManagementMailer } from '@/user-management/email';
+
+export const CHANGE_ROLE_ERROR_MESSAGES = {
+	NO_USER: 'Target user not found',
+	NO_ADMIN_ON_OWNER: 'Admin cannot change role on global owner',
+	NO_OWNER_ON_OWNER: 'Owner cannot change role on global owner',
+	CANNOT_CHANGE_OWN_ROLE: 'Cannot change your own global role',
+	INSTANCE_ROLES_MANAGED: 'Instance roles are managed automatically and cannot be changed manually',
+} as const;
+
+export const INVITE_ROLE_MANAGED_MESSAGE =
+	'Instance roles are managed by single sign-on. Invite users with the member role.';
+
+/** The system as the actor of a user deletion that no user asked for. */
+export type SystemDeletionActor = Extract<PolicyActor, { kind: 'system' }> & { reason: 'scim' };
 
 @Service()
 export class UserService {
 	constructor(
 		private readonly logger: Logger,
 		private readonly userRepository: UserRepository,
+		private readonly projectRepository: ProjectRepository,
 		private readonly mailer: UserManagementMailer,
 		private readonly urlService: UrlService,
+		private readonly eventService: EventService,
+		private readonly ownershipService: OwnershipService,
+		private readonly publicApiKeyService: PublicApiKeyService,
+		private readonly roleService: RoleService,
+		private readonly globalConfig: GlobalConfig,
+		private readonly jwtService: JwtService,
+		private readonly projectService: ProjectService,
+		private readonly license: License,
+		private readonly externalHooks: ExternalHooks,
+		private readonly sharedCredentialsRepository: SharedCredentialsRepository,
+		private readonly sharedWorkflowRepository: SharedWorkflowRepository,
+		private readonly personRepository: PersonRepository,
+		private readonly scimSwitchReader: ScimSwitchReader,
+		private readonly txRunner: TransactionRunner,
 	) {}
 
-	async update(userId: string, data: Partial<User>) {
-		return await this.userRepository.update(userId, data);
+	/** Updates the profile or password of a person. A service account id is a no-op. */
+	async update(userId: string, data: Partial<Person>) {
+		const person = await this.personRepository.findById(userId);
+
+		if (person) {
+			await this.personRepository.save(Object.assign(person, data));
+		}
+
+		return;
 	}
 
 	getManager() {
 		return this.userRepository.manager;
 	}
 
-	async updateSettings(userId: string, newSettings: Partial<IUserSettings>) {
-		const { settings } = await this.userRepository.findOneOrFail({ where: { id: userId } });
+	async assertGetUsersAccess(user: User, projectId?: string): Promise<void> {
+		if (projectId) {
+			const project = await this.projectService.getProjectWithScope(user, projectId, [
+				'project:list',
+			]);
+			if (!project) {
+				throw new NotFoundError('Project not found');
+			}
+			return;
+		}
+	}
 
-		return await this.userRepository.update(userId, { settings: { ...settings, ...newSettings } });
+	/** Both kinds of account have settings. Returns the merged settings. */
+	async updateSettings(userId: string, newSettings: Partial<IUserSettings>) {
+		const account = await this.userRepository.findOneBy({ id: userId });
+		if (!account) throw new NotFoundError('User not found');
+
+		account.settings = { ...account.settings, ...newSettings };
+		await this.userRepository.save(account);
+
+		return account.settings;
+	}
+
+	async findUserWithAuthIdentities(userId: string): Promise<Person> {
+		const person = await this.personRepository.findByIdWithAuthIdentities(userId);
+		if (!person) throw new NotFoundError('User not found');
+		return person;
+	}
+
+	/**
+	 * Check if a user is authenticated via LDAP or OIDC.
+	 * These users should not be able to change their profile information.
+	 */
+	async findSsoIdentity(userId: string): Promise<AuthIdentity | undefined> {
+		const person = await this.personRepository.findByIdWithAuthIdentities(userId);
+
+		const ssoIdentity = person?.authIdentities?.find(
+			(identity) => identity.providerType !== 'email',
+		);
+
+		return ssoIdentity;
 	}
 
 	async toPublic(
 		user: User,
 		options?: {
-			withInviteUrl?: boolean;
-			inviterId?: string;
 			posthog?: PostHogClient;
 			withScopes?: boolean;
+			mfaAuthenticated?: boolean;
 		},
 	) {
-		const { password, updatedAt, apiKey, authIdentities, mfaRecoveryCodes, mfaSecret, ...rest } =
-			user;
-
-		const ldapIdentity = authIdentities?.find((i) => i.providerType === 'ldap');
-
 		let publicUser: PublicUser = {
-			...rest,
-			signInType: ldapIdentity ? 'ldap' : 'email',
-			hasRecoveryCodesLeft: !!user.mfaRecoveryCodes?.length,
+			...this.publicFields(user),
+			role: user.role?.slug,
+			isOwner: user.role.slug === 'global:owner',
 		};
-
-		if (options?.withInviteUrl && !options?.inviterId) {
-			throw new ApplicationError('Inviter ID is required to generate invite URL');
-		}
-
-		if (options?.withInviteUrl && options?.inviterId && publicUser.isPending) {
-			publicUser = this.addInviteUrl(options.inviterId, publicUser);
-		}
 
 		if (options?.posthog) {
 			publicUser = await this.addFeatureFlags(publicUser, options.posthog);
 		}
 
+		// TODO: resolve these directly in the frontend
 		if (options?.withScopes) {
-			publicUser.globalScopes = user.globalScopes;
+			publicUser.globalScopes = getGlobalScopes(user);
+		}
+
+		publicUser.mfaAuthenticated = options?.mfaAuthenticated ?? false;
+
+		const { instanceSettingsLoader } = this.globalConfig;
+		if (
+			instanceSettingsLoader.ownerManagedByEnv &&
+			isPerson(user) &&
+			!!user.email &&
+			user.email.toLowerCase() === instanceSettingsLoader.ownerEmail.toLowerCase()
+		) {
+			publicUser.isManagedByEnv = true;
 		}
 
 		return publicUser;
 	}
 
-	private addInviteUrl(inviterId: string, invitee: PublicUser) {
-		const url = new URL(this.urlService.getInstanceBaseUrl());
-		url.pathname = '/signup';
-		url.searchParams.set('inviterId', inviterId);
-		url.searchParams.set('inviteeId', invitee.id);
+	/** The fields of the account without its secrets. */
+	private publicFields(user: User): Omit<PublicUser, 'role' | 'isOwner'> {
+		if (isPerson(user)) {
+			const { password, updatedAt, authIdentities, mfaRecoveryCodes, mfaSecret, role, ...rest } =
+				user;
+			return { ...rest, signInType: authIdentities?.[0]?.providerType ?? 'email' };
+		}
 
-		invitee.inviteAcceptUrl = url.toString();
+		return this.serviceAccountFields(user);
+	}
 
-		return invitee;
+	/** A service account has no person columns and never waits for an invite. */
+	private serviceAccountFields(user: User): Omit<PublicUser, 'role' | 'isOwner'> {
+		const { id, createdAt, disabled, settings } = user;
+		return { id, createdAt, disabled, settings, isPending: false, signInType: 'email' };
 	}
 
 	private async addFeatureFlags(publicUser: PublicUser, posthog: PostHogClient) {
@@ -96,7 +221,10 @@ export class UserService {
 		});
 
 		const fetchPromise = new Promise<PublicUser>(async (resolve) => {
-			publicUser.featureFlags = await posthog.getFeatureFlags(publicUser);
+			const { featureFlags, featureFlagPayloads } =
+				await posthog.getFeatureFlagsAndPayloads(publicUser);
+			publicUser.featureFlags = featureFlags;
+			publicUser.featureFlagPayloads = featureFlagPayloads;
 			resolve(publicUser);
 		});
 
@@ -106,19 +234,31 @@ export class UserService {
 	private async sendEmails(
 		owner: User,
 		toInviteUsers: { [key: string]: string },
-		role: AssignableRole,
+		role: AssignableGlobalRole,
+		publicApi: PublicApiCaller,
+		ctx: OperationContext = {},
 	) {
 		const domain = this.urlService.getInstanceBaseUrl();
 
+		const inviteLinksEmailOnly = this.globalConfig.userManagement.inviteLinksEmailOnly;
+
+		// Invites pass under SAML or OIDC only while SCIM is on. The accept page
+		// rejects invite links under SSO, and the invitee signs in through the
+		// identity provider, which links the invite by email. So the email links
+		// to the sign-in page, and the response has no link to copy.
+		const signInThroughSso = isSsoCurrentAuthenticationMethod();
+
 		return await Promise.all(
 			Object.entries(toInviteUsers).map(async ([email, id]) => {
-				const inviteAcceptUrl = `${domain}/signup?inviterId=${owner.id}&inviteeId=${id}`;
+				const inviteAcceptUrl = signInThroughSso
+					? `${domain}/signin`
+					: this.createInviteAcceptUrl(domain, owner.id, id);
 				const invitedUser: UserRequest.InviteResponse = {
 					user: {
 						id,
 						email,
-						inviteAcceptUrl,
 						emailSent: false,
+						role,
 					},
 					error: '',
 				};
@@ -127,36 +267,43 @@ export class UserService {
 					const result = await this.mailer.invite({
 						email,
 						inviteAcceptUrl,
-						domain,
 					});
 					if (result.emailSent) {
 						invitedUser.user.emailSent = true;
-						delete invitedUser.user?.inviteAcceptUrl;
-						void Container.get(InternalHooks).onUserTransactionalEmail({
-							user_id: id,
-							message_type: 'New user invite',
-							public_api: false,
+
+						this.eventService.emit('user-transactional-email-sent', {
+							userId: id,
+							messageType: 'New user invite',
+							publicApi,
 						});
 					}
 
-					void Container.get(InternalHooks).onUserInvite({
+					// Only include the invite URL in the response if
+					// the users configuration allows it
+					// and the email was not sent (to allow manual copy-paste)
+					if (!signInThroughSso && !inviteLinksEmailOnly && !result.emailSent) {
+						invitedUser.user.inviteAcceptUrl = inviteAcceptUrl;
+					}
+
+					this.eventService.emit('user-invited', {
 						user: owner,
-						target_user_id: Object.values(toInviteUsers),
-						public_api: false,
-						email_sent: result.emailSent,
-						invitee_role: role, // same role for all invited users
+						targetUserId: Object.values(toInviteUsers),
+						publicApi,
+						emailSent: result.emailSent,
+						inviteeRole: role, // same role for all invited users
+						loginId: loginIdOf(ctx),
 					});
 				} catch (e) {
 					if (e instanceof Error) {
-						void Container.get(InternalHooks).onEmailFailed({
+						this.eventService.emit('email-failed', {
 							user: owner,
-							message_type: 'New user invite',
-							public_api: false,
+							messageType: 'New user invite',
+							publicApi,
+							loginId: loginIdOf(ctx),
 						});
+						// Do not log inviteAcceptUrl: it contains a live JWT that must not appear in logs
 						this.logger.error('Failed to send email', {
 							userId: owner.id,
-							inviteAcceptUrl,
-							domain,
 							email,
 						});
 						invitedUser.error = e.message;
@@ -168,14 +315,25 @@ export class UserService {
 		);
 	}
 
-	async inviteUsers(owner: User, attributes: Array<{ email: string; role: AssignableRole }>) {
-		const emails = attributes.map(({ email }) => email);
+	/** JWT-based, so that the invite link cannot be changed. */
+	private createInviteAcceptUrl(domain: string, inviterId: string, inviteeId: string) {
+		const token = this.jwtService.sign('invite', { inviterId, inviteeId }, { expiresIn: '90d' });
+		return `${domain}/signup?token=${token}`;
+	}
 
-		const existingUsers = await this.userRepository.findManyByEmail(emails);
+	async inviteUsers(
+		owner: User,
+		invitations: Invitation[],
+		publicApi: PublicApiCaller = false,
+		ctx: OperationContext = {},
+	) {
+		const emails = invitations.map(({ email }) => email);
+
+		const existingUsers = await this.personRepository.findManyByEmail(emails);
 
 		const existUsersEmails = existingUsers.map((user) => user.email);
 
-		const toCreateUsers = attributes.filter(({ email }) => !existUsersEmails.includes(email));
+		const toCreateUsers = invitations.filter(({ email }) => !existUsersEmails.includes(email));
 
 		const pendingUsersToInvite = existingUsers.filter((email) => email.isPending);
 
@@ -187,22 +345,34 @@ export class UserService {
 				: 'Creating 1 user shell...',
 		);
 
+		// Check that all roles in the invitations exist in the database
+		await this.roleService.checkRolesExist(
+			invitations.map(({ role }) => role),
+			'global',
+		);
+
 		try {
 			await this.getManager().transaction(
 				async (transactionManager) =>
 					await Promise.all(
 						toCreateUsers.map(async ({ email, role }) => {
-							const newUser = transactionManager.create(User, { email, role });
-							const savedUser = await transactionManager.save<User>(newUser);
+							const { user: savedUser } = await this.personRepository.createPersonWithProject(
+								{
+									email,
+									role: {
+										slug: role,
+									},
+								},
+								transactionManager,
+							);
 							createdUsers.set(email, savedUser.id);
 							return savedUser;
 						}),
 					),
 			);
 		} catch (error) {
-			ErrorReporter.error(error);
 			this.logger.error('Failed to create user shells', { userShells: createdUsers });
-			throw new InternalServerError('An error occurred during user creation');
+			throw new InternalServerError('An error occurred during user creation', error);
 		}
 
 		pendingUsersToInvite.forEach(({ email, id }) => createdUsers.set(email, id));
@@ -210,9 +380,471 @@ export class UserService {
 		const usersInvited = await this.sendEmails(
 			owner,
 			Object.fromEntries(createdUsers),
-			attributes[0].role, // same role for all invited users
+			invitations[0].role, // same role for all invited users
+			publicApi,
+			ctx,
 		);
 
 		return { usersInvited, usersCreated: toCreateUsers.map(({ email }) => email) };
+	}
+
+	async changeUserRole(user: User, newRole: RoleChangeRequestDto) {
+		// Check that new role exists
+		await this.roleService.checkRolesExist([newRole.newRoleName], 'global');
+
+		// Only custom roles are license-gated here; built-in roles are assignable on every
+		// entry point (SSO/SCIM provisioning, token exchange, REST). The REST endpoint
+		// separately gates advanced permissions for built-in admin.
+		if (
+			!isBuiltInRole(newRole.newRoleName) &&
+			!this.roleService.isRoleLicensed(newRole.newRoleName)
+		) {
+			throw new ForbiddenError(
+				`The role "${newRole.newRoleName}" is not available in your current license.`,
+			);
+		}
+
+		await this.userRepository.manager.transaction(async (trx) => {
+			await trx.update(User, { id: user.id }, { role: { slug: newRole.newRoleName } });
+
+			const isAdminRole = (roleName: string) => {
+				return roleName === 'global:admin' || roleName === 'global:owner';
+			};
+
+			const isDowngradedToChatUser =
+				user.role.slug !== 'global:chatUser' && newRole.newRoleName === 'global:chatUser';
+			const isUpgradedChatUser =
+				user.role.slug === 'global:chatUser' && newRole.newRoleName !== 'global:chatUser';
+			const isDowngradedAdmin = isAdminRole(user.role.slug) && !isAdminRole(newRole.newRoleName);
+
+			if (isDowngradedToChatUser) {
+				// Revoke user's project roles in any shared projects they have access to.
+				const projectRelations = await trx.find(ProjectRelation, {
+					where: { userId: user.id, role: { slug: Not(PROJECT_OWNER_ROLE_SLUG) } },
+					relations: ['role'],
+				});
+				for (const relation of projectRelations) {
+					if (relation.role.slug === PROJECT_ADMIN_ROLE_SLUG) {
+						// Ensure there is at least one other admin in the project
+						const adminCount = await trx.count(ProjectRelation, {
+							where: {
+								projectId: relation.projectId,
+								role: { slug: In([PROJECT_ADMIN_ROLE_SLUG, PROJECT_OWNER_ROLE_SLUG]) },
+								userId: Not(user.id),
+							},
+						});
+						if (adminCount === 0) {
+							throw new UserError(
+								`Cannot downgrade user as they are the only project admin in project "${relation.projectId}".`,
+							);
+						}
+					}
+
+					await trx.delete(ProjectRelation, {
+						userId: user.id,
+						projectId: relation.projectId,
+					});
+				}
+
+				const personalProject = await this.projectRepository.getPersonalProjectForUserOrFail(
+					user.id,
+					trx,
+				);
+
+				// Revoke 'project:personalOwner' role on their personal project
+				// and grant 'project:viewer' role instead.
+				await trx.update(
+					ProjectRelation,
+					{
+						userId: user.id,
+						role: { slug: PROJECT_OWNER_ROLE_SLUG },
+						projectId: personalProject.id,
+					},
+					{ role: { slug: PROJECT_VIEWER_ROLE_SLUG } },
+				);
+
+				// Revoke all API keys from chat users
+				await this.publicApiKeyService.deleteAllApiKeysForUser(user, trx);
+			} else if (isDowngradedAdmin) {
+				await this.publicApiKeyService.removeOwnerOnlyScopesFromApiKeys(user, trx);
+			} else if (isUpgradedChatUser) {
+				const personalProject = await this.projectRepository.getPersonalProjectForUserOrFail(
+					user.id,
+					trx,
+				);
+
+				// Revoke previous 'project:viewer' role on their personal project
+				// and grant 'project:personalOwner' role instead.
+				await trx.update(
+					ProjectRelation,
+					{
+						userId: user.id,
+						role: { slug: PROJECT_VIEWER_ROLE_SLUG },
+						projectId: personalProject.id,
+					},
+					{ role: { slug: PROJECT_OWNER_ROLE_SLUG } },
+				);
+			}
+		});
+
+		// Invalidate ownership cache for the user to ensure their new permissions are reflected in subsequent requests
+		await this.ownershipService.invalidateProjectOwnerCacheByUserId(user.id);
+	}
+
+	/**
+	 * Extract inviterId and inviteeId from JWT token
+	 * @param token - JWT token containing inviterId and inviteeId
+	 * @returns Object with inviterId and inviteeId
+	 * @throws BadRequestError if JWT is invalid or required parameters are missing
+	 */
+	private async processTokenBasedInvite(
+		token: string,
+	): Promise<{ inviterId: string; inviteeId: string }> {
+		try {
+			const decoded = this.jwtService.verify<{ inviterId: string; inviteeId: string }>(
+				'invite',
+				token,
+			);
+			if (!decoded.inviterId || !decoded.inviteeId) {
+				this.logger.debug('Invalid JWT token payload - missing inviterId or inviteeId');
+				throw new BadRequestError('Invalid invite URL');
+			}
+
+			return { inviterId: decoded.inviterId, inviteeId: decoded.inviteeId };
+		} catch (error) {
+			if (error instanceof BadRequestError) {
+				throw error;
+			}
+			this.logger.debug('Failed to verify JWT token', { error });
+			throw new BadRequestError('Invalid invite URL');
+		}
+	}
+
+	/**
+	 * Extract inviterId and inviteeId from JWT token
+	 * @param token - JWT token containing inviterId and inviteeId
+	 * @returns Object with inviterId and inviteeId
+	 * @throws BadRequestError if JWT is invalid or required parameters are missing
+	 */
+	async getInvitationIdsFromPayload(
+		token: string,
+	): Promise<{ inviterId: string; inviteeId: string }> {
+		const instanceOwner = await this.userRepository.findOne({
+			where: { role: { slug: GLOBAL_OWNER_ROLE.slug } },
+		});
+
+		if (!instanceOwner) {
+			throw new BadRequestError('Instance owner not found');
+		}
+
+		// Only support token-based invites (tamper-proof)
+		return await this.processTokenBasedInvite(token);
+	}
+
+	async getUser(withIdentifier: string): Promise<User | null> {
+		return uuidValidate(withIdentifier)
+			? await this.userRepository.findByIdWithRole(withIdentifier)
+			: await this.personRepository.findByEmailWithRole(withIdentifier);
+	}
+
+	async getUsersAndCount(options: {
+		ids?: string[];
+		limit?: number;
+		offset?: number;
+	}): Promise<{ users: User[]; count: number }> {
+		const listOptions = {
+			includeRole: true,
+			offset: options.offset,
+			limit: options.limit,
+			kind: 'person' as const,
+		};
+		const users = options.ids
+			? await this.userRepository.findManyByIds(options.ids, listOptions)
+			: await this.userRepository.findMany(listOptions);
+		const count = await this.userRepository.countAccounts({ kind: 'person' });
+
+		return { users, count };
+	}
+
+	async inviteUser(
+		inviter: User,
+		invitations: Invitation[],
+		publicApi: PublicApiCaller = false,
+		ctx: OperationContext = {},
+	) {
+		if (invitations.length === 0) return [];
+
+		// While SCIM is on, admins can invite the people that the identity provider
+		// does not provision. They sign in through SAML or OIDC, which links the
+		// invite by email. SCIM needs SAML or OIDC, so LDAP keeps the block.
+		if (
+			isSsoCurrentAuthenticationMethod() &&
+			!(isSamlOrOidcLoginEnabled() && (await this.scimSwitchReader.isEnabled()))
+		) {
+			this.logger.debug(
+				'SSO is enabled, so users are managed by the Identity Provider and cannot be added through invites',
+			);
+			throw new BadRequestError(
+				'SSO is enabled, so users are managed by the Identity Provider and cannot be added through invites',
+			);
+		}
+
+		await this.assertInviteRolesAreNotManaged(invitations);
+
+		// oxlint-disable-next-line typescript/no-deprecated
+		if (!this.license.isWithinUsersLimit()) {
+			this.logger.debug(
+				'Request to send email invite(s) to user(s) failed because the user limit quota has been reached',
+			);
+			throw new ForbiddenError(RESPONSE_ERROR_MESSAGES.USERS_QUOTA_REACHED);
+		}
+
+		if (!(await this.ownershipService.hasInstanceOwner())) {
+			this.logger.debug(
+				'Request to send email invite(s) to user(s) failed because the owner account is not set up',
+			);
+			throw new BadRequestError('You must set up your own account before inviting others');
+		}
+
+		const attributes = invitations.map(({ email, role }) => {
+			// oxlint-disable-next-line typescript/no-deprecated
+			if (role === 'global:admin' && !this.license.isAdvancedPermissionsLicensed()) {
+				throw new ForbiddenError(
+					'Cannot invite admin user without advanced permissions. Please upgrade to a license that includes this feature.',
+				);
+			}
+			return { email, role };
+		});
+
+		const { usersInvited, usersCreated } = await this.inviteUsers(
+			inviter,
+			attributes,
+			publicApi,
+			ctx,
+		);
+
+		await this.externalHooks.run('user.invited', [usersCreated]);
+
+		return usersInvited;
+	}
+
+	/**
+	 * Delete a user. With `transferId`, the work of the user moves to that
+	 * project first. Without it, the work is deleted with the user.
+	 *
+	 * The actor is a user, or the system for a deletion that no user asked for,
+	 * such as a SCIM deletion from the identity provider.
+	 */
+	async deleteUser(
+		actor: User | SystemDeletionActor,
+		idToDelete: string,
+		transferId?: string,
+		publicApi: PublicApiCaller = false,
+		ctx: OperationContext = {},
+	) {
+		// A user also has a `kind` (person or service), so test the value.
+		const systemActor = actor.kind === 'system' ? actor : null;
+		const actorUser = actor.kind === 'system' ? null : actor;
+		const policyActor: PolicyActor =
+			actor.kind === 'system' ? actor : { kind: 'user', user: actor };
+
+		if (actorUser?.id === idToDelete) {
+			this.logger.debug(
+				'Request to delete a user failed because it attempted to delete the requesting user',
+				{ userId: actorUser.id },
+			);
+			throw new BadRequestError('Cannot delete your own user');
+		}
+
+		const userToDelete = await this.userRepository.findByIdWithRole(idToDelete);
+
+		if (!userToDelete) {
+			throw new NotFoundError(
+				'Request to delete a user failed because the user to delete was not found in DB',
+			);
+		}
+
+		if (userToDelete.role.slug === GLOBAL_OWNER_ROLE.slug) {
+			throw new ForbiddenError('Instance owner cannot be deleted.');
+		}
+
+		const personalProjectToDelete = await this.projectRepository.getPersonalProjectForUserOrFail(
+			userToDelete.id,
+		);
+
+		if (transferId === personalProjectToDelete.id) {
+			throw new BadRequestError(
+				'Request to delete a user failed because the user to delete and the transferee are the same user',
+			);
+		}
+
+		let transfereeId;
+		let transfereeProject: Project | null = null;
+		const ownershipTransferService = await this.getOwnershipTransferService();
+
+		if (transferId) {
+			transfereeProject = await this.projectService.findProject(transferId);
+
+			if (!transfereeProject) {
+				throw new NotFoundError(
+					'Request to delete a user failed because the transferee project was not found in DB',
+				);
+			}
+
+			// A team project can have no members, and it can still take the work.
+			// The `user-deleted` event then has no `migrationUserId`.
+			const transferee = await this.userRepository.findOneByProjectId(transfereeProject.id);
+
+			transfereeId = transferee?.id;
+
+			await ownershipTransferService.enforceTransferPolicy(
+				personalProjectToDelete.id,
+				transfereeProject.id,
+				policyActor,
+			);
+			await ownershipTransferService.transferAllResources(
+				[personalProjectToDelete.id],
+				transfereeProject.id,
+			);
+		}
+
+		const [ownedSharedWorkflows, ownedSharedCredentials] = await Promise.all([
+			this.sharedWorkflowRepository.find({
+				select: { workflowId: true },
+				where: { projectId: personalProjectToDelete.id, role: 'workflow:owner' },
+			}),
+			this.sharedCredentialsRepository.find({
+				relations: { credentials: true },
+				where: { projectId: personalProjectToDelete.id, role: 'credential:owner' },
+			}),
+		]);
+
+		const ownedCredentials = ownedSharedCredentials.map(({ credentials }) => credentials);
+
+		const workflowService = await this.getWorkflowService();
+		for (const { workflowId } of ownedSharedWorkflows) {
+			await workflowService.delete(userToDelete, workflowId, true, { publicApi });
+		}
+
+		const credentialsService = await this.getCredentialsService();
+		for (const credential of ownedCredentials) {
+			await credentialsService.delete(userToDelete, credential.id);
+		}
+
+		// Clean up module-owned resources (e.g. data tables with their physical
+		// user tables) before the project is removed, so they are not orphaned by
+		// the FK cascade. The transfer case is handled by the transfer above.
+		if (!transfereeProject) {
+			await ownershipTransferService.deleteModuleOwnedResources([personalProjectToDelete.id]);
+		}
+
+		// Clean up user-owned module data before account deletion, including on transfer.
+		await ownershipTransferService.deleteUserOwnedModuleResources([userToDelete.id]);
+
+		await this.txRunner.run({}, async (ctx) => {
+			await ownershipTransferService.finalizeUserDeletion(
+				userToDelete.id,
+				personalProjectToDelete.id,
+				ctx,
+			);
+			await this.userRepository.deleteAccount(userToDelete.id, personalProjectToDelete.id, ctx);
+		});
+
+		this.eventService.emit('user-deleted', {
+			// No user acts in a system deletion, so the event names the system.
+			user: actorUser,
+			...(systemActor && { source: systemActor.reason }),
+			publicApi,
+			targetUserOldStatus: isPerson(userToDelete) && userToDelete.isPending ? 'invited' : 'active',
+			targetUserId: idToDelete,
+			migrationStrategy: transferId ? 'transfer_data' : 'delete_data',
+			migrationUserId: transfereeId,
+			loginId: loginIdOf(ctx),
+		});
+
+		await this.externalHooks.run('user.deleted', [await this.toPublic(userToDelete)]);
+
+		return { success: true };
+	}
+
+	async changeGlobalRole(
+		actor: User,
+		id: string,
+		payload: RoleChangeRequestDto,
+		publicApi: PublicApiCaller = false,
+	) {
+		const provisioningService = await this.getProvisioningService();
+
+		if (await provisioningService.isInstanceRoleManaged()) {
+			throw new ForbiddenError(CHANGE_ROLE_ERROR_MESSAGES.INSTANCE_ROLES_MANAGED);
+		}
+
+		if (actor.id === id) {
+			throw new ForbiddenError(CHANGE_ROLE_ERROR_MESSAGES.CANNOT_CHANGE_OWN_ROLE);
+		}
+
+		const targetUser = await this.userRepository.findByIdWithRole(id);
+		if (targetUser === null) {
+			throw new NotFoundError(CHANGE_ROLE_ERROR_MESSAGES.NO_USER);
+		}
+
+		if (targetUser.role.slug === GLOBAL_OWNER_ROLE.slug) {
+			throw new ForbiddenError(
+				actor.role.slug === GLOBAL_OWNER_ROLE.slug
+					? CHANGE_ROLE_ERROR_MESSAGES.NO_OWNER_ON_OWNER
+					: CHANGE_ROLE_ERROR_MESSAGES.NO_ADMIN_ON_OWNER,
+			);
+		}
+
+		await this.changeUserRole(targetUser, payload);
+
+		this.eventService.emit('user-changed-role', {
+			userId: actor.id,
+			targetUserId: targetUser.id,
+			targetUserNewRole: payload.newRoleName,
+			publicApi,
+		});
+
+		return { success: true };
+	}
+
+	/**
+	 * While SAML or OIDC assigns the instance roles, an admin cannot change a
+	 * global role by hand. An invite must not set such a role either, so it
+	 * can invite only members. The SSO sign-in then applies the mapped role.
+	 */
+	private async assertInviteRolesAreNotManaged(invitations: Invitation[]) {
+		if (invitations.every(({ role }) => role === GLOBAL_MEMBER_ROLE.slug)) return;
+
+		const provisioningService = await this.getProvisioningService();
+		if (await provisioningService.isInstanceRoleManaged()) {
+			throw new ForbiddenError(INVITE_ROLE_MANAGED_MESSAGE);
+		}
+	}
+
+	/** Lazy: these services import `UserService`, so a static import would be a value-import cycle. */
+	private async getProvisioningService() {
+		const { ProvisioningService } = await import(
+			'@/modules/provisioning.ee/provisioning.service.ee.js'
+		);
+
+		return Container.get(ProvisioningService);
+	}
+
+	private async getWorkflowService() {
+		const { WorkflowService } = await import('@/workflows/workflow.service.js');
+		return Container.get(WorkflowService);
+	}
+
+	private async getCredentialsService() {
+		const { CredentialsService } = await import('@/credentials/credentials.service.js');
+		return Container.get(CredentialsService);
+	}
+
+	private async getOwnershipTransferService() {
+		const { OwnershipTransferService } = await import(
+			'@/services/ownership-transfer/ownership-transfer.service.js'
+		);
+		return Container.get(OwnershipTransferService);
 	}
 }

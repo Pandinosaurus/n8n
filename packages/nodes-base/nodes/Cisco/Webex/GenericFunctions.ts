@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-
+import upperFirst from 'lodash/upperFirst';
 import type {
 	ICredentialDataDecryptedObject,
 	IDataObject,
@@ -11,26 +11,26 @@ import type {
 	IRequestOptions,
 	IWebhookFunctions,
 	JsonObject,
+	LegacyRequestOptions,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
-
-import upperFirst from 'lodash/upperFirst';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
 export async function webexApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions | IHookFunctions | IWebhookFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	qs: IDataObject = {},
 	uri?: string,
-	option: IDataObject = {},
+	option: Pick<IRequestOptions, 'formData' | 'headers' | 'resolveWithFullResponse'> = {},
 ): Promise<any> {
-	let options: IRequestOptions = {
+	let options: LegacyRequestOptions = {
 		method,
 		body,
 		qs,
-		uri: uri || `https://webexapis.com/v1${resource}`,
+		...(uri ? { uri } : { uri: requestUrl`https://webexapis.com/v1${resource}` }),
 		json: true,
 	};
 	try {
@@ -43,7 +43,6 @@ export async function webexApiRequest(
 		if (Object.keys(qs).length === 0) {
 			delete options.qs;
 		}
-		//@ts-ignore
 		return await this.helpers.requestOAuth2.call(this, 'ciscoWebexOAuth2Api', options, {
 			tokenType: 'Bearer',
 		});
@@ -56,11 +55,10 @@ export async function webexApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions | IHookFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},
-	options: IDataObject = {},
 ): Promise<any> {
 	const returnData: IDataObject[] = [];
 
@@ -70,7 +68,6 @@ export async function webexApiRequestAllItems(
 	do {
 		responseData = await webexApiRequest.call(this, method, endpoint, body, query, uri, {
 			resolveWithFullResponse: true,
-			...options,
 		});
 		if (responseData.headers.link) {
 			uri = responseData.headers.link.split(';')[0].replace('<', '').replace('>', '');

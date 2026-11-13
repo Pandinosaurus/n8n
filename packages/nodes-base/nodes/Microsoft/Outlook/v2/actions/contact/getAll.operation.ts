@@ -1,8 +1,12 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { escapeODataValue } from '@utils/query-escaping';
+import { updateDisplayOptions } from '@utils/utilities';
+
+import { returnAllOrLimit } from '../../descriptions';
 import { contactFields } from '../../helpers/utils';
 import { microsoftApiRequest, microsoftApiRequestAllItems } from '../../transport';
-import { returnAllOrLimit } from '../../descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 export const properties: INodeProperties[] = [
 	...returnAllOrLimit,
@@ -96,9 +100,11 @@ export async function execute(this: IExecuteFunctions, index: number) {
 		const filterString: string[] = [];
 
 		if (filters.emailAddress) {
-			const emails = (filters.emailAddress as string)
+			// A `string` parameter is a UI control, not a runtime guarantee: an expression
+			// can resolve one to any value, and `as string` would not convert it.
+			const emails = String(filters.emailAddress)
 				.split(',')
-				.map((email) => `emailAddresses/any(a:a/address eq '${email.trim()}')`);
+				.map((email) => `emailAddresses/any(a:a/address eq '${escapeODataValue(email.trim())}')`);
 			filterString.push(emails.join(' and '));
 		}
 
@@ -111,7 +117,7 @@ export async function execute(this: IExecuteFunctions, index: number) {
 		}
 	}
 
-	const endpoint = '/contacts';
+	const endpoint = requestPath`/contacts`;
 
 	if (returnAll) {
 		responseData = await microsoftApiRequestAllItems.call(
@@ -119,12 +125,13 @@ export async function execute(this: IExecuteFunctions, index: number) {
 			'value',
 			'GET',
 			endpoint,
+			index,
 			undefined,
 			qs,
 		);
 	} else {
 		qs.$top = this.getNodeParameter('limit', index);
-		responseData = await microsoftApiRequest.call(this, 'GET', endpoint, undefined, qs);
+		responseData = await microsoftApiRequest.call(this, 'GET', endpoint, index, undefined, qs);
 		responseData = responseData.value;
 	}
 

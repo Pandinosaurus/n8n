@@ -1,33 +1,122 @@
-import axios from 'axios';
+import { Logger } from '@n8n/backend-common';
+import { OutboundHttp } from '@n8n/backend-network';
+import { InstanceRegistryProxyService, PostHogClient } from '@n8n/backend-services';
+import { GlobalConfig } from '@n8n/config';
+import {
+	ProjectRelationRepository,
+	ProjectRepository,
+	WorkflowRepository,
+	UserRepository,
+} from '@n8n/db';
+import { LOWEST_SHUTDOWN_PRIORITY, OnShutdown } from '@n8n/decorators';
+import { Container, Service } from '@n8n/di';
+import type { InferTelemetryProps, TelemetryEventDef } from '@n8n/telemetry';
+import { redactTelemetryProperties, TELEMETRY_EVENT } from '@n8n/telemetry';
 import type RudderStack from '@rudderstack/rudder-sdk-node';
-import { PostHogClient } from '@/posthog';
-import { Container, Service } from 'typedi';
+import type { AxiosRequestConfig } from 'axios';
+import { ErrorReporter, InstanceSettings } from 'n8n-core';
 import type { ITelemetryTrackProperties } from 'n8n-workflow';
-import { InstanceSettings } from 'n8n-core';
 
-import config from '@/config';
-import type { IExecutionTrackProperties } from '@/Interfaces';
-import { Logger } from '@/Logger';
-import { License } from '@/License';
 import { N8N_VERSION } from '@/constants';
-import { WorkflowRepository } from '@db/repositories/workflow.repository';
-import { SourceControlPreferencesService } from '../environments/sourceControl/sourceControlPreferences.service.ee';
-import { UserRepository } from '@db/repositories/user.repository';
+import type {
+	AgentRunTelemetryType,
+	IAgentConfigurationTelemetryProperties,
+	IAgentExecutionTrackProperties,
+	IAgentTurnFinishedTrackProperties,
+	IExecutionTrackProperties,
+} from '@/interfaces';
+import { License } from '@/license';
+import type { PublicApiClient } from '@/public-api/public-api-client';
 
-type ExecutionTrackDataKey = 'manual_error' | 'manual_success' | 'prod_error' | 'prod_success';
+import { SourceControlPreferencesService } from '../modules/source-control.ee/source-control-preferences.service.ee';
+import { USER_CALLED_MCP_TOOL_EVENT } from '../modules/mcp/mcp.constants';
+import { summarizeFootprint } from './cluster-footprint';
+
+/** A full queue of 500 events takes under 2 s on a healthy server. */
+const SHUTDOWN_FLUSH_TIMEOUT_MS = 10_000;
+
+type ExecutionTrackDataKey =
+	| 'manual_error'
+	| 'manual_success'
+	| 'prod_error'
+	| 'prod_success'
+	| 'manual_crashed'
+	| 'prod_crashed'
+	| `${'instance_ai'}_${'mock' | 'real'}_${'manual' | 'prod'}_${'error' | 'success' | 'crashed'}`
+	| `personal_credentials_${'manual' | 'prod'}`;
 
 interface IExecutionTrackData {
 	count: number;
 	first: Date;
 }
 
+type IExecutionsBufferEntry = Partial<Record<ExecutionTrackDataKey, IExecutionTrackData>> & {
+	user_id: string | undefined;
+};
+
 interface IExecutionsBuffer {
-	[workflowId: string]: {
-		manual_error?: IExecutionTrackData;
-		manual_success?: IExecutionTrackData;
-		prod_error?: IExecutionTrackData;
-		prod_success?: IExecutionTrackData;
-		user_id: string | undefined;
+	[workflowId: string]: IExecutionsBufferEntry;
+}
+
+interface IApiInvocationProperties {
+	user_id: string;
+	path: string;
+	method: string;
+	api_version: string;
+	user_agent?: string;
+	client: PublicApiClient;
+}
+
+interface IApiInvocationsBufferEntry {
+	total_calls: number;
+	first: Date;
+	endpoints: Record<string, number>;
+	endpoints_by_client: { editor_ui: Record<string, number> };
+	user_agents: Record<string, number>;
+	clients: Record<PublicApiClient, number>;
+}
+
+interface IApiInvocationsBuffer {
+	[userId: string]: IApiInvocationsBufferEntry;
+}
+
+interface IAgentExecutionCounts {
+	message_count: number;
+	token_count: number;
+	tool_call_count: number;
+}
+
+interface IAgentExecutionCountsBuffer {
+	[bufferKey: string]: IAgentExecutionCounts & {
+		agent_id: string;
+		user_id?: string;
+		run_type: AgentRunTelemetryType;
+		first_message_at?: string;
+		counts_by_source: Record<string, IAgentExecutionCounts>;
+	};
+}
+
+interface IAgentSessionMetrics {
+	latency_ms: number;
+	cost: number;
+	token_count: number;
+	tool_call_count: number;
+	num_skills: number;
+	turn_count: number;
+	skill_load_count: number;
+	loaded_skill_ids: Set<string>;
+}
+
+interface IAgentSessionMetricsBuffer {
+	[bufferKey: string]: {
+		agent_id: string;
+		user_id?: string;
+		agent_type: IAgentTurnFinishedTrackProperties['agent_type'];
+		run_type: IAgentTurnFinishedTrackProperties['run_type'];
+		turn_status: IAgentTurnFinishedTrackProperties['turn_status'];
+		configuration: IAgentConfigurationTelemetryProperties;
+		sessions: Record<string, IAgentSessionMetrics>;
+		sessions_by_source: Record<string, Record<string, IAgentSessionMetrics>>;
 	};
 }
 
@@ -35,9 +124,18 @@ interface IExecutionsBuffer {
 export class Telemetry {
 	private rudderStack?: RudderStack;
 
-	private pulseIntervalReference: NodeJS.Timeout;
+	private userCloudId?: string;
 
 	private executionCountsBuffer: IExecutionsBuffer = {};
+
+	private apiInvocationsBuffer: IApiInvocationsBuffer = {};
+
+	private agentExecutionCountsBuffer: IAgentExecutionCountsBuffer = {};
+
+	private agentSessionMetricsBuffer: IAgentSessionMetricsBuffer = {};
+
+	/** Event names already reported by `warnAboutMissingUserId`, so each one is said once. */
+	private readonly eventsMissingUserId = new Set<string>();
 
 	constructor(
 		private readonly logger: Logger,
@@ -45,73 +143,118 @@ export class Telemetry {
 		private readonly license: License,
 		private readonly instanceSettings: InstanceSettings,
 		private readonly workflowRepository: WorkflowRepository,
+		private readonly globalConfig: GlobalConfig,
+		private readonly errorReporter: ErrorReporter,
+		private readonly outboundHttp: OutboundHttp,
 	) {}
 
+	// PostHog groupIdentify only accepts flat objects with string or number values, function sanitizes objects to match that format.
+	sanitizeTelemetryProperties(
+		obj: Record<string, any>,
+		depth = 0,
+		maxDepth = 10,
+	): Record<string, string | number> {
+		try {
+			const result: Record<string, string | number> = {};
+
+			for (const [key, value] of Object.entries(obj)) {
+				if (value === null || value === undefined) {
+					continue;
+				} else if (typeof value === 'boolean') {
+					result[key] = value ? 'true' : 'false';
+				} else if (typeof value === 'number') {
+					result[key] = value;
+				} else if (typeof value === 'string') {
+					result[key] = value;
+				} else if (Array.isArray(value)) {
+					result[key] = JSON.stringify(value);
+				} else if (typeof value === 'object' && value.constructor === Object) {
+					if (depth >= maxDepth) {
+						result[key] = JSON.stringify(value);
+					} else {
+						// Recursively flatten nested objects
+						Object.assign(
+							result,
+							this.sanitizeTelemetryProperties(
+								value as Record<string, unknown>,
+								depth + 1,
+								maxDepth,
+							),
+						);
+					}
+				} else {
+					continue;
+				}
+			}
+
+			return result;
+		} catch (e) {
+			this.logger.error('Error sanitizing telemetry properties', { error: e, object: obj });
+			return {};
+		}
+	}
+
 	async init() {
-		const enabled = config.getEnv('diagnostics.enabled');
+		const { enabled, backendConfig } = this.globalConfig.diagnostics;
 		if (enabled) {
-			const conf = config.getEnv('diagnostics.config.backend');
-			const [key, dataPlaneUrl] = conf.split(';');
+			const [key, dataPlaneUrl] = backendConfig.split(';');
 
 			if (!key || !dataPlaneUrl) {
 				this.logger.warn('Diagnostics backend config is invalid');
 				return;
 			}
 
-			const logLevel = config.getEnv('logs.level');
+			const logLevel = this.globalConfig.logging.level;
 
 			const { default: RudderStack } = await import('@rudderstack/rudder-sdk-node');
-			const axiosInstance = axios.create();
-			axiosInstance.interceptors.request.use((cfg) => {
-				cfg.headers.setContentType('application/json', false);
-				return cfg;
-			});
+
+			const { httpAgent, httpsAgent } = this.outboundHttp
+				.transport({
+					useDefaultSsrfPolicy: 'unsafe', // The data-plane host is fixed and the SDK owns the request lifecycle, so SSRF is disabled.
+				})
+				.getNodeAgent();
+			const axiosConfig: AxiosRequestConfig = {
+				httpAgent,
+				httpsAgent,
+				headers: { 'Content-Type': 'application/json' },
+			};
+
 			this.rudderStack = new RudderStack(key, {
-				axiosInstance,
+				axiosConfig,
 				logLevel,
 				dataPlaneUrl,
 				gzip: false,
+				errorHandler: (error) => {
+					this.errorReporter.error(error);
+				},
 			});
-
-			this.startPulse();
 		}
 	}
 
-	private startPulse() {
-		this.pulseIntervalReference = setInterval(
-			async () => {
-				void this.pulse();
-			},
-			6 * 60 * 60 * 1000,
-		); // every 6 hours
-	}
-
-	private async pulse(): Promise<unknown> {
+	/**
+	 * Sends the events buffered in this process and empties the buffers. Does
+	 * nothing while diagnostics are off, because nothing buffers then.
+	 */
+	flushBuffers(): void {
 		if (!this.rudderStack) {
 			return;
 		}
 
-		const allPromises = Object.keys(this.executionCountsBuffer)
-			.filter((workflowId) => {
-				const data = this.executionCountsBuffer[workflowId];
-				const sum =
-					(data.manual_error?.count ?? 0) +
-					(data.manual_success?.count ?? 0) +
-					(data.prod_error?.count ?? 0) +
-					(data.prod_success?.count ?? 0);
-				return sum > 0;
-			})
-			.map(async (workflowId) => {
-				const promise = this.track('Workflow execution count', {
-					event_version: '2',
-					workflow_id: workflowId,
-					...this.executionCountsBuffer[workflowId],
-				});
+		this.flushWorkflowExecutionCounts();
+		this.flushAgentExecutionCounts();
+		this.flushAgentSessionMetrics();
+		this.flushApiInvocations();
+	}
 
-				return await promise;
-			});
-
-		this.executionCountsBuffer = {};
+	/**
+	 * Sends one `pulse` packet of license and usage counters. The counters
+	 * describe the whole instance, so a second sender reports the same numbers
+	 * again. Does nothing while diagnostics are off.
+	 */
+	async sendPulsePacket(): Promise<void> {
+		if (!this.rudderStack) {
+			return;
+		}
 
 		const sourceControlPreferences = Container.get(
 			SourceControlPreferencesService,
@@ -122,16 +265,148 @@ export class Telemetry {
 			plan_name_current: this.license.getPlanName(),
 			quota: this.license.getTriggerLimit(),
 			usage: await this.workflowRepository.getActiveTriggerCount(),
-			role_count: await Container.get(UserRepository).countUsersByRole(),
+			role_count: await Container.get(UserRepository).countUsersByRole('person'),
 			source_control_set_up: Container.get(SourceControlPreferencesService).isSourceControlSetup(),
 			branchName: sourceControlPreferences.branchName,
 			read_only_instance: sourceControlPreferences.branchReadOnly,
+			team_projects: (await Container.get(ProjectRepository).getProjectCounts()).team,
+			project_role_count: await Container.get(ProjectRelationRepository).countUsersByRole(),
+			...summarizeFootprint(await Container.get(InstanceRegistryProxyService).getAllInstances()),
 		};
-		allPromises.push(this.track('pulse', pulsePacket));
-		return await Promise.all(allPromises);
+
+		this.track('pulse', pulsePacket);
 	}
 
-	async trackWorkflowExecution(properties: IExecutionTrackProperties): Promise<void> {
+	private flushApiInvocations() {
+		for (const userId of Object.keys(this.apiInvocationsBuffer)) {
+			const entry = this.apiInvocationsBuffer[userId];
+			if (entry.total_calls > 0) {
+				this.track('Public API usage', {
+					user_id: userId,
+					total_calls: entry.total_calls,
+					first: entry.first,
+					endpoints: JSON.stringify(entry.endpoints),
+					endpoints_by_client: JSON.stringify(entry.endpoints_by_client),
+					user_agents: JSON.stringify(entry.user_agents),
+					clients: JSON.stringify(entry.clients),
+				});
+			}
+		}
+		this.apiInvocationsBuffer = {};
+	}
+
+	private flushWorkflowExecutionCounts() {
+		const workflowIdsToReport = Object.keys(this.executionCountsBuffer).filter((workflowId) => {
+			const data = this.executionCountsBuffer[workflowId];
+			const sum =
+				(data.manual_error?.count ?? 0) +
+				(data.manual_success?.count ?? 0) +
+				(data.prod_error?.count ?? 0) +
+				(data.prod_success?.count ?? 0) +
+				(data.manual_crashed?.count ?? 0) +
+				(data.prod_crashed?.count ?? 0);
+
+			return sum > 0;
+		});
+
+		for (const workflowId of workflowIdsToReport) {
+			this.track('Workflow execution count', {
+				event_version: '2',
+				workflow_id: workflowId,
+				...this.executionCountsBuffer[workflowId],
+			});
+		}
+
+		this.executionCountsBuffer = {};
+	}
+
+	private getAgentExecutionCountsBufferKey(
+		agentId: string,
+		runType: AgentRunTelemetryType,
+		userId?: string,
+	) {
+		return userId ? `${agentId}:${runType}:${userId}` : `${agentId}:${runType}`;
+	}
+
+	private flushAgentExecutionCounts() {
+		const keysToReport = Object.keys(this.agentExecutionCountsBuffer).filter((bufferKey) => {
+			const data = this.agentExecutionCountsBuffer[bufferKey];
+			return data.message_count + data.token_count + data.tool_call_count > 0;
+		});
+
+		for (const bufferKey of keysToReport) {
+			// Agent-level aggregate window keyed by persisted agent ID, run type and optional
+			// n8n user ID. A resume-only window may legitimately report tokens or tools with
+			// message_count = 0.
+			const { agent_id, user_id, run_type, ...counts } = this.agentExecutionCountsBuffer[bufferKey];
+			this.track(TELEMETRY_EVENT.AGENTS.AGENT_EXECUTION_COUNT, {
+				event_version: '3',
+				agent_id,
+				...(user_id ? { user_id } : {}),
+				run_type,
+				...counts,
+			});
+		}
+
+		this.agentExecutionCountsBuffer = {};
+	}
+
+	private getAgentSessionMetricsBufferKey(properties: IAgentTurnFinishedTrackProperties) {
+		return [
+			properties.agent_id,
+			properties.user_id,
+			properties.run_type,
+			properties.turn_status,
+			JSON.stringify(properties.configuration),
+		].join(':');
+	}
+
+	private flushAgentSessionMetrics() {
+		for (const bucket of Object.values(this.agentSessionMetricsBuffer)) {
+			if (Object.keys(bucket.sessions).length === 0) continue;
+
+			this.track(TELEMETRY_EVENT.AGENTS.AGENT_SESSION_METRICS, {
+				event_version: '1',
+				agent_id: bucket.agent_id,
+				...(bucket.user_id ? { user_id: bucket.user_id } : {}),
+				...(bucket.agent_type ? { agent_type: bucket.agent_type } : {}),
+				...bucket.configuration,
+				run_type: bucket.run_type,
+				turn_status: bucket.turn_status,
+				...this.sumAgentSessionMetrics(bucket.sessions),
+				counts_by_source: Object.fromEntries(
+					Object.entries(bucket.sessions_by_source).map(([source, sessions]) => [
+						source,
+						this.sumAgentSessionMetrics(sessions),
+					]),
+				),
+			});
+		}
+
+		this.agentSessionMetricsBuffer = {};
+	}
+
+	private sumAgentSessionMetrics(sessionsById: Record<string, IAgentSessionMetrics>) {
+		const sessions = Object.values(sessionsById);
+		return {
+			session_count: sessions.length,
+			turn_count: sessions.reduce((total, session) => total + session.turn_count, 0),
+			latency_ms_sum: sessions.reduce((total, session) => total + session.latency_ms, 0),
+			cost_sum: sessions.reduce((total, session) => total + session.cost, 0),
+			token_count_sum: sessions.reduce((total, session) => total + session.token_count, 0),
+			tool_call_count_sum: sessions.reduce((total, session) => total + session.tool_call_count, 0),
+			num_skills_sum: sessions.reduce((total, session) => total + session.num_skills, 0),
+			skill_load_count_sum: sessions.reduce(
+				(total, session) => total + session.skill_load_count,
+				0,
+			),
+			loaded_skill_ids: [
+				...new Set(sessions.flatMap((session) => [...session.loaded_skill_ids])),
+			].sort(),
+		};
+	}
+
+	trackWorkflowExecution(properties: IExecutionTrackProperties) {
 		if (this.rudderStack) {
 			const execTime = new Date();
 			const workflowId = properties.workflow_id;
@@ -140,17 +415,37 @@ export class Telemetry {
 				user_id: properties.user_id,
 			};
 
-			const key: ExecutionTrackDataKey = `${properties.is_manual ? 'manual' : 'prod'}_${
-				properties.success ? 'success' : 'error'
-			}`;
-
-			if (!this.executionCountsBuffer[workflowId][key]) {
-				this.executionCountsBuffer[workflowId][key] = {
-					count: 1,
-					first: execTime,
-				};
+			let key: ExecutionTrackDataKey;
+			if (properties.crashed) {
+				key = `${properties.is_manual ? 'manual' : 'prod'}_crashed`;
 			} else {
-				this.executionCountsBuffer[workflowId][key]!.count++;
+				key = `${properties.is_manual ? 'manual' : 'prod'}_${
+					properties.success ? 'success' : 'error'
+				}`;
+			}
+
+			this.addExecutionTrackData(workflowId, key, execTime);
+
+			const executionStatus = properties.crashed
+				? 'crashed'
+				: properties.success
+					? 'success'
+					: 'error';
+			const executionMode = properties.is_manual ? 'manual' : 'prod';
+
+			if (properties.execution_source === 'instance_ai') {
+				const instanceAiDataType = properties.mock_data_sources ? 'mock' : 'real';
+				const sourceKey: ExecutionTrackDataKey = `instance_ai_${instanceAiDataType}_${executionMode}_${executionStatus}`;
+				this.addExecutionTrackData(workflowId, sourceKey, execTime);
+			}
+
+			// Counted in the per-workflow aggregate, not as an event for each run.
+			if (properties.personal_credentials_count) {
+				this.addExecutionTrackData(workflowId, `personal_credentials_${executionMode}`, execTime);
+			}
+
+			if (properties.used_end_user_credentials) {
+				this.track('Workflow execution with end-user credentials', properties);
 			}
 
 			if (
@@ -158,70 +453,325 @@ export class Telemetry {
 				properties.is_manual &&
 				properties.error_node_type?.startsWith('n8n-nodes-base')
 			) {
-				void this.track('Workflow execution errored', properties);
+				this.track('Workflow execution errored', properties);
 			}
 		}
 	}
 
-	async trackN8nStop(): Promise<void> {
-		clearInterval(this.pulseIntervalReference);
-		await this.track('User instance stopped');
-		void Promise.all([this.postHog.stop(), this.rudderStack?.flush()]);
+	private addExecutionTrackData(workflowId: string, key: ExecutionTrackDataKey, execTime: Date) {
+		const executionTrackData = this.executionCountsBuffer[workflowId][key];
+
+		if (!executionTrackData) {
+			this.executionCountsBuffer[workflowId][key] = {
+				count: 1,
+				first: execTime,
+			};
+		} else {
+			executionTrackData.count++;
+		}
 	}
 
-	async identify(traits?: {
-		[key: string]: string | number | boolean | object | undefined | null;
-	}): Promise<void> {
-		const { instanceId } = this.instanceSettings;
-		return await new Promise<void>((resolve) => {
-			if (this.rudderStack) {
-				this.rudderStack.identify(
-					{
-						userId: instanceId,
-						traits: { ...traits, instanceId },
-					},
-					resolve,
-				);
-			} else {
-				resolve();
-			}
+	trackAgentExecution(properties: IAgentExecutionTrackProperties) {
+		if (!this.rudderStack) return;
+
+		const {
+			agent_id,
+			user_id,
+			run_type,
+			message_count = 0,
+			token_count = 0,
+			tool_call_count = 0,
+		} = properties;
+		const bufferKey = this.getAgentExecutionCountsBufferKey(agent_id, run_type, user_id);
+
+		this.agentExecutionCountsBuffer[bufferKey] = this.agentExecutionCountsBuffer[bufferKey] ?? {
+			agent_id,
+			...(user_id ? { user_id } : {}),
+			run_type,
+			message_count: 0,
+			token_count: 0,
+			tool_call_count: 0,
+			counts_by_source: {},
+		};
+
+		const agentExecutionCounts = this.agentExecutionCountsBuffer[bufferKey];
+		if (message_count > 0) {
+			agentExecutionCounts.first_message_at ??= new Date().toISOString();
+		}
+		agentExecutionCounts.message_count += message_count;
+		agentExecutionCounts.token_count += token_count;
+		agentExecutionCounts.tool_call_count += tool_call_count;
+
+		const source = properties.source || 'unknown';
+		const sourceCounts = (agentExecutionCounts.counts_by_source[source] ??= {
+			message_count: 0,
+			token_count: 0,
+			tool_call_count: 0,
 		});
+		sourceCounts.message_count += message_count;
+		sourceCounts.token_count += token_count;
+		sourceCounts.tool_call_count += tool_call_count;
 	}
 
-	async track(
-		eventName: string,
-		properties: ITelemetryTrackProperties = {},
-		{ withPostHog } = { withPostHog: false }, // whether to additionally track with PostHog
-	): Promise<void> {
-		const { instanceId } = this.instanceSettings;
-		return await new Promise<void>((resolve) => {
-			if (this.rudderStack) {
-				const { user_id } = properties;
-				const updatedProperties = {
-					...properties,
-					instance_id: instanceId,
-					version_cli: N8N_VERSION,
-				};
+	trackAgentTurnFinished(properties: IAgentTurnFinishedTrackProperties) {
+		if (!this.rudderStack) return;
 
-				const payload = {
-					userId: `${instanceId}${user_id ? `#${user_id}` : ''}`,
-					event: eventName,
-					properties: updatedProperties,
-				};
+		const bufferKey = this.getAgentSessionMetricsBufferKey(properties);
+		this.agentSessionMetricsBuffer[bufferKey] = this.agentSessionMetricsBuffer[bufferKey] ?? {
+			agent_id: properties.agent_id,
+			user_id: properties.user_id,
+			agent_type: properties.agent_type,
+			run_type: properties.run_type,
+			turn_status: properties.turn_status,
+			configuration: properties.configuration,
+			sessions: {},
+			sessions_by_source: {},
+		};
 
-				if (withPostHog) {
-					this.postHog?.track(payload);
-				}
+		const bucket = this.agentSessionMetricsBuffer[bufferKey];
+		const source = properties.source || 'unknown';
+		const sourceSessions = (bucket.sessions_by_source[source] ??= {});
+		// A session can contain turns from several sources. Keep the total deduplicated.
+		for (const sessions of [bucket.sessions, sourceSessions]) {
+			const session = sessions[properties.thread_id] ?? {
+				latency_ms: 0,
+				cost: 0,
+				token_count: 0,
+				tool_call_count: 0,
+				num_skills: properties.configuration.num_skills,
+				turn_count: 0,
+				skill_load_count: 0,
+				loaded_skill_ids: new Set<string>(),
+			};
 
-				return this.rudderStack.track(payload, resolve);
+			session.latency_ms += properties.latency_ms;
+			session.cost += properties.cost;
+			session.token_count += properties.token_count;
+			session.tool_call_count += properties.tool_call_count;
+			session.skill_load_count += properties.skill_load_count ?? 0;
+			for (const skillId of properties.loaded_skill_ids ?? []) {
+				session.loaded_skill_ids.add(skillId);
 			}
+			session.turn_count++;
+			sessions[properties.thread_id] = session;
+		}
+	}
 
-			return resolve();
+	trackApiInvocation(properties: IApiInvocationProperties) {
+		if (!this.rudderStack) return;
+
+		const { user_id, path, method, user_agent, client } = properties;
+
+		const entry = (this.apiInvocationsBuffer[user_id] ??= {
+			total_calls: 0,
+			first: new Date(),
+			endpoints: {},
+			endpoints_by_client: { editor_ui: {} },
+			user_agents: {},
+			clients: { editor_ui: 0, other: 0 },
 		});
+		entry.total_calls++;
+		entry.clients[client]++;
+
+		const endpointKey = `${method} ${path}`;
+		entry.endpoints[endpointKey] = (entry.endpoints[endpointKey] ?? 0) + 1;
+
+		// Only editor UI calls are counted per endpoint for now to help keep event size down.
+		if (client === 'editor_ui') {
+			const editorUiEndpoints = entry.endpoints_by_client.editor_ui;
+			editorUiEndpoints[endpointKey] = (editorUiEndpoints[endpointKey] ?? 0) + 1;
+		}
+
+		if (user_agent) {
+			entry.user_agents[user_agent] = (entry.user_agents[user_agent] ?? 0) + 1;
+		}
+	}
+
+	/** Sends the queued events now, instead of at the next flush interval. */
+	async flushQueue(): Promise<void> {
+		await this.rudderStack?.flush();
+	}
+
+	@OnShutdown(LOWEST_SHUTDOWN_PRIORITY)
+	async stopTracking(): Promise<void> {
+		this.flushBuffers();
+		await Promise.all([this.postHog.stop(), this.flushQueueBeforeExit()]);
+	}
+
+	/**
+	 * flush() sends every queued batch and retries each one, so a telemetry server
+	 * that does not answer can hold it past the graceful shutdown timeout. Give up
+	 * after a fixed time; the events are lost either way.
+	 */
+	private async flushQueueBeforeExit(): Promise<void> {
+		if (!this.rudderStack) return;
+
+		let timer: NodeJS.Timeout | undefined;
+		const deadline = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, SHUTDOWN_FLUSH_TIMEOUT_MS);
+		});
+		try {
+			await Promise.race([this.rudderStack.flush(), deadline]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	// Sets instance group properties and attaches user to instance group.
+	groupIdentify({
+		userId,
+		traits,
+		postHog = { userId, traits },
+	}: {
+		userId?: string;
+		traits?: Record<string, string | number>;
+		/**
+		 * PostHog-only override. PostHog refuses a group update with no real person
+		 * behind it, while RudderStack accepts the bare instance ID. Use it when the
+		 * two destinations must diverge, e.g. to attribute startup facts to the owner.
+		 */
+		postHog?: { userId?: string; traits?: Record<string, string | number> };
+	}): void {
+		const { instanceId } = this.instanceSettings;
+		if (!instanceId) return;
+
+		if (this.postHog && postHog.userId) {
+			this.postHog.groupIdentify({
+				distinctId: `${instanceId}#${postHog.userId}`,
+				instanceId,
+				properties: postHog.traits,
+			});
+		}
+
+		if (this.rudderStack) {
+			this.rudderStack.group({
+				groupId: instanceId,
+				userId: userId ? `${instanceId}#${userId}` : instanceId, // Rudderstack requires a userId for group calls, using instanceId as fallback
+				traits,
+				context: {
+					ip: '0.0.0.0',
+				},
+			});
+		}
+	}
+
+	identify(
+		traits?: { [key: string]: string | number | boolean | object | undefined | null },
+		userId?: string,
+	): void {
+		const { instanceId } = this.instanceSettings;
+		if (!instanceId) return;
+
+		if (this.rudderStack) {
+			this.rudderStack.identify({
+				userId: userId ? `${instanceId}#${userId}` : instanceId, // If no userId provided, falling back to instanceId for cross-compatibility
+				traits: { ...traits, instanceId },
+				context: {
+					ip: '0.0.0.0',
+				},
+			});
+		}
+
+		if (this.postHog && userId) {
+			this.postHog.identify({
+				distinctId: `${instanceId}#${userId}`,
+				properties: traits,
+			});
+		}
+	}
+
+	setUserCloudId(userCloudId?: string) {
+		this.userCloudId = userCloudId;
+	}
+
+	track<T extends TelemetryEventDef>(event: T, properties: InferTelemetryProps<T>): void;
+	track(eventName: string, properties?: ITelemetryTrackProperties): void;
+	track(event: string | TelemetryEventDef, properties: ITelemetryTrackProperties = {}) {
+		const eventName = typeof event === 'string' ? event : event.name;
+
+		if (typeof event !== 'string') {
+			const validationError = event.getValidationError(properties);
+			if (validationError) this.logger.warn(validationError);
+		}
+
+		if (!this.rudderStack) {
+			return;
+		}
+
+		const { instanceId } = this.instanceSettings;
+		const { user_id } = properties;
+		const updatedProperties = {
+			...(eventName === USER_CALLED_MCP_TOOL_EVENT
+				? redactTelemetryProperties(properties)
+				: properties),
+			instance_id: instanceId,
+			user_id: user_id ?? undefined,
+			version_cli: N8N_VERSION,
+		};
+
+		const payload = {
+			userId: `${instanceId}${user_id ? `#${user_id}` : ''}`,
+			event: eventName,
+			properties: updatedProperties,
+			context: this.userCloudId ? { traits: { user_cloud_id: this.userCloudId } } : {},
+		};
+
+		// Build the actual payload that will be sent to RudderStack (with fake IP)
+		const rudderStackPayload = {
+			...payload,
+			// provide a fake IP address to instruct RudderStack to not use the user's IP address
+			context: { ...payload.context, ip: '0.0.0.0' },
+		};
+
+		// Limiting payload size to 32 KB - measure the actual payload sent to RudderStack
+		const payloadSize = Buffer.byteLength(JSON.stringify(rudderStackPayload), 'utf8');
+		const maxPayloadSize = 32 << 10; // 32 KB
+
+		if (payloadSize > maxPayloadSize) {
+			return;
+		}
+
+		if (typeof event !== 'string' && !user_id) {
+			this.warnAboutMissingUserId(eventName);
+		}
+
+		this.postHog?.track(payload);
+
+		return this.rudderStack.track(rudderStackPayload);
+	}
+
+	/**
+	 * A registered event whose properties carry no `user_id` composes a distinct id of the bare
+	 * instance id, which `PostHogClient.track` drops to keep a phantom person profile out of
+	 * PostHog (#32344). The event still reaches RudderStack, so the loss is silent and only a
+	 * warehouse comparison finds it. This says so once for each event name, which is enough to
+	 * name the emit site and few enough to leave the logs readable.
+	 *
+	 * Only registered events are checked. A plain string event has no schema stating that it
+	 * describes a user action, and some of them are instance-level on purpose.
+	 */
+	private warnAboutMissingUserId(eventName: string): void {
+		if (this.eventsMissingUserId.has(eventName)) return;
+		this.eventsMissingUserId.add(eventName);
+		this.logger.warn(
+			`Telemetry event "${eventName}" carries no user_id, so PostHog drops it. Pass user_id in the event properties at the emit site.`,
+		);
 	}
 
 	// test helpers
 	getCountsBuffer(): IExecutionsBuffer {
 		return this.executionCountsBuffer;
+	}
+
+	getApiInvocationsBuffer(): IApiInvocationsBuffer {
+		return this.apiInvocationsBuffer;
+	}
+
+	getAgentExecutionCountsBuffer(): IAgentExecutionCountsBuffer {
+		return this.agentExecutionCountsBuffer;
+	}
+
+	getAgentSessionMetricsBuffer(): IAgentSessionMetricsBuffer {
+		return this.agentSessionMetricsBuffer;
 	}
 }

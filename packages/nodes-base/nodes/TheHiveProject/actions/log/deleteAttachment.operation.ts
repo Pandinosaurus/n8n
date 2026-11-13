@@ -1,7 +1,10 @@
 import type { IExecuteFunctions, INodeExecutionData, INodeProperties } from 'n8n-workflow';
-import { theHiveApiRequest } from '../../transport';
-import { logRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { logRLC } from '../../descriptions';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	logRLC,
@@ -12,7 +15,7 @@ const properties: INodeProperties[] = [
 		default: '',
 		required: true,
 		description:
-			'ID of the attachment. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'ID of the attachment. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		typeOptions: {
 			loadOptionsMethod: 'loadLogAttachments',
 			loadOptionsDependsOn: ['logId.value'],
@@ -33,7 +36,11 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	const logId = this.getNodeParameter('logId', i, '', { extractValue: true }) as string;
 	const attachmentId = this.getNodeParameter('attachmentId', i) as string;
 
-	await theHiveApiRequest.call(this, 'DELETE', `/v1/log/${logId}/attachments/${attachmentId}`);
+	await theHiveApiRequest.call(
+		this,
+		'DELETE',
+		requestPath`/v1/log/${logId}/attachments/${attachmentId}`,
+	);
 
 	const executionData = this.helpers.constructExecutionMetaData(wrapData({ success: true }), {
 		itemData: { item: i },

@@ -8,8 +8,15 @@ import type {
 	NodeParameterValue,
 	IRequestOptions,
 	IHttpRequestMethods,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import {
+	NodeApiError,
+	NodeConnectionTypes,
+	NodeOperationError,
+	requestPath,
+	requestUrl,
+} from 'n8n-workflow';
 
 interface CustomProperty {
 	name: string;
@@ -37,8 +44,9 @@ export class Chargebee implements INodeType {
 		defaults: {
 			name: 'Chargebee',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'chargebeeApi',
@@ -283,7 +291,7 @@ export class Chargebee implements INodeType {
 									},
 								],
 								default: 'after',
-								description: 'Operation to decide where the the data should be mapped to',
+								description: 'Operation to decide where the data should be mapped to',
 							},
 							{
 								displayName: 'Date',
@@ -330,7 +338,7 @@ export class Chargebee implements INodeType {
 									},
 								],
 								default: 'gt',
-								description: 'Operation to decide where the the data should be mapped to',
+								description: 'Operation to decide where the data should be mapped to',
 							},
 							{
 								displayName: 'Amount',
@@ -453,8 +461,6 @@ export class Chargebee implements INodeType {
 
 		const credentials = await this.getCredentials('chargebeeApi');
 
-		const baseUrl = `https://${credentials.accountName}.chargebee.com/api/v2`;
-
 		// For Post
 		let body: IDataObject;
 		// For Query string
@@ -466,7 +472,7 @@ export class Chargebee implements INodeType {
 				const operation = this.getNodeParameter('operation', i);
 
 				let requestMethod: IHttpRequestMethods = 'GET';
-				let endpoint = '';
+				let endpoint = requestPath``;
 				body = {};
 				qs = {};
 				if (resource === 'customer') {
@@ -493,7 +499,7 @@ export class Chargebee implements INodeType {
 							}
 						}
 
-						endpoint = 'customers';
+						endpoint = requestPath`customers`;
 					} else {
 						throw new NodeOperationError(
 							this.getNode(),
@@ -507,7 +513,7 @@ export class Chargebee implements INodeType {
 						//         list
 						// ----------------------------------
 
-						endpoint = 'invoices';
+						endpoint = requestPath`invoices`;
 						// TODO: Make also sorting configurable
 						qs['sort_by[desc]'] = 'date';
 
@@ -538,7 +544,7 @@ export class Chargebee implements INodeType {
 
 						requestMethod = 'POST';
 						const invoiceId = this.getNodeParameter('invoiceId', i) as string;
-						endpoint = `invoices/${invoiceId.trim()}/pdf`;
+						endpoint = requestPath`invoices/${invoiceId.trim()}/pdf`;
 					} else {
 						throw new NodeOperationError(
 							this.getNode(),
@@ -557,7 +563,7 @@ export class Chargebee implements INodeType {
 						const subscriptionId = this.getNodeParameter('subscriptionId', i, '') as string;
 						body.end_of_term = this.getNodeParameter('endOfTerm', i, false) as boolean;
 
-						endpoint = `subscriptions/${subscriptionId.trim()}/cancel`;
+						endpoint = requestPath`subscriptions/${subscriptionId.trim()}/cancel`;
 					} else if (operation === 'delete') {
 						// ----------------------------------
 						//         delete
@@ -567,7 +573,7 @@ export class Chargebee implements INodeType {
 
 						const subscriptionId = this.getNodeParameter('subscriptionId', i, '') as string;
 
-						endpoint = `subscriptions/${subscriptionId.trim()}/delete`;
+						endpoint = requestPath`subscriptions/${subscriptionId.trim()}/delete`;
 					} else {
 						throw new NodeOperationError(
 							this.getNode(),
@@ -585,13 +591,13 @@ export class Chargebee implements INodeType {
 					method: requestMethod,
 					body,
 					qs,
-					uri: `${baseUrl}/${endpoint}`,
+					uri: requestUrl`https://${credentials.accountName}.chargebee.com/api/v2/${endpoint}`,
 					auth: {
 						user: credentials.apiKey as string,
 						pass: '',
 					},
 					json: true,
-				} satisfies IRequestOptions;
+				} satisfies WithRequestTarget<IRequestOptions, 'uri'>;
 
 				let responseData;
 

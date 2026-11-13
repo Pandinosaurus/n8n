@@ -1,16 +1,18 @@
-import type {
-	IHookFunctions,
-	IWebhookFunctions,
-	ICredentialsDecrypted,
-	ICredentialTestFunctions,
-	IDataObject,
-	ILoadOptionsFunctions,
-	INodeCredentialTestResult,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeDescription,
-	IWebhookResponseData,
-	IRequestOptions,
+import {
+	type IHookFunctions,
+	type IWebhookFunctions,
+	type ICredentialsDecrypted,
+	type ICredentialTestFunctions,
+	type IDataObject,
+	type ILoadOptionsFunctions,
+	type INodeCredentialTestResult,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeDescription,
+	type IWebhookResponseData,
+	type IRequestOptions,
+	NodeConnectionTypes,
+	requestPath,
 } from 'n8n-workflow';
 
 import { bitbucketApiRequest, bitbucketApiRequestAllItems } from './GenericFunctions';
@@ -21,18 +23,33 @@ export class BitbucketTrigger implements INodeType {
 		name: 'bitbucketTrigger',
 		icon: 'file:bitbucket.svg',
 		group: ['trigger'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		description: 'Handle Bitbucket events via webhooks',
 		defaults: {
 			name: 'Bitbucket Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'bitbucketApi',
 				required: true,
 				testedBy: 'bitbucketApiTest',
+				displayOptions: {
+					show: {
+						authentication: ['password'],
+					},
+				},
+			},
+			{
+				name: 'bitbucketAccessTokenApi',
+				required: true,
+				displayOptions: {
+					show: {
+						authentication: ['accessToken'],
+					},
+				},
 			},
 		],
 		webhooks: [
@@ -44,6 +61,48 @@ export class BitbucketTrigger implements INodeType {
 			},
 		],
 		properties: [
+			{
+				displayName: 'Authentication',
+				name: 'authentication',
+				type: 'options',
+				options: [
+					{
+						name: 'Password (Deprecated)',
+						value: 'password',
+					},
+					{
+						name: 'Access Token',
+						value: 'accessToken',
+					},
+				],
+				default: 'password',
+				displayOptions: {
+					show: {
+						'@version': [1],
+					},
+				},
+			},
+			{
+				displayName: 'Authentication',
+				name: 'authentication',
+				type: 'options',
+				options: [
+					{
+						name: 'Password (Deprecated)',
+						value: 'password',
+					},
+					{
+						name: 'Access Token',
+						value: 'accessToken',
+					},
+				],
+				default: 'accessToken',
+				displayOptions: {
+					show: {
+						'@version': [1.1],
+					},
+				},
+			},
 			{
 				displayName: 'Resource',
 				name: 'resource',
@@ -77,7 +136,7 @@ export class BitbucketTrigger implements INodeType {
 				required: true,
 				default: '',
 				description:
-					'The repository of which to listen to the events. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The repository of which to listen to the events. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Event Names or IDs',
@@ -95,7 +154,7 @@ export class BitbucketTrigger implements INodeType {
 				required: true,
 				default: [],
 				description:
-					'The events to listen to. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The events to listen to. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Repository Name or ID',
@@ -113,7 +172,7 @@ export class BitbucketTrigger implements INodeType {
 				required: true,
 				default: '',
 				description:
-					'The repository of which to listen to the events. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The repository of which to listen to the events. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Event Names or IDs',
@@ -131,7 +190,7 @@ export class BitbucketTrigger implements INodeType {
 				required: true,
 				default: [],
 				description:
-					'The events to listen to. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The events to listen to. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 		],
 	};
@@ -157,7 +216,9 @@ export class BitbucketTrigger implements INodeType {
 
 				try {
 					const response = await this.helpers.request(options);
-					if (!response.username) {
+					// Bitbucket scoped API tokens may not include a `username` field,
+					// but always return `account_id` and `uuid` for valid credentials.
+					if (!response.account_id && !response.uuid) {
 						return {
 							status: 'Error',
 							message: `Token is not valid: ${response.error}`,
@@ -182,7 +243,7 @@ export class BitbucketTrigger implements INodeType {
 					this,
 					'values',
 					'GET',
-					'/hook_events/workspace',
+					requestPath`/hook_events/workspace`,
 				);
 				for (const event of events) {
 					returnData.push({
@@ -199,7 +260,7 @@ export class BitbucketTrigger implements INodeType {
 					this,
 					'values',
 					'GET',
-					'/hook_events/repository',
+					requestPath`/hook_events/repository`,
 				);
 				for (const event of events) {
 					returnData.push({
@@ -217,7 +278,7 @@ export class BitbucketTrigger implements INodeType {
 					this,
 					'values',
 					'GET',
-					`/repositories/${workspace}`,
+					requestPath`/repositories/${workspace}`,
 				);
 				for (const repository of repositories) {
 					returnData.push({
@@ -234,11 +295,11 @@ export class BitbucketTrigger implements INodeType {
 					this,
 					'values',
 					'GET',
-					'/workspaces',
+					requestPath`/user/workspaces`,
 				);
-				for (const workspace of workspaces) {
+				for (const { workspace } of workspaces) {
 					returnData.push({
-						name: workspace.name,
+						name: workspace.name ?? workspace.slug,
 						value: workspace.slug,
 					});
 				}
@@ -250,17 +311,17 @@ export class BitbucketTrigger implements INodeType {
 	webhookMethods = {
 		default: {
 			async checkExists(this: IHookFunctions): Promise<boolean> {
-				let endpoint = '';
+				let endpoint = requestPath``;
 				const resource = this.getNodeParameter('resource', 0);
 				const workspace = this.getNodeParameter('workspace', 0) as string;
 				const webhookUrl = this.getNodeWebhookUrl('default');
 				const webhookData = this.getWorkflowStaticData('node');
 				if (resource === 'workspace') {
-					endpoint = `/workspaces/${workspace}/hooks`;
+					endpoint = requestPath`/workspaces/${workspace}/hooks`;
 				}
 				if (resource === 'repository') {
 					const repository = this.getNodeParameter('repository', 0) as string;
-					endpoint = `/repositories/${workspace}/${repository}/hooks`;
+					endpoint = requestPath`/repositories/${workspace}/${repository}/hooks`;
 				}
 				const { values: hooks } = await bitbucketApiRequest.call(this, 'GET', endpoint);
 				for (const hook of hooks) {
@@ -272,7 +333,7 @@ export class BitbucketTrigger implements INodeType {
 				return false;
 			},
 			async create(this: IHookFunctions): Promise<boolean> {
-				let endpoint = '';
+				let endpoint = requestPath``;
 				const webhookUrl = this.getNodeWebhookUrl('default');
 				const webhookData = this.getWorkflowStaticData('node');
 				const events = this.getNodeParameter('events') as string[];
@@ -280,11 +341,11 @@ export class BitbucketTrigger implements INodeType {
 				const workspace = this.getNodeParameter('workspace', 0) as string;
 
 				if (resource === 'workspace') {
-					endpoint = `/workspaces/${workspace}/hooks`;
+					endpoint = requestPath`/workspaces/${workspace}/hooks`;
 				}
 				if (resource === 'repository') {
 					const repository = this.getNodeParameter('repository', 0) as string;
-					endpoint = `/repositories/${workspace}/${repository}/hooks`;
+					endpoint = requestPath`/repositories/${workspace}/${repository}/hooks`;
 				}
 				const body: IDataObject = {
 					description: 'n8n webhook',
@@ -297,18 +358,18 @@ export class BitbucketTrigger implements INodeType {
 				return true;
 			},
 			async delete(this: IHookFunctions): Promise<boolean> {
-				let endpoint = '';
+				let endpoint = requestPath``;
 				const webhookData = this.getWorkflowStaticData('node');
 				const workspace = this.getNodeParameter('workspace', 0) as string;
 				const resource = this.getNodeParameter('resource', 0);
-				if (resource === 'workspace') {
-					endpoint = `/workspaces/${workspace}/hooks/${webhookData.webhookId}`;
-				}
-				if (resource === 'repository') {
-					const repository = this.getNodeParameter('repository', 0) as string;
-					endpoint = `/repositories/${workspace}/${repository}/hooks/${webhookData.webhookId}`;
-				}
 				try {
+					if (resource === 'workspace') {
+						endpoint = requestPath`/workspaces/${workspace}/hooks/${webhookData.webhookId}`;
+					}
+					if (resource === 'repository') {
+						const repository = this.getNodeParameter('repository', 0) as string;
+						endpoint = requestPath`/repositories/${workspace}/${repository}/hooks/${webhookData.webhookId}`;
+					}
 					await bitbucketApiRequest.call(this, 'DELETE', endpoint);
 				} catch (error) {
 					return false;

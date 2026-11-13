@@ -1,0 +1,314 @@
+<script setup lang="ts">
+import {
+	COMMUNITY_PACKAGE_CONFIRM_MODAL_KEY,
+	COMMUNITY_PACKAGE_MANAGE_ACTIONS,
+} from '../communityNodes.constants';
+import { useToast } from '@n8n/composables/useToast';
+import { useCommunityNodesStore } from '../communityNodes.store';
+import { findVettedCommunityNodeAttributes, isNodesApiVersionError } from '../communityNodes.utils';
+import { useI18n } from '@n8n/i18n';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
+import { computed, onMounted, ref } from 'vue';
+import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
+import type { CommunityNodeType } from '@n8n/api-types';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import semver from 'semver';
+import { useUIStore } from '@/app/stores/ui.store';
+import { useWorkflowsListStore } from '@/app/stores/workflowsList.store';
+import type { WorkflowResource } from '@/Interface';
+
+import {
+	N8nButton,
+	N8nDialog,
+	N8nDialogBody,
+	N8nDialogFooter,
+	N8nNotice,
+	N8nText,
+} from '@n8n/design-system';
+import NodesInWorkflowTable from './NodesInWorkflowTable.vue';
+
+defineOptions({ inheritAttrs: false });
+export type CommunityPackageManageMode = 'uninstall' | 'update' | 'view-documentation';
+
+interface Props {
+	modalName: string;
+	activePackageName: string;
+	mode: CommunityPackageManageMode;
+}
+
+const props = defineProps<Props>();
+
+const communityNodesStore = useCommunityNodesStore();
+const nodeTypesStore = useNodeTypesStore();
+const settingsStore = useSettingsStore();
+const workflowsListStore = useWorkflowsListStore();
+const uiStore = useUIStore();
+
+const modalOpen = computed(
+	() => uiStore.modalsById[COMMUNITY_PACKAGE_CONFIRM_MODAL_KEY]?.open === true,
+);
+
+const toast = useToast();
+const i18n = useI18n();
+const telemetry = useTelemetry();
+
+const loading = ref(false);
+
+const workflowsWithPackageNodes = ref<WorkflowResource[]>([]);
+
+const isUsingVerifiedAndUnverifiedPackages =
+	settingsStore.isCommunityNodesFeatureEnabled && settingsStore.isUnverifiedPackagesEnabled;
+const isUsingVerifiedPackagesOnly =
+	settingsStore.isCommunityNodesFeatureEnabled && !settingsStore.isUnverifiedPackagesEnabled;
+
+const communityStorePackage = computed(
+	() => communityNodesStore.installedPackages[props.activePackageName],
+);
+const updateVersion = computed(() => {
+	return settingsStore.isUnverifiedPackagesEnabled
+		? communityStorePackage.value.updateAvailable
+		: nodeTypeStorePackage.value?.npmVersion;
+});
+const nodeTypeStorePackage = ref<CommunityNodeType>();
+
+const isLatestPackageVerified = ref<boolean>(true);
+
+const packageVersion = ref<string>(communityStorePackage.value.updateAvailable ?? '');
+
+const includedNodes = computed(() => {
+	return communityStorePackage.value.installedNodes.map((node) => node.name).join(', ');
+});
+
+const getModalContent = computed(() => {
+	if (props.mode === COMMUNITY_PACKAGE_MANAGE_ACTIONS.UNINSTALL) {
+		return {
+			title: i18n.baseText('settings.communityNodes.confirmModal.uninstall.title'),
+			message: i18n.baseText('settings.communityNodes.confirmModal.includedNodes', {
+				interpolate: {
+					nodes: includedNodes.value,
+				},
+			}),
+			description: workflowsWithPackageNodes.value.length
+				? i18n.baseText('settings.communityNodes.confirmModal.uninstall.description')
+				: i18n.baseText('settings.communityNodes.confirmModal.noWorkflowsUsingNodes'),
+			buttonLabel: i18n.baseText('settings.communityNodes.confirmModal.uninstall.buttonLabel'),
+			buttonLoadingLabel: i18n.baseText(
+				'settings.communityNodes.confirmModal.uninstall.buttonLoadingLabel',
+			),
+		};
+	}
+	return {
+		title: i18n.baseText('settings.communityNodes.confirmModal.update.title'),
+		message: i18n.baseText('settings.communityNodes.confirmModal.includedNodes', {
+			interpolate: {
+				nodes: includedNodes.value,
+			},
+		}),
+		description: workflowsWithPackageNodes.value.length
+			? i18n.baseText('settings.communityNodes.confirmModal.update.description')
+			: i18n.baseText('settings.communityNodes.confirmModal.noWorkflowsUsingNodes'),
+		warning: i18n.baseText('settings.communityNodes.confirmModal.update.warning'),
+		buttonLabel: i18n.baseText('settings.communityNodes.confirmModal.update.buttonLabel'),
+		buttonLoadingLabel: i18n.baseText(
+			'settings.communityNodes.confirmModal.update.buttonLoadingLabel',
+		),
+	};
+});
+
+function closeDialog() {
+	uiStore.closeModal(COMMUNITY_PACKAGE_CONFIRM_MODAL_KEY);
+}
+
+function onDialogOpenUpdate(open: boolean) {
+	// The request must finish. Escape and the overlay stay ignored until it does.
+	if (!open && !loading.value) closeDialog();
+}
+
+const onConfirmButtonClick = async () => {
+	if (props.mode === COMMUNITY_PACKAGE_MANAGE_ACTIONS.UNINSTALL) {
+		await onUninstall();
+	} else if (props.mode === COMMUNITY_PACKAGE_MANAGE_ACTIONS.UPDATE) {
+		await onUpdate();
+	}
+};
+
+const onUninstall = async () => {
+	try {
+		telemetry.track('user started cnr package deletion', {
+			package_name: communityStorePackage.value.packageName,
+			package_node_names: communityStorePackage.value.installedNodes.map((node) => node.name),
+			package_version: communityStorePackage.value.installedVersion,
+			package_author: communityStorePackage.value.authorName,
+			package_author_email: communityStorePackage.value.authorEmail,
+		});
+		loading.value = true;
+		await communityNodesStore.uninstallPackage(props.activePackageName);
+		await Promise.all([
+			useNodeTypesStore().getNodeTypes(),
+			useNodeTypesStore().fetchCommunityNodePreviews(),
+		]);
+		toast.showMessage({
+			title: i18n.baseText('settings.communityNodes.messages.uninstall.success.title'),
+			type: 'success',
+		});
+	} catch (error) {
+		toast.showError(error, i18n.baseText('settings.communityNodes.messages.uninstall.error'));
+	} finally {
+		loading.value = false;
+		closeDialog();
+	}
+};
+
+const onUpdate = async () => {
+	try {
+		telemetry.track('user started cnr package update', {
+			package_name: communityStorePackage.value.packageName,
+			package_node_names: communityStorePackage.value.installedNodes.map((node) => node.name),
+			package_version_current: communityStorePackage.value.installedVersion,
+			package_version_new: communityStorePackage.value.updateAvailable,
+			package_author: communityStorePackage.value.authorName,
+			package_author_email: communityStorePackage.value.authorEmail,
+		});
+		loading.value = true;
+
+		if (settingsStore.isUnverifiedPackagesEnabled) {
+			await communityNodesStore.updatePackage(props.activePackageName);
+		} else if (settingsStore.isCommunityNodesFeatureEnabled) {
+			await communityNodesStore.updatePackage(props.activePackageName, updateVersion.value);
+		} else {
+			throw new Error('Community nodes feature is not correctly enabled.');
+		}
+
+		await useNodeTypesStore().getNodeTypes();
+		toast.showMessage({
+			title: i18n.baseText('settings.communityNodes.messages.update.success.title'),
+			message: i18n.baseText('settings.communityNodes.messages.update.success.message', {
+				interpolate: {
+					packageName: props.activePackageName,
+					version: updateVersion.value ?? '',
+				},
+			}),
+			type: 'success',
+		});
+	} catch (error) {
+		toast.showError(
+			error,
+			i18n.baseText(
+				isNodesApiVersionError(error)
+					? 'settings.communityNodes.messages.update.error.incompatible.title'
+					: 'settings.communityNodes.messages.update.error.title',
+			),
+		);
+	} finally {
+		loading.value = false;
+		closeDialog();
+	}
+};
+
+async function fetchPackageInfo() {
+	const nodeTypes = communityStorePackage.value?.installedNodes.map((node) => node.type) ?? [];
+	const communityNodeAttributes = await findVettedCommunityNodeAttributes(
+		nodeTypes,
+		nodeTypesStore.getCommunityNodeAttributes,
+	);
+	nodeTypeStorePackage.value = communityNodeAttributes ?? undefined;
+}
+
+function setIsVerifiedLatestPackage() {
+	if (
+		isUsingVerifiedAndUnverifiedPackages &&
+		nodeTypeStorePackage.value?.npmVersion &&
+		communityStorePackage.value.updateAvailable
+	) {
+		isLatestPackageVerified.value = semver.eq(
+			nodeTypeStorePackage.value.npmVersion,
+			communityStorePackage.value.updateAvailable,
+		);
+	}
+}
+
+function setPackageVersion() {
+	if (isUsingVerifiedPackagesOnly) {
+		packageVersion.value = nodeTypeStorePackage.value?.npmVersion ?? packageVersion.value;
+	}
+}
+
+onMounted(async () => {
+	if (props.activePackageName) {
+		await fetchPackageInfo();
+	}
+
+	if (communityStorePackage.value?.installedNodes.length) {
+		const nodeTypes = communityStorePackage.value.installedNodes.map((node) => node.type);
+		const response = await workflowsListStore.fetchWorkflowsWithNodesIncluded(nodeTypes);
+		workflowsWithPackageNodes.value = response?.data ?? [];
+	}
+
+	setIsVerifiedLatestPackage();
+	setPackageVersion();
+});
+</script>
+
+<template>
+	<N8nDialog
+		:open="modalOpen"
+		:size="props.mode === COMMUNITY_PACKAGE_MANAGE_ACTIONS.UNINSTALL ? 'medium' : 'large'"
+		:header="getModalContent.title"
+		:close-on-overlay-click="!loading"
+		:close-on-escape="!loading"
+		:show-close-button="!loading"
+		:data-test-id="`${COMMUNITY_PACKAGE_CONFIRM_MODAL_KEY}-modal`"
+		@update:open="onDialogOpenUpdate"
+	>
+		<N8nDialogBody>
+			<N8nText color="text-dark" :bold="true">{{ getModalContent.message }}</N8nText>
+			<N8nNotice
+				v-if="!isLatestPackageVerified && getModalContent.warning"
+				data-test-id="communityPackageManageConfirmModal-warning"
+				:content="getModalContent.warning"
+			/>
+			<div :class="$style.descriptionContainer">
+				<N8nText size="medium" color="text-base">
+					{{ getModalContent.description }}
+				</N8nText>
+			</div>
+
+			<NodesInWorkflowTable
+				v-if="workflowsWithPackageNodes?.length"
+				:data="workflowsWithPackageNodes"
+			/>
+		</N8nDialogBody>
+		<N8nDialogFooter>
+			<N8nButton
+				variant="outline"
+				:disabled="loading"
+				:label="i18n.baseText('settings.communityNodes.confirmModal.cancel')"
+				data-test-id="close-button"
+				@click="closeDialog"
+			/>
+			<N8nButton
+				:loading="loading"
+				:disabled="loading"
+				:label="loading ? getModalContent.buttonLoadingLabel : getModalContent.buttonLabel"
+				@click="onConfirmButtonClick"
+			/>
+		</N8nDialogFooter>
+	</N8nDialog>
+</template>
+
+<style module lang="scss">
+.descriptionContainer {
+	display: flex;
+	margin: var(--spacing--sm) 0;
+	flex-direction: column;
+}
+
+.descriptionIcon {
+	align-self: center;
+	color: var(--color--text--tint-2);
+}
+
+.descriptionText {
+	padding: 0 var(--spacing--xs);
+}
+</style>

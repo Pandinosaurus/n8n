@@ -1,4 +1,3 @@
-import { ApplicationError } from 'n8n-workflow';
 import type {
 	IAuthenticateGeneric,
 	ICredentialDataDecryptedObject,
@@ -6,7 +5,10 @@ import type {
 	ICredentialType,
 	IHttpRequestHelper,
 	INodeProperties,
+	Icon,
 } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
+import { requestUrl } from 'n8n-workflow';
 
 export class ZscalerZiaApi implements ICredentialType {
 	name = 'zscalerZiaApi';
@@ -15,7 +17,7 @@ export class ZscalerZiaApi implements ICredentialType {
 
 	documentationUrl = 'zscalerzia';
 
-	icon = 'file:icons/Zscaler.svg';
+	icon: Icon = 'file:icons/Zscaler.svg';
 
 	httpRequestNode = {
 		name: 'Zscaler ZIA',
@@ -98,8 +100,7 @@ export class ZscalerZiaApi implements ICredentialType {
 
 		const response = await this.helpers.httpRequest({
 			method: 'POST',
-			baseURL: `https://${url}`,
-			url: '/api/v1/authenticatedSession',
+			url: requestUrl`https://${url}/api/v1/authenticatedSession`,
 			headers: {
 				'Content-Type': 'application/json',
 				'Cache-Control': 'no-cache',
@@ -121,7 +122,7 @@ export class ZscalerZiaApi implements ICredentialType {
 			?.find((entry) => entry.includes('JSESSIONID'));
 
 		if (!cookie) {
-			throw new ApplicationError('No cookie returned. Please check your credentials.', {
+			throw new UserError('No cookie returned. Please check your credentials.', {
 				level: 'warning',
 			});
 		}

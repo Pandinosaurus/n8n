@@ -4,13 +4,16 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
-import { driveRLC, fileTypesOptions, folderRLC } from '../common.descriptions';
-import { googleApiRequest, googleApiRequestAllItems } from '../../transport';
-import { prepareQueryString, updateDriveScopes } from '../../helpers/utils';
+import { escapeBackslashQuotedValue } from '@utils/query-escaping';
+import { updateDisplayOptions } from '@utils/utilities';
+
 import type { SearchFilter } from '../../helpers/interfaces';
 import { DRIVE, RLC_FOLDER_DEFAULT } from '../../helpers/interfaces';
-import { updateDisplayOptions } from '@utils/utilities';
+import { prepareQueryString, updateDriveScopes } from '../../helpers/utils';
+import { googleApiRequest, googleApiRequestAllItems } from '../../transport';
+import { driveRLC, fileTypesOptions, folderRLC } from '../common.descriptions';
 
 const properties: INodeProperties[] = [
 	{
@@ -158,7 +161,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -261,7 +264,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	const queryString = this.getNodeParameter('queryString', i) as string;
 
 	if (searchMethod === 'name') {
-		query.push(`name contains '${queryString}'`);
+		query.push(`name contains '${escapeBackslashQuotedValue(queryString)}'`);
 	} else {
 		query.push(queryString);
 	}
@@ -284,7 +287,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		}
 
 		if (folderId && folderId !== RLC_FOLDER_DEFAULT) {
-			query.push(`'${folderId}' in parents`);
+			query.push(`'${escapeBackslashQuotedValue(folderId)}' in parents`);
 		}
 
 		if (filter.driveId) {
@@ -309,7 +312,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 
 			if (filter?.fileTypes?.length && !filter.fileTypes.includes('*')) {
 				filter.fileTypes.forEach((fileType: string) => {
-					returnedTypes.push(`mimeType = '${fileType}'`);
+					returnedTypes.push(`mimeType = '${escapeBackslashQuotedValue(fileType)}'`);
 				});
 			}
 		}
@@ -347,10 +350,23 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 
 	let response;
 	if (returnAll) {
-		response = await googleApiRequestAllItems.call(this, 'GET', 'files', '/drive/v3/files', {}, qs);
+		response = await googleApiRequestAllItems.call(
+			this,
+			'GET',
+			'files',
+			requestPath`/drive/v3/files`,
+			{},
+			qs,
+		);
 	} else {
 		qs.pageSize = this.getNodeParameter('limit', i);
-		response = await googleApiRequest.call(this, 'GET', '/drive/v3/files', undefined, qs);
+		response = await googleApiRequest.call(
+			this,
+			'GET',
+			requestPath`/drive/v3/files`,
+			undefined,
+			qs,
+		);
 		response = response.files;
 	}
 

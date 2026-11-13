@@ -1,13 +1,12 @@
-import type { INode, JsonObject } from '..';
-import type { NodeOperationErrorOptions } from './node-api.error';
 import { NodeError } from './abstract/node.error';
+import { OperationalError } from '@n8n/errors';
+import type { NodeOperationErrorOptions } from './node-api.error';
+import type { INode, JsonObject } from '../interfaces';
 
 /**
  * Class for instantiating an operational error, e.g. an invalid credentials error.
  */
 export class NodeOperationError extends NodeError {
-	lineNumber: number | undefined;
-
 	type: string | undefined;
 
 	constructor(
@@ -15,9 +14,20 @@ export class NodeOperationError extends NodeError {
 		error: Error | string | JsonObject,
 		options: NodeOperationErrorOptions = {},
 	) {
-		if (typeof error === 'string') {
-			error = new Error(error);
+		if (error instanceof NodeOperationError) {
+			if (options.failure) {
+				error.failure = options.failure;
+			}
+			return error;
 		}
+
+		if (typeof error === 'string') {
+			// `OperationalError` keeps the former `'warning'` default level.
+			// `'fatal'` isn't an operational level; map it to `'error'` (both are reported).
+			const level = options.level === 'fatal' ? 'error' : (options.level ?? 'warning');
+			error = new OperationalError(error, { level });
+		}
+
 		super(node, error);
 
 		if (error instanceof NodeError && error?.messages?.length) {
@@ -25,12 +35,18 @@ export class NodeOperationError extends NodeError {
 		}
 
 		if (options.message) this.message = options.message;
-		if (options.level) this.level = options.level;
+		this.level = options.level ?? 'warning';
 		if (options.functionality) this.functionality = options.functionality;
 		if (options.type) this.type = options.type;
-		this.description = options.description;
+		if (options.failure) this.failure = options.failure;
+
+		if (options.description) this.description = options.description;
+		else if ('description' in error && typeof error.description === 'string')
+			this.description = error.description;
+
 		this.context.runIndex = options.runIndex;
 		this.context.itemIndex = options.itemIndex;
+		this.context.metadata = options.metadata;
 
 		if (this.message === this.description) {
 			this.description = undefined;

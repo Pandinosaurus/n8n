@@ -1,9 +1,11 @@
 import type { IDataObject } from 'n8n-workflow';
-import { ApplicationError, jsonParse } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
+import { jsonParse, requestPath } from 'n8n-workflow';
 import { v4 as uuid } from 'uuid';
+
+import type { Section, TodoistResponse } from './Service';
 import type { Context } from '../GenericFunctions';
 import { FormatDueDatetime, todoistApiRequest, todoistSyncRequest } from '../GenericFunctions';
-import type { Section, TodoistResponse } from './Service';
 
 export interface OperationHandler {
 	handleOperation(ctx: Context, itemIndex: number): Promise<TodoistResponse>;
@@ -42,19 +44,21 @@ export interface Command {
 	};
 }
 
-export const enum CommandType {
-	ITEM_MOVE = 'item_move',
-	ITEM_ADD = 'item_add',
-	ITEM_UPDATE = 'item_update',
-	ITEM_REORDER = 'item_reorder',
-	ITEM_DELETE = 'item_delete',
-	ITEM_COMPLETE = 'item_complete',
-}
+export const CommandTypes = {
+	ITEM_MOVE: 'item_move',
+	ITEM_ADD: 'item_add',
+	ITEM_UPDATE: 'item_update',
+	ITEM_REORDER: 'item_reorder',
+	ITEM_DELETE: 'item_delete',
+	ITEM_COMPLETE: 'item_complete',
+} as const;
+
+export type CommandType = (typeof CommandTypes)[keyof typeof CommandTypes];
 
 async function getLabelNameFromId(ctx: Context, labelIds: number[]): Promise<string[]> {
 	const labelList = [];
 	for (const label of labelIds) {
-		const thisLabel = await todoistApiRequest.call(ctx, 'GET', `/labels/${label}`);
+		const thisLabel = await todoistApiRequest.call(ctx, 'GET', requestPath`/labels/${label}`);
 		labelList.push(thisLabel.name);
 	}
 	return labelList;
@@ -104,7 +108,12 @@ export class CreateHandler implements OperationHandler {
 			body.parent_id = options.parentId as string;
 		}
 
-		const data = await todoistApiRequest.call(ctx, 'POST', '/tasks', body as IDataObject);
+		const data = await todoistApiRequest.call(
+			ctx,
+			'POST',
+			requestPath`/tasks`,
+			body as IDataObject,
+		);
 
 		return {
 			data,
@@ -116,7 +125,7 @@ export class CloseHandler implements OperationHandler {
 	async handleOperation(ctx: Context, itemIndex: number): Promise<TodoistResponse> {
 		const id = ctx.getNodeParameter('taskId', itemIndex) as string;
 
-		await todoistApiRequest.call(ctx, 'POST', `/tasks/${id}/close`);
+		await todoistApiRequest.call(ctx, 'POST', requestPath`/tasks/${id}/close`);
 
 		return {
 			success: true,
@@ -128,7 +137,7 @@ export class DeleteHandler implements OperationHandler {
 	async handleOperation(ctx: Context, itemIndex: number): Promise<TodoistResponse> {
 		const id = ctx.getNodeParameter('taskId', itemIndex) as string;
 
-		await todoistApiRequest.call(ctx, 'DELETE', `/tasks/${id}`);
+		await todoistApiRequest.call(ctx, 'DELETE', requestPath`/tasks/${id}`);
 
 		return {
 			success: true,
@@ -140,7 +149,7 @@ export class GetHandler implements OperationHandler {
 	async handleOperation(ctx: Context, itemIndex: number): Promise<TodoistResponse> {
 		const id = ctx.getNodeParameter('taskId', itemIndex) as string;
 
-		const responseData = await todoistApiRequest.call(ctx, 'GET', `/tasks/${id}`);
+		const responseData = await todoistApiRequest.call(ctx, 'GET', requestPath`/tasks/${id}`);
 		return {
 			data: responseData,
 		};
@@ -170,7 +179,7 @@ export class GetAllHandler implements OperationHandler {
 			qs.ids = filters.ids as string;
 		}
 
-		let responseData = await todoistApiRequest.call(ctx, 'GET', '/tasks', {}, qs);
+		let responseData = await todoistApiRequest.call(ctx, 'GET', requestPath`/tasks`, {}, qs);
 
 		if (!returnAll) {
 			const limit = ctx.getNodeParameter('limit', itemIndex) as number;
@@ -187,7 +196,7 @@ async function getSectionIds(ctx: Context, projectId: number): Promise<Map<strin
 	const sections: Section[] = await todoistApiRequest.call(
 		ctx,
 		'GET',
-		'/sections',
+		requestPath`/sections`,
 		{},
 		{ project_id: projectId },
 	);
@@ -199,7 +208,7 @@ export class ReopenHandler implements OperationHandler {
 		//https://developer.todoist.com/rest/v2/#get-an-active-task
 		const id = ctx.getNodeParameter('taskId', itemIndex) as string;
 
-		await todoistApiRequest.call(ctx, 'POST', `/tasks/${id}/reopen`);
+		await todoistApiRequest.call(ctx, 'POST', requestPath`/tasks/${id}/reopen`);
 
 		return {
 			success: true,
@@ -247,7 +256,7 @@ export class UpdateHandler implements OperationHandler {
 			body.due_lang = updateFields.dueLang as string;
 		}
 
-		await todoistApiRequest.call(ctx, 'POST', `/tasks/${id}`, body as IDataObject);
+		await todoistApiRequest.call(ctx, 'POST', requestPath`/tasks/${id}`, body as IDataObject);
 
 		return { success: true };
 	}
@@ -262,7 +271,7 @@ export class MoveHandler implements OperationHandler {
 		const body: SyncRequest = {
 			commands: [
 				{
-					type: CommandType.ITEM_MOVE,
+					type: CommandTypes.ITEM_MOVE,
 					uuid: uuid(),
 					args: {
 						id: taskId,
@@ -323,10 +332,9 @@ export class SyncHandler implements OperationHandler {
 			if (sectionId) {
 				command.args.section_id = sectionId;
 			} else {
-				throw new ApplicationError(
-					'Section ' + command.args.section + " doesn't exist on Todoist",
-					{ level: 'warning' },
-				);
+				throw new UserError('Section ' + command.args.section + " doesn't exist on Todoist", {
+					level: 'warning',
+				});
 			}
 		}
 	}
@@ -338,7 +346,7 @@ export class SyncHandler implements OperationHandler {
 	}
 
 	private requiresProjectId(command: Command) {
-		return command.type === CommandType.ITEM_ADD;
+		return command.type === CommandTypes.ITEM_ADD;
 	}
 
 	private enrichTempId(command: Command, tempIdMapping: Map<string, string>, projectId: number) {
@@ -349,6 +357,6 @@ export class SyncHandler implements OperationHandler {
 	}
 
 	private requiresTempId(command: Command) {
-		return command.type === CommandType.ITEM_ADD;
+		return command.type === CommandTypes.ITEM_ADD;
 	}
 }

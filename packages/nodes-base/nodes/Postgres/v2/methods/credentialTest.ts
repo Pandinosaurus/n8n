@@ -4,10 +4,8 @@ import type {
 	INodeCredentialTestResult,
 } from 'n8n-workflow';
 
-import { Client } from 'ssh2';
-import { configurePostgres } from '../transport';
-
-import type { PgpClient, PostgresNodeCredentials } from '../helpers/interfaces';
+import { configurePostgres } from '../../transport';
+import type { PgpConnection, PostgresNodeCredentials } from '../helpers/interfaces';
 
 export async function postgresConnectionTest(
 	this: ICredentialTestFunctions,
@@ -15,16 +13,12 @@ export async function postgresConnectionTest(
 ): Promise<INodeCredentialTestResult> {
 	const credentials = credential.data as PostgresNodeCredentials;
 
-	let sshClientCreated: Client | undefined = new Client();
-	let pgpClientCreated: PgpClient | undefined;
+	let connection: PgpConnection | undefined;
 
 	try {
-		const { db, pgp, sshClient } = await configurePostgres(credentials, {}, sshClientCreated);
+		const { db } = await configurePostgres.call(this, credentials, {});
 
-		sshClientCreated = sshClient;
-		pgpClientCreated = pgp;
-
-		await db.connect();
+		connection = await db.connect();
 	} catch (error) {
 		let message = error.message as string;
 
@@ -40,16 +34,26 @@ export async function postgresConnectionTest(
 			message = 'Connection timed out';
 		}
 
+		if (
+			!credentials.caCertificate &&
+			[
+				'DEPTH_ZERO_SELF_SIGNED_CERT',
+				'SELF_SIGNED_CERT_IN_CHAIN',
+				'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+				'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+			].includes(error.code)
+		) {
+			message =
+				'The SSL certificate is not trusted. Add the CA certificate from your database provider to the CA Certificate field.';
+		}
+
 		return {
 			status: 'Error',
 			message,
 		};
 	} finally {
-		if (sshClientCreated) {
-			sshClientCreated.end();
-		}
-		if (pgpClientCreated) {
-			pgpClientCreated.end();
+		if (connection) {
+			await connection.done();
 		}
 	}
 	return {

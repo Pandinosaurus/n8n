@@ -5,8 +5,9 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 	IHttpRequestMethods,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { escapeXml, twilioApiRequest } from './GenericFunctions';
 
@@ -22,8 +23,9 @@ export class Twilio implements INodeType {
 		defaults: {
 			name: 'Twilio',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'twilioApi',
@@ -214,12 +216,11 @@ export class Twilio implements INodeType {
 		let qs: IDataObject;
 
 		let requestMethod: IHttpRequestMethods;
-		let endpoint: string;
+		let endpoint: RequestPath;
 
 		for (let i = 0; i < items.length; i++) {
 			try {
 				requestMethod = 'GET';
-				endpoint = '';
 				body = {};
 				qs = {};
 
@@ -233,7 +234,7 @@ export class Twilio implements INodeType {
 						// ----------------------------------
 
 						requestMethod = 'POST';
-						endpoint = '/Messages.json';
+						endpoint = requestPath`/Messages.json`;
 
 						body.From = this.getNodeParameter('from', i) as string;
 						body.To = this.getNodeParameter('to', i) as string;
@@ -260,7 +261,7 @@ export class Twilio implements INodeType {
 						// ----------------------------------
 
 						requestMethod = 'POST';
-						endpoint = '/Calls.json';
+						endpoint = requestPath`/Calls.json`;
 
 						const message = this.getNodeParameter('message', i) as string;
 						const useTwiml = this.getNodeParameter('twiml', i) as boolean;

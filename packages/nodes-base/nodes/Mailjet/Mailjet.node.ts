@@ -7,13 +7,11 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
-
-import type { IMessage } from './GenericFunctions';
-import { mailjetApiRequest, validateJSON } from './GenericFunctions';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { emailFields, emailOperations } from './EmailDescription';
-
+import type { IMessage } from './GenericFunctions';
+import { mailjetApiRequest, validateJSON } from './GenericFunctions';
 import { smsFields, smsOperations } from './SmsDescription';
 export class Mailjet implements INodeType {
 	description: INodeTypeDescription = {
@@ -27,8 +25,9 @@ export class Mailjet implements INodeType {
 		defaults: {
 			name: 'Mailjet',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'mailjetEmailApi',
@@ -80,7 +79,11 @@ export class Mailjet implements INodeType {
 			// select them easily
 			async getTemplates(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const { Data: templates } = await mailjetApiRequest.call(this, 'GET', '/v3/REST/template');
+				const { Data: templates } = await mailjetApiRequest.call(
+					this,
+					'GET',
+					requestPath`/v3/REST/template`,
+				);
 				for (const template of templates) {
 					returnData.push({
 						name: template.Name,
@@ -193,7 +196,13 @@ export class Mailjet implements INodeType {
 						if (additionalFields.priority) {
 							body.Priority = additionalFields.priority as number;
 						}
-						responseData = await mailjetApiRequest.call(this, 'POST', '/v3.1/send', {
+						if (additionalFields.customCampaign) {
+							body.CustomCampaign = additionalFields.customCampaign as string;
+						}
+						if (additionalFields.deduplicateCampaign) {
+							body.DeduplicateCampaign = additionalFields.deduplicateCampaign as boolean;
+						}
+						responseData = await mailjetApiRequest.call(this, 'POST', requestPath`/v3.1/send`, {
 							Messages: [body],
 						});
 						responseData = responseData.Messages;
@@ -282,14 +291,20 @@ export class Mailjet implements INodeType {
 						if (additionalFields.priority) {
 							body.Priority = additionalFields.priority as number;
 						}
-						responseData = await mailjetApiRequest.call(this, 'POST', '/v3.1/send', {
+						if (additionalFields.customCampaign) {
+							body.CustomCampaign = additionalFields.customCampaign as string;
+						}
+						if (additionalFields.deduplicateCampaign) {
+							body.DeduplicateCampaign = additionalFields.deduplicateCampaign as boolean;
+						}
+						responseData = await mailjetApiRequest.call(this, 'POST', requestPath`/v3.1/send`, {
 							Messages: [body],
 						});
 						responseData = responseData.Messages;
 					}
 				}
 				if (resource === 'sms') {
-					//https://dev.mailjet.com/sms/reference/send-message#v4_post_sms-send
+					//https://dev.mailjet.com/docs/email-api/developer-tools/nodejs#sms-api-1
 					if (operation === 'send') {
 						const from = this.getNodeParameter('from', i) as string;
 						const to = this.getNodeParameter('to', i) as boolean;
@@ -299,7 +314,12 @@ export class Mailjet implements INodeType {
 							To: to,
 							Text: text,
 						};
-						responseData = await mailjetApiRequest.call(this, 'POST', '/v4/sms-send', body);
+						responseData = await mailjetApiRequest.call(
+							this,
+							'POST',
+							requestPath`/v4/sms-send`,
+							body,
+						);
 					}
 				}
 

@@ -4,10 +4,12 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
+
 import { createMessage } from '../../helpers/utils';
 import { microsoftApiRequest } from '../../transport';
-import { updateDisplayOptions } from '@utils/utilities';
 
 export const properties: INodeProperties[] = [
 	{
@@ -80,7 +82,7 @@ export const properties: INodeProperties[] = [
 				name: 'categories',
 				type: 'multiOptions',
 				description:
-					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getCategoriesNames',
 				},
@@ -205,7 +207,7 @@ const displayOptions = {
 
 export const description = updateDisplayOptions(displayOptions, properties);
 
-export async function execute(this: IExecuteFunctions, index: number, items: INodeExecutionData[]) {
+export async function execute(this: IExecuteFunctions, index: number, _: INodeExecutionData[]) {
 	const additionalFields = this.getNodeParameter('additionalFields', index);
 	const toRecipients = this.getNodeParameter('toRecipients', index) as string;
 	const subject = this.getNodeParameter('subject', index) as string;
@@ -229,23 +231,6 @@ export async function execute(this: IExecuteFunctions, index: number, items: INo
 
 		for (const attachment of attachments) {
 			const binaryPropertyName = attachment.binaryPropertyName as string;
-
-			if (items[index].binary === undefined) {
-				throw new NodeOperationError(this.getNode(), 'No binary data exists on item!', {
-					itemIndex: index,
-				});
-			}
-
-			if (
-				items[index].binary &&
-				(items[index].binary as IDataObject)[binaryPropertyName] === undefined
-			) {
-				throw new NodeOperationError(
-					this.getNode(),
-					`No binary data property "${binaryPropertyName}" does not exists on item!`,
-					{ itemIndex: index },
-				);
-			}
 
 			const binaryData = this.helpers.assertBinaryData(index, binaryPropertyName);
 
@@ -274,7 +259,7 @@ export async function execute(this: IExecuteFunctions, index: number, items: INo
 		saveToSentItems,
 	};
 
-	await microsoftApiRequest.call(this, 'POST', '/sendMail', body, {});
+	await microsoftApiRequest.call(this, 'POST', requestPath`/sendMail`, index, body, {});
 
 	const executionData = this.helpers.constructExecutionMetaData(
 		this.helpers.returnJsonArray({ success: true }),

@@ -6,51 +6,75 @@ import type {
 	INodeProperties,
 	IRequestOptions,
 	JsonObject,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, NodeOperationError, requestPath, requestUrl } from 'n8n-workflow';
 
+import { getSendAndWaitConfig } from '../../../utils/sendAndWait/utils';
+import { createUtmCampaignLink } from '../../../utils/utilities';
 import { getGoogleAccessToken } from '../GenericFunctions';
+
+async function googleServiceAccountApiRequest(
+	this: IExecuteFunctions | ILoadOptionsFunctions,
+	options: WithRequestTarget<IRequestOptions, 'uri'>,
+): Promise<any> {
+	const credentials = await this.getCredentials('googleApi');
+
+	const { access_token } = await getGoogleAccessToken.call(this, credentials, 'chat');
+	options.headers!.Authorization = `Bearer ${access_token}`;
+
+	return await this.helpers.request(options);
+}
 
 export async function googleApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
-
-	body: any = {},
+	resource: RequestPath,
+	body: IDataObject = {},
 	qs: IDataObject = {},
 	uri?: string,
 	noCredentials = false,
-	encoding?: null | undefined,
-): Promise<any> {
-	const options: IRequestOptions = {
+	encoding?: null,
+) {
+	const options: Omit<IRequestOptions, 'uri' | 'url' | 'baseURL'> = {
 		headers: {
+			Accept: 'application/json',
 			'Content-Type': 'application/json',
 		},
 		method,
 		body,
 		qs,
-		uri: uri || `https://chat.googleapis.com${resource}`,
+		qsStringifyOptions: {
+			arrayFormat: 'repeat',
+		},
 		json: true,
 	};
-
-	if (Object.keys(body as IDataObject).length === 0) {
-		delete options.body;
-	}
 
 	if (encoding === null) {
 		options.encoding = null;
 	}
 
-	let responseData: IDataObject | undefined;
+	if (Object.keys(body).length === 0) {
+		delete options.body;
+	}
+
+	let responseData;
+
 	try {
 		if (noCredentials) {
-			responseData = await this.helpers.request(options);
+			responseData = await this.helpers.request({ ...options, uri });
 		} else {
-			const credentials = await this.getCredentials('googleApi');
-
-			const { access_token } = await getGoogleAccessToken.call(this, credentials, 'chat');
-			options.headers!.Authorization = `Bearer ${access_token}`;
-			responseData = await this.helpers.request(options);
+			const apiOptions = { ...options, uri: requestUrl`https://chat.googleapis.com${resource}` };
+			if (this.getNodeParameter('authentication', 0) === 'serviceAccount') {
+				responseData = await googleServiceAccountApiRequest.call(this, apiOptions);
+			} else {
+				responseData = await this.helpers.requestWithAuthentication.call(
+					this,
+					'googleChatOAuth2Api',
+					apiOptions,
+				);
+			}
 		}
 	} catch (error) {
 		if (error.code === 'ERR_OSSL_PEM_NO_START_LINE') {
@@ -59,6 +83,7 @@ export async function googleApiRequest(
 
 		throw new NodeApiError(this.getNode(), error as JsonObject);
 	}
+
 	if (Object.keys(responseData as IDataObject).length !== 0) {
 		return responseData;
 	} else {
@@ -70,7 +95,7 @@ export async function googleApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},
@@ -87,6 +112,31 @@ export async function googleApiRequestAllItems(
 	} while (responseData.nextPageToken !== undefined && responseData.nextPageToken !== '');
 
 	return returnData;
+}
+
+export function toResourcePath(parts: string[]): RequestPath {
+	return parts.reduce((path, part) => requestPath`${path}/${part}`, requestPath``);
+}
+
+export function resourceNamePath(
+	this: IExecuteFunctions,
+	name: string,
+	format: string,
+	itemIndex: number,
+): RequestPath {
+	const parts = name.split('/');
+	const expected = format.split('/');
+	const matches =
+		parts.length === expected.length &&
+		expected.every((part, index) => (part === '*' ? parts[index] !== '' : part === parts[index]));
+	if (!matches) {
+		throw new NodeOperationError(
+			this.getNode(),
+			`The resource name "${name}" must have the form "${format}"`,
+			{ itemIndex },
+		);
+	}
+	return toResourcePath(parts);
 }
 
 export function validateJSON(json: string | undefined): any {
@@ -133,4 +183,28 @@ export function getPagingParameters(resource: string, operation = 'getAll') {
 		},
 	];
 	return pagingParameters;
+}
+
+export function createSendAndWaitMessageBody(context: IExecuteFunctions) {
+	const config = getSendAndWaitConfig(context);
+
+	const buttons: string[] = config.options.map(
+		(option) => `*<${`${option.url}`}|${option.label}>*`,
+	);
+
+	let text = `${config.message}\n\n\n${buttons.join('   ')}`;
+
+	if (config.appendAttribution !== false) {
+		const instanceId = context.getInstanceId();
+		const attributionText = '_This_ _message_ _was_ _sent_ _automatically_ _with_';
+		const link = createUtmCampaignLink('n8n-nodes-base.googleChat', instanceId);
+		const attribution = `${attributionText} _<${link}|n8n>_`;
+		text += `\n\n${attribution}`;
+	}
+
+	const body = {
+		text,
+	};
+
+	return body;
 }

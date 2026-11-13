@@ -1,0 +1,1184 @@
+import type { IBinaryData, IExecuteFunctions } from 'n8n-workflow';
+import { NodeOperationError, requestPath } from 'n8n-workflow';
+import type { MockInstance } from 'vitest';
+import { mockDeep } from 'vitest-mock-extended';
+
+import {
+	createFileSearchStore,
+	deleteFileSearchStore,
+	downloadFile,
+	getCredentialHostname,
+	getFilenameFromMimeType,
+	isGeminiFileUrl,
+	listFileSearchStores,
+	transferFile,
+	uploadFile,
+	uploadToFileSearchStore,
+} from './utils';
+import * as transport from '../transport';
+
+describe('GoogleGemini -> utils', () => {
+	const mockExecuteFunctions = mockDeep<IExecuteFunctions>();
+	let apiRequestMock: MockInstance;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		apiRequestMock = vi.spyOn(transport, 'apiRequest');
+	});
+
+	describe('getFilenameFromMimeType', () => {
+		it('should derive filename extension from mime type', () => {
+			const fileName = getFilenameFromMimeType('image/jpeg', 'image', 'png');
+
+			expect(fileName).toBe('image.jpg');
+		});
+
+		it('should use fallback extension when mime type is unknown', () => {
+			const fileName = getFilenameFromMimeType('application/unknown', 'file', 'bin');
+
+			expect(fileName).toBe('file.bin');
+		});
+
+		it('should use fallback extension when mime type is undefined', () => {
+			const fileName = getFilenameFromMimeType(undefined, 'video', 'mp4');
+
+			expect(fileName).toBe('video.mp4');
+		});
+	});
+
+	describe('getCredentialHostname', () => {
+		it('should return the hostname from the credential URL', () => {
+			const hostname = getCredentialHostname.call(
+				mockExecuteFunctions,
+				'https://generativelanguage.googleapis.com/v1beta',
+			);
+
+			expect(hostname).toBe('generativelanguage.googleapis.com');
+		});
+
+		it('should wrap an invalid credential URL in a NodeOperationError', () => {
+			expect(() => getCredentialHostname.call(mockExecuteFunctions, 'not a URL')).toThrowError(
+				NodeOperationError,
+			);
+			expect(() => getCredentialHostname.call(mockExecuteFunctions, 'not a URL')).toThrowError(
+				"The Google Gemini credential host isn't a valid URL",
+			);
+		});
+	});
+
+	describe('isGeminiFileUrl', () => {
+		it('should accept a file URL on the Gemini API host', () => {
+			expect(
+				isGeminiFileUrl('https://generativelanguage.googleapis.com/v1beta/files/abc-123'),
+			).toBe(true);
+		});
+
+		it.each([
+			'https://generativelanguage.googleapis.com.example.org/v1beta/files/abc-123',
+			'https://generativelanguage.googleapis.com@example.org/v1beta/files/abc-123',
+			'http://generativelanguage.googleapis.com/v1beta/files/abc-123',
+			'https://example.org/generativelanguage.googleapis.com',
+			'not a URL',
+		])('should not accept %s', (url) => {
+			expect(isGeminiFileUrl(url)).toBe(false);
+		});
+	});
+
+	describe('downloadFile', () => {
+		it('should download file', async () => {
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValue({
+				body: new ArrayBuffer(10),
+				headers: {
+					'content-type': 'application/pdf',
+				},
+			});
+
+			const file = await downloadFile.call(mockExecuteFunctions, 'https://example.com/file.pdf');
+
+			expect(file).toEqual({
+				fileContent: Buffer.from(new ArrayBuffer(10)),
+				mimeType: 'application/pdf',
+			});
+			expect(mockExecuteFunctions.helpers.httpRequest).toHaveBeenCalledWith({
+				method: 'GET',
+				url: 'https://example.com/file.pdf',
+				returnFullResponse: true,
+				encoding: 'arraybuffer',
+			});
+		});
+
+		it('should restrict a matching URL to the configured domain', async () => {
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValue({
+				body: new ArrayBuffer(10),
+				headers: {},
+			});
+			const url = 'https://generativelanguage.googleapis.com/v1beta/files/video:download';
+
+			await downloadFile.call(
+				mockExecuteFunctions,
+				url,
+				'video/mp4',
+				{ key: 'test-api-key' },
+				'generativelanguage.googleapis.com',
+			);
+
+			expect(mockExecuteFunctions.helpers.httpRequest).toHaveBeenCalledWith({
+				method: 'GET',
+				url,
+				qs: { key: 'test-api-key' },
+				allowedDomains: 'generativelanguage.googleapis.com',
+				returnFullResponse: true,
+				encoding: 'arraybuffer',
+			});
+		});
+
+		it('should propagate a domain policy error for a mismatching URL', async () => {
+			mockExecuteFunctions.helpers.httpRequest.mockRejectedValue(new Error('Domain not allowed'));
+			const url = 'https://example.com/video.mp4';
+
+			await expect(
+				downloadFile.call(
+					mockExecuteFunctions,
+					url,
+					'video/mp4',
+					{ key: 'test-api-key' },
+					'generativelanguage.googleapis.com',
+				),
+			).rejects.toThrow('Domain not allowed');
+
+			expect(mockExecuteFunctions.helpers.httpRequest).toHaveBeenCalledWith({
+				method: 'GET',
+				url,
+				qs: { key: 'test-api-key' },
+				allowedDomains: 'generativelanguage.googleapis.com',
+				returnFullResponse: true,
+				encoding: 'arraybuffer',
+			});
+		});
+
+		it('should parse mime type from content type header', async () => {
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValue({
+				body: new ArrayBuffer(10),
+				headers: {
+					'content-type': 'application/pdf; q=0.9',
+				},
+			});
+
+			const file = await downloadFile.call(mockExecuteFunctions, 'https://example.com/file.pdf');
+
+			expect(file).toEqual({
+				fileContent: Buffer.from(new ArrayBuffer(10)),
+				mimeType: 'application/pdf',
+			});
+		});
+
+		it('should use fallback mime type if content type header is not present', async () => {
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValue({
+				body: new ArrayBuffer(10),
+				headers: {},
+			});
+
+			const file = await downloadFile.call(
+				mockExecuteFunctions,
+				'https://example.com/file.pdf',
+				'application/pdf',
+			);
+
+			expect(file).toEqual({
+				fileContent: Buffer.from(new ArrayBuffer(10)),
+				mimeType: 'application/pdf',
+			});
+		});
+	});
+
+	describe('uploadFile', () => {
+		it('should upload file', async () => {
+			const fileContent = Buffer.from(new ArrayBuffer(10));
+			const mimeType = 'application/pdf';
+
+			apiRequestMock.mockResolvedValue({
+				headers: {
+					'x-goog-upload-url': 'https://google.com/some-upload-url',
+				},
+			});
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValue({
+				file: {
+					name: 'files/test123',
+					uri: 'https://google.com/files/test123',
+					mimeType: 'application/pdf',
+					state: 'ACTIVE',
+				},
+			});
+
+			const file = await uploadFile.call(mockExecuteFunctions, fileContent, mimeType);
+
+			expect(file).toEqual({
+				fileUri: 'https://google.com/files/test123',
+				mimeType: 'application/pdf',
+			});
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/upload/v1beta/files`, {
+				headers: {
+					'X-Goog-Upload-Protocol': 'resumable',
+					'X-Goog-Upload-Command': 'start',
+					'X-Goog-Upload-Header-Content-Length': '10',
+					'X-Goog-Upload-Header-Content-Type': 'application/pdf',
+					'Content-Type': 'application/json',
+				},
+				returnFullResponse: true,
+			});
+			expect(mockExecuteFunctions.helpers.httpRequest).toHaveBeenCalledWith({
+				method: 'POST',
+				url: 'https://google.com/some-upload-url',
+				headers: {
+					'Content-Length': '10',
+					'X-Goog-Upload-Offset': '0',
+					'X-Goog-Upload-Command': 'upload, finalize',
+				},
+				body: fileContent,
+			});
+		});
+
+		it('should throw error if file upload fails', async () => {
+			const fileContent = Buffer.from(new ArrayBuffer(10));
+			const mimeType = 'application/pdf';
+			apiRequestMock.mockResolvedValue({
+				headers: {
+					'x-goog-upload-url': 'https://google.com/some-upload-url',
+				},
+			});
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValue({
+				file: {
+					state: 'FAILED',
+					error: {
+						message: 'File upload failed',
+					},
+				},
+			});
+
+			await expect(uploadFile.call(mockExecuteFunctions, fileContent, mimeType)).rejects.toThrow(
+				'File upload failed',
+			);
+		});
+
+		it('should upload file when its not immediately active', async () => {
+			const fileContent = Buffer.from(new ArrayBuffer(10));
+			const mimeType = 'application/pdf';
+
+			apiRequestMock.mockResolvedValueOnce({
+				headers: {
+					'x-goog-upload-url': 'https://google.com/some-upload-url',
+				},
+			});
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValue({
+				file: {
+					name: 'files/test123',
+					uri: 'https://google.com/files/test123',
+					mimeType: 'application/pdf',
+					state: 'PENDING',
+				},
+			});
+			apiRequestMock.mockResolvedValueOnce({
+				name: 'files/test123',
+				uri: 'https://google.com/files/test123',
+				mimeType: 'application/pdf',
+				state: 'ACTIVE',
+			});
+
+			const promise = uploadFile.call(mockExecuteFunctions, fileContent, mimeType);
+			await vi.advanceTimersByTimeAsync(1000);
+			const file = await promise;
+
+			expect(file).toEqual({
+				fileUri: 'https://google.com/files/test123',
+				mimeType: 'application/pdf',
+			});
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/v1beta/files/test123`);
+		});
+
+		it('should poll until file is active', async () => {
+			const fileContent = Buffer.from('test file content');
+			const mimeType = 'application/pdf';
+
+			apiRequestMock.mockResolvedValueOnce({
+				headers: {
+					'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+				},
+			});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				file: {
+					name: 'files/abc123',
+					uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+					mimeType: 'application/pdf',
+					state: 'PROCESSING',
+				},
+			});
+
+			apiRequestMock
+				.mockResolvedValueOnce({
+					name: 'files/abc123',
+					uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+					mimeType: 'application/pdf',
+					state: 'PROCESSING',
+				})
+				.mockResolvedValueOnce({
+					name: 'files/abc123',
+					uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+					mimeType: 'application/pdf',
+					state: 'ACTIVE',
+				});
+
+			vi.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {
+				callback();
+				return {} as any;
+			});
+
+			const result = await uploadFile.call(mockExecuteFunctions, fileContent, mimeType);
+
+			expect(result).toEqual({
+				fileUri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+				mimeType: 'application/pdf',
+			});
+
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/v1beta/files/abc123`);
+		});
+
+		it('should throw error when upload fails', async () => {
+			const fileContent = Buffer.from('test file content');
+			const mimeType = 'application/pdf';
+
+			apiRequestMock.mockResolvedValueOnce({
+				headers: {
+					'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+				},
+			});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				file: {
+					name: 'files/abc123',
+					uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+					mimeType: 'application/pdf',
+					state: 'FAILED',
+					error: { message: 'Upload failed' },
+				},
+			});
+
+			mockExecuteFunctions.getNode.mockReturnValue({ name: 'Google Gemini' } as any);
+
+			const promise = uploadFile.call(mockExecuteFunctions, fileContent, mimeType);
+			await expect(promise).rejects.toThrow(NodeOperationError);
+			await expect(promise).rejects.toThrow('Upload failed');
+		});
+	});
+
+	describe('transferFile', () => {
+		it('should transfer file from URL', async () => {
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: mockStream,
+				headers: {
+					'content-type': 'application/pdf; charset=utf-8',
+				},
+			});
+
+			apiRequestMock.mockResolvedValueOnce({
+				headers: {
+					'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+				},
+			});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					file: {
+						name: 'files/abc123',
+						uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+						mimeType: 'application/pdf',
+						state: 'ACTIVE',
+					},
+				},
+			});
+
+			const result = await transferFile.call(
+				mockExecuteFunctions,
+				0,
+				'https://example.com/file.pdf',
+				'application/octet-stream',
+			);
+
+			expect(result).toEqual({
+				fileUri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+				mimeType: 'application/pdf',
+			});
+
+			expect(mockExecuteFunctions.helpers.httpRequest).toHaveBeenCalledWith({
+				method: 'GET',
+				url: 'https://example.com/file.pdf',
+				qs: undefined,
+				returnFullResponse: true,
+				encoding: 'stream',
+			});
+
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/upload/v1beta/files`, {
+				headers: {
+					'X-Goog-Upload-Protocol': 'resumable',
+					'X-Goog-Upload-Command': 'start',
+					'X-Goog-Upload-Header-Content-Type': 'application/pdf',
+					'Content-Type': 'application/json',
+				},
+				returnFullResponse: true,
+			});
+
+			expect(mockExecuteFunctions.helpers.httpRequest).toHaveBeenCalledWith({
+				method: 'POST',
+				url: 'https://upload.googleapis.com/upload/123',
+				headers: {
+					'X-Goog-Upload-Offset': '0',
+					'X-Goog-Upload-Command': 'upload, finalize',
+					'Content-Type': 'application/pdf',
+				},
+				body: mockStream,
+				returnFullResponse: true,
+			});
+		});
+
+		it('should transfer file from binary data without id', async () => {
+			const mockBinaryData: IBinaryData = {
+				mimeType: 'application/pdf',
+				fileName: 'test.pdf',
+				fileSize: '1024',
+				fileExtension: 'pdf',
+				data: 'test',
+			};
+
+			mockExecuteFunctions.getNodeParameter.mockReturnValue('data');
+			mockExecuteFunctions.helpers.assertBinaryData.mockReturnValue(mockBinaryData);
+			mockExecuteFunctions.helpers.getBinaryDataBuffer.mockResolvedValue(Buffer.from('test'));
+
+			apiRequestMock.mockResolvedValueOnce({
+				headers: {
+					'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+				},
+			});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				file: {
+					name: 'files/abc123',
+					uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+					mimeType: 'application/pdf',
+					state: 'ACTIVE',
+				},
+			});
+
+			const result = await transferFile.call(
+				mockExecuteFunctions,
+				0,
+				undefined,
+				'application/octet-stream',
+			);
+
+			expect(result).toEqual({
+				fileUri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+				mimeType: 'application/pdf',
+			});
+
+			expect(mockExecuteFunctions.helpers.assertBinaryData).toHaveBeenCalledWith(0, 'data');
+			expect(mockExecuteFunctions.helpers.getBinaryDataBuffer).toHaveBeenCalledWith(0, 'data');
+		});
+
+		it('should transfer file from binary data with id using stream', async () => {
+			const mockBinaryData: IBinaryData = {
+				id: 'binary-123',
+				mimeType: 'application/pdf',
+				fileName: 'test.pdf',
+				fileSize: '1024',
+				fileExtension: 'pdf',
+				data: 'test',
+			};
+
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.getNodeParameter.mockReturnValue('data');
+			mockExecuteFunctions.helpers.assertBinaryData.mockReturnValue(mockBinaryData);
+			mockExecuteFunctions.helpers.getBinaryStream.mockResolvedValue(mockStream);
+
+			apiRequestMock.mockResolvedValueOnce({
+				headers: {
+					'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+				},
+			});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					file: {
+						name: 'files/abc123',
+						uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+						mimeType: 'application/pdf',
+						state: 'ACTIVE',
+					},
+				},
+			});
+
+			const result = await transferFile.call(
+				mockExecuteFunctions,
+				0,
+				undefined,
+				'application/octet-stream',
+			);
+
+			expect(result).toEqual({
+				fileUri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+				mimeType: 'application/pdf',
+			});
+
+			expect(mockExecuteFunctions.helpers.getBinaryStream).toHaveBeenCalledWith(
+				'binary-123',
+				262144,
+			);
+		});
+
+		it('should throw error when binary property name is missing', async () => {
+			mockExecuteFunctions.getNodeParameter.mockReturnValue('');
+			mockExecuteFunctions.getNode.mockReturnValue({ name: 'Google Gemini' } as any);
+
+			const promise = transferFile.call(
+				mockExecuteFunctions,
+				0,
+				undefined,
+				'application/octet-stream',
+			);
+			await expect(promise).rejects.toThrow(NodeOperationError);
+			await expect(promise).rejects.toThrow('Binary property name or download URL is required');
+		});
+
+		it('should throw error when upload URL is not received', async () => {
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: mockStream,
+				headers: {
+					'content-type': 'application/pdf',
+				},
+			});
+
+			apiRequestMock.mockResolvedValueOnce({
+				headers: {},
+			});
+
+			mockExecuteFunctions.getNode.mockReturnValue({ name: 'Google Gemini' } as any);
+
+			const promise = transferFile.call(
+				mockExecuteFunctions,
+				0,
+				'https://example.com/file.pdf',
+				'application/octet-stream',
+			);
+			await expect(promise).rejects.toThrow(NodeOperationError);
+			await expect(promise).rejects.toThrow('Failed to get upload URL');
+		});
+
+		it('should poll until file is active and throw error on failure', async () => {
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: mockStream,
+				headers: {
+					'content-type': 'application/pdf',
+				},
+			});
+
+			apiRequestMock.mockResolvedValueOnce({
+				headers: {
+					'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+				},
+			});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					file: {
+						name: 'files/abc123',
+						uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+						mimeType: 'application/pdf',
+						state: 'PROCESSING',
+					},
+				},
+			});
+
+			apiRequestMock.mockResolvedValueOnce({
+				name: 'files/abc123',
+				uri: 'https://generativelanguage.googleapis.com/v1/files/abc123',
+				mimeType: 'application/pdf',
+				state: 'FAILED',
+				error: { message: 'Processing failed' },
+			});
+
+			vi.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {
+				callback();
+				return {} as any;
+			});
+
+			mockExecuteFunctions.getNode.mockReturnValue({ name: 'Google Gemini' } as any);
+
+			const promise = transferFile.call(
+				mockExecuteFunctions,
+				0,
+				'https://example.com/file.pdf',
+				'application/octet-stream',
+			);
+			await expect(promise).rejects.toThrow(NodeOperationError);
+			await expect(promise).rejects.toThrow('Processing failed');
+		});
+	});
+
+	describe('createFileSearchStore', () => {
+		it('should create a file search store', async () => {
+			const displayName = 'My File Search Store';
+			const mockResponse = {
+				name: 'fileSearchStores/abc123',
+				displayName: 'My File Search Store',
+			};
+
+			apiRequestMock.mockResolvedValue(mockResponse);
+
+			const result = await createFileSearchStore.call(mockExecuteFunctions, displayName);
+
+			expect(result).toEqual(mockResponse);
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/v1beta/fileSearchStores`, {
+				body: { displayName },
+			});
+		});
+	});
+
+	describe('uploadToFileSearchStore', () => {
+		it('should upload file from URL to file search store', async () => {
+			const fileSearchStoreName = 'fileSearchStores/abc123';
+			const displayName = 'test-file.pdf';
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: mockStream,
+				headers: {
+					'content-type': 'application/pdf; charset=utf-8',
+				},
+			});
+
+			apiRequestMock
+				.mockResolvedValueOnce({
+					headers: {
+						'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+					},
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: false,
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: true,
+					response: {
+						name: 'fileSearchStores/abc123/files/file123',
+					},
+				});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					name: 'operations/op123',
+				},
+			});
+
+			vi.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {
+				callback();
+				return {} as any;
+			});
+
+			const result = await uploadToFileSearchStore.call(
+				mockExecuteFunctions,
+				0,
+				fileSearchStoreName,
+				displayName,
+				'https://example.com/file.pdf',
+			);
+
+			expect(result).toEqual({
+				name: 'fileSearchStores/abc123/files/file123',
+			});
+
+			expect(mockExecuteFunctions.helpers.httpRequest).toHaveBeenCalledWith({
+				method: 'GET',
+				url: 'https://example.com/file.pdf',
+				qs: undefined,
+				returnFullResponse: true,
+				encoding: 'stream',
+			});
+
+			expect(apiRequestMock).toHaveBeenCalledWith(
+				'POST',
+				requestPath`/upload/v1beta/fileSearchStores/abc123:uploadToFileSearchStore`,
+				{
+					headers: {
+						'X-Goog-Upload-Protocol': 'resumable',
+						'X-Goog-Upload-Command': 'start',
+						'X-Goog-Upload-Header-Content-Type': 'application/pdf',
+						'Content-Type': 'application/json',
+					},
+					body: { displayName, mimeType: 'application/pdf' },
+					returnFullResponse: true,
+				},
+			);
+
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/v1beta/operations/op123`);
+		});
+
+		it('should upload file from binary data (buffer) to file search store', async () => {
+			const fileSearchStoreName = 'fileSearchStores/abc123';
+			const displayName = 'test-file.pdf';
+			const mockBinaryData: IBinaryData = {
+				mimeType: 'application/pdf',
+				fileName: 'test.pdf',
+				fileSize: '1024',
+				fileExtension: 'pdf',
+				data: 'test',
+			};
+
+			mockExecuteFunctions.getNodeParameter.mockReturnValue('data');
+			mockExecuteFunctions.helpers.assertBinaryData.mockReturnValue(mockBinaryData);
+			mockExecuteFunctions.helpers.getBinaryDataBuffer.mockResolvedValue(Buffer.from('test'));
+
+			apiRequestMock
+				.mockResolvedValueOnce({
+					headers: {
+						'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+					},
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: true,
+					response: {
+						name: 'fileSearchStores/abc123/files/file123',
+					},
+				});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					name: 'operations/op123',
+				},
+			});
+
+			const result = await uploadToFileSearchStore.call(
+				mockExecuteFunctions,
+				0,
+				fileSearchStoreName,
+				displayName,
+			);
+
+			expect(result).toEqual({
+				name: 'fileSearchStores/abc123/files/file123',
+			});
+
+			expect(mockExecuteFunctions.helpers.assertBinaryData).toHaveBeenCalledWith(0, 'data');
+			expect(mockExecuteFunctions.helpers.getBinaryDataBuffer).toHaveBeenCalledWith(0, 'data');
+		});
+
+		it('should upload file from binary data (stream) to file search store', async () => {
+			const fileSearchStoreName = 'fileSearchStores/abc123';
+			const displayName = 'test-file.pdf';
+			const mockBinaryData: IBinaryData = {
+				id: 'binary-123',
+				mimeType: 'application/pdf',
+				fileName: 'test.pdf',
+				fileSize: '1024',
+				fileExtension: 'pdf',
+				data: 'test',
+			};
+
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.getNodeParameter.mockReturnValue('data');
+			mockExecuteFunctions.helpers.assertBinaryData.mockReturnValue(mockBinaryData);
+			mockExecuteFunctions.helpers.getBinaryStream.mockResolvedValue(mockStream);
+
+			apiRequestMock
+				.mockResolvedValueOnce({
+					headers: {
+						'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+					},
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: true,
+					response: {
+						name: 'fileSearchStores/abc123/files/file123',
+					},
+				});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					name: 'operations/op123',
+				},
+			});
+
+			const result = await uploadToFileSearchStore.call(
+				mockExecuteFunctions,
+				0,
+				fileSearchStoreName,
+				displayName,
+			);
+
+			expect(result).toEqual({
+				name: 'fileSearchStores/abc123/files/file123',
+			});
+
+			expect(mockExecuteFunctions.helpers.getBinaryStream).toHaveBeenCalledWith(
+				'binary-123',
+				262144,
+			);
+		});
+
+		it('should poll operation until done', async () => {
+			const fileSearchStoreName = 'fileSearchStores/abc123';
+			const displayName = 'test-file.pdf';
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: mockStream,
+				headers: {
+					'content-type': 'application/pdf',
+				},
+			});
+
+			apiRequestMock
+				.mockResolvedValueOnce({
+					headers: {
+						'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+					},
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: false,
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: false,
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: true,
+					response: {
+						name: 'fileSearchStores/abc123/files/file123',
+					},
+				});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					name: 'operations/op123',
+				},
+			});
+
+			vi.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {
+				callback();
+				return {} as any;
+			});
+
+			const result = await uploadToFileSearchStore.call(
+				mockExecuteFunctions,
+				0,
+				fileSearchStoreName,
+				displayName,
+				'https://example.com/file.pdf',
+			);
+
+			expect(result).toEqual({
+				name: 'fileSearchStores/abc123/files/file123',
+			});
+
+			expect(apiRequestMock).toHaveBeenCalledTimes(4); // 1 upload init + 3 operation polls
+		});
+
+		it('should throw error when operation fails', async () => {
+			const fileSearchStoreName = 'fileSearchStores/abc123';
+			const displayName = 'test-file.pdf';
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: mockStream,
+				headers: {
+					'content-type': 'application/pdf',
+				},
+			});
+
+			apiRequestMock
+				.mockResolvedValueOnce({
+					headers: {
+						'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+					},
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: false,
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: true,
+					error: { message: 'Upload failed' },
+				});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					name: 'operations/op123',
+				},
+			});
+
+			vi.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {
+				callback();
+				return {} as any;
+			});
+
+			mockExecuteFunctions.getNode.mockReturnValue({ name: 'Google Gemini' } as any);
+
+			const promise = uploadToFileSearchStore.call(
+				mockExecuteFunctions,
+				0,
+				fileSearchStoreName,
+				displayName,
+				'https://example.com/file.pdf',
+			);
+			await expect(promise).rejects.toThrow(NodeOperationError);
+			await expect(promise).rejects.toThrow('Upload failed');
+		});
+
+		it('should throw error when binary property name is missing', async () => {
+			const fileSearchStoreName = 'fileSearchStores/abc123';
+			const displayName = 'test-file.pdf';
+
+			mockExecuteFunctions.getNodeParameter.mockReturnValue('');
+			mockExecuteFunctions.getNode.mockReturnValue({ name: 'Google Gemini' } as any);
+
+			const promise = uploadToFileSearchStore.call(
+				mockExecuteFunctions,
+				0,
+				fileSearchStoreName,
+				displayName,
+			);
+			await expect(promise).rejects.toThrow(NodeOperationError);
+			await expect(promise).rejects.toThrow('Binary property name or download URL is required');
+		});
+
+		it('should return undefined when response is missing', async () => {
+			const fileSearchStoreName = 'fileSearchStores/abc123';
+			const displayName = 'test-file.pdf';
+			const mockStream = {
+				pipe: vi.fn(),
+				on: vi.fn(),
+			} as any;
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: mockStream,
+				headers: {
+					'content-type': 'application/pdf',
+				},
+			});
+
+			apiRequestMock
+				.mockResolvedValueOnce({
+					headers: {
+						'x-goog-upload-url': 'https://upload.googleapis.com/upload/123',
+					},
+				})
+				.mockResolvedValueOnce({
+					name: 'operations/op123',
+					done: true,
+				});
+
+			mockExecuteFunctions.helpers.httpRequest.mockResolvedValueOnce({
+				body: {
+					name: 'operations/op123',
+				},
+			});
+
+			const result = await uploadToFileSearchStore.call(
+				mockExecuteFunctions,
+				0,
+				fileSearchStoreName,
+				displayName,
+				'https://example.com/file.pdf',
+			);
+
+			expect(result).toBeUndefined();
+		});
+	});
+
+	describe('listFileSearchStores', () => {
+		it('should list file search stores without pagination', async () => {
+			const mockResponse = {
+				fileSearchStores: [
+					{
+						name: 'fileSearchStores/store1',
+						displayName: 'Store 1',
+					},
+					{
+						name: 'fileSearchStores/store2',
+						displayName: 'Store 2',
+					},
+				],
+			};
+
+			apiRequestMock.mockResolvedValue(mockResponse);
+
+			const result = await listFileSearchStores.call(mockExecuteFunctions);
+
+			expect(result).toEqual(mockResponse);
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/v1beta/fileSearchStores`, {
+				qs: {},
+			});
+		});
+
+		it('should list file search stores with pageSize', async () => {
+			const mockResponse = {
+				fileSearchStores: [
+					{
+						name: 'fileSearchStores/store1',
+						displayName: 'Store 1',
+					},
+				],
+			};
+
+			apiRequestMock.mockResolvedValue(mockResponse);
+
+			const result = await listFileSearchStores.call(mockExecuteFunctions, 20);
+
+			expect(result).toEqual(mockResponse);
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/v1beta/fileSearchStores`, {
+				qs: { pageSize: 20 },
+			});
+		});
+
+		it('should list file search stores with pageToken', async () => {
+			const mockResponse = {
+				fileSearchStores: [
+					{
+						name: 'fileSearchStores/store3',
+						displayName: 'Store 3',
+					},
+				],
+				nextPageToken: 'token123',
+			};
+
+			apiRequestMock.mockResolvedValue(mockResponse);
+
+			const result = await listFileSearchStores.call(mockExecuteFunctions, undefined, 'token123');
+
+			expect(result).toEqual(mockResponse);
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/v1beta/fileSearchStores`, {
+				qs: { pageToken: 'token123' },
+			});
+		});
+
+		it('should list file search stores with both pageSize and pageToken', async () => {
+			const mockResponse = {
+				fileSearchStores: [
+					{
+						name: 'fileSearchStores/store1',
+						displayName: 'Store 1',
+					},
+				],
+			};
+
+			apiRequestMock.mockResolvedValue(mockResponse);
+
+			const result = await listFileSearchStores.call(mockExecuteFunctions, 10, 'token123');
+
+			expect(result).toEqual(mockResponse);
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/v1beta/fileSearchStores`, {
+				qs: { pageSize: 10, pageToken: 'token123' },
+			});
+		});
+	});
+
+	describe('deleteFileSearchStore', () => {
+		it('should reject a name that is not a File Search store', async () => {
+			await expect(deleteFileSearchStore.call(mockExecuteFunctions, 'files/abc')).rejects.toThrow(
+				NodeOperationError,
+			);
+			expect(apiRequestMock).not.toHaveBeenCalled();
+		});
+
+		it('should delete file search store without force', async () => {
+			const name = 'fileSearchStores/abc123';
+			const mockResponse = {};
+
+			apiRequestMock.mockResolvedValue(mockResponse);
+
+			const result = await deleteFileSearchStore.call(mockExecuteFunctions, name);
+
+			expect(result).toEqual(mockResponse);
+			expect(apiRequestMock).toHaveBeenCalledWith(
+				'DELETE',
+				requestPath`/v1beta/fileSearchStores/abc123`,
+				{
+					qs: {},
+				},
+			);
+		});
+
+		it('should delete file search store with force', async () => {
+			const name = 'fileSearchStores/abc123';
+			const mockResponse = {};
+
+			apiRequestMock.mockResolvedValue(mockResponse);
+
+			const result = await deleteFileSearchStore.call(mockExecuteFunctions, name, true);
+
+			expect(result).toEqual(mockResponse);
+			expect(apiRequestMock).toHaveBeenCalledWith(
+				'DELETE',
+				requestPath`/v1beta/fileSearchStores/abc123`,
+				{
+					qs: { force: true },
+				},
+			);
+		});
+
+		it('should delete file search store with force false', async () => {
+			const name = 'fileSearchStores/abc123';
+			const mockResponse = {};
+
+			apiRequestMock.mockResolvedValue(mockResponse);
+
+			const result = await deleteFileSearchStore.call(mockExecuteFunctions, name, false);
+
+			expect(result).toEqual(mockResponse);
+			expect(apiRequestMock).toHaveBeenCalledWith(
+				'DELETE',
+				requestPath`/v1beta/fileSearchStores/abc123`,
+				{
+					qs: { force: false },
+				},
+			);
+		});
+	});
+});

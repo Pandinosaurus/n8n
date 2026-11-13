@@ -1,75 +1,119 @@
-import { NodeConnectionType, NodeOperationError, jsonStringify } from 'n8n-workflow';
-import type { EventNamesAiNodesType, IDataObject, IExecuteFunctions } from 'n8n-workflow';
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import type { BaseOutputParser } from '@langchain/core/output_parsers';
 import type { BaseMessage } from '@langchain/core/messages';
-import { DynamicTool, type Tool } from '@langchain/core/tools';
-import type { BaseLLM } from '@langchain/core/language_models/llms';
+import { type DynamicStructuredTool, type StructuredTool, Tool } from '@langchain/core/tools';
+import type { JSONSchema7 } from 'json-schema';
+import { StructuredToolkit, type SupplyDataToolResponse } from 'n8n-core';
+import type {
+	ICredentialDataDecryptedObject,
+	IDataObject,
+	IExecuteFunctions,
+	INode,
+	ISupplyDataFunctions,
+	IWebhookFunctions,
+} from 'n8n-workflow';
+import { jsonParse, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+import { ZodType } from 'zod';
 
-export function getMetadataFiltersValues(
-	ctx: IExecuteFunctions,
-	itemIndex: number,
-): Record<string, never> | undefined {
-	const metadata = ctx.getNodeParameter('options.metadata.metadataValues', itemIndex, []) as Array<{
-		name: string;
-		value: string;
-	}>;
-	if (metadata.length > 0) {
-		return metadata.reduce((acc, { name, value }) => ({ ...acc, [name]: value }), {});
+import { N8nTool } from './N8nTool';
+import { convertJsonSchemaToZod } from './schemaParsing';
+
+/**
+ * Parses a `json`-typed node parameter. The editor stores these as strings,
+ * but programmatic producers (AI workflow builder, public API) may store real
+ * objects or arrays — accept both.
+ */
+export function parseJsonParameter<T>(value: unknown, errorMessage: string): T {
+	if (typeof value === 'object' && value !== null) {
+		return value as T;
 	}
-
-	return undefined;
-}
-
-export function isChatInstance(model: unknown): model is BaseChatModel {
-	const namespace = (model as BaseLLM | BaseChatModel)?.lc_namespace ?? [];
-
-	return namespace.includes('chat_models');
-}
-
-export async function getOptionalOutputParsers(
-	ctx: IExecuteFunctions,
-): Promise<Array<BaseOutputParser<unknown>>> {
-	let outputParsers: BaseOutputParser[] = [];
-
-	if (ctx.getNodeParameter('hasOutputParser', 0, true) === true) {
-		outputParsers = (await ctx.getInputConnectionData(
-			NodeConnectionType.AiOutputParser,
-			0,
-		)) as BaseOutputParser[];
-	}
-
-	return outputParsers;
+	return jsonParse<T>(typeof value === 'string' ? value : String(value), { errorMessage });
 }
 
 export function getPromptInputByType(options: {
-	ctx: IExecuteFunctions;
+	ctx: IExecuteFunctions | ISupplyDataFunctions;
 	i: number;
 	promptTypeKey: string;
 	inputKey: string;
 }) {
 	const { ctx, i, promptTypeKey, inputKey } = options;
-	const prompt = ctx.getNodeParameter(promptTypeKey, i) as string;
+	const promptType = ctx.getNodeParameter(promptTypeKey, i, 'define') as string;
 
 	let input;
-	if (prompt === 'auto') {
+	if (promptType === 'auto') {
 		input = ctx.evaluateExpression('{{ $json["chatInput"] }}', i) as string;
+	} else if (promptType === 'guardrails') {
+		input = ctx.evaluateExpression('{{ $json["guardrailsInput"] }}', i) as string;
 	} else {
 		input = ctx.getNodeParameter(inputKey, i) as string;
 	}
 
 	if (input === undefined) {
-		throw new NodeOperationError(ctx.getNode(), 'No prompt specified', {
-			description:
-				"Expected to find the prompt in an input field called 'chatInput' (this is what the chat trigger node outputs). To use something else, change the 'Prompt' parameter",
-		});
+		if (promptType === 'auto' || promptType === 'guardrails') {
+			const key = promptType === 'auto' ? 'chatInput' : 'guardrailsInput';
+			throw new NodeOperationError(ctx.getNode(), 'No prompt specified', {
+				description: `Expected to find the prompt in an input field called '${key}' (this is what the ${promptType === 'auto' ? 'chat trigger node' : 'guardrails node'} node outputs). To use something else, change the 'Prompt' parameter`,
+			});
+		} else {
+			throw new NodeOperationError(ctx.getNode(), 'No prompt specified', {
+				description:
+					'The prompt field is empty or the expression used could not be resolved. Please check the configured prompt value.',
+			});
+		}
 	}
 
 	return input;
 }
 
+// Minimum version at which a memory node scopes its session id
+// to the node's own name
+const SESSION_KEY_SCOPING_MIN_VERSION: Record<string, number> = {
+	'@n8n/n8n-nodes-langchain.memoryBufferWindow': 1.4,
+	'@n8n/n8n-nodes-langchain.memoryPostgresChat': 1.4,
+	'@n8n/n8n-nodes-langchain.memoryRedisChat': 1.6,
+	'@n8n/n8n-nodes-langchain.memoryMongoDbChat': 1.1,
+	'@n8n/n8n-nodes-langchain.memoryMotorhead': 1.4,
+	'@n8n/n8n-nodes-langchain.memoryXata': 1.5,
+	'@n8n/n8n-nodes-langchain.memoryZep': 1.4,
+};
+
+function shouldScopeSessionKey(ctx: ISupplyDataFunctions | IWebhookFunctions): boolean {
+	const node = ctx.getNode();
+	if (!node) return false;
+	const minVersion = SESSION_KEY_SCOPING_MIN_VERSION[node.type];
+	// if the node is not in SESSION_KEY_SCOPING_MIN_VERSION, it should
+	// scope by default the session key with no retrocompatibility issues
+	if (minVersion === undefined) return true;
+	return (node.typeVersion ?? 0) >= minVersion;
+}
+
+// Some memory backends (Motorhead URL paths, Xata/Zep record IDs) reject
+// characters outside [A-Za-z0-9_-]. Node names in n8n allow spaces, emoji,
+// and punctuation, so sanitize before using the name as part of a session key.
+function sanitizeForSessionKey(name: string): string {
+	return name.replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+// The session key can arrive straight from an untrusted request body (e.g. a
+// public chat trigger). It is used to address stored data in the memory
+// backend, so it must be a primitive value: an object or array would be
+// interpreted as query structure by backends like MongoDB. Coerce numbers and
+// booleans to strings and reject anything non-primitive.
+export function coerceSessionIdToString(
+	ctx: ISupplyDataFunctions | IWebhookFunctions,
+	sessionId: unknown,
+	itemIndex: number,
+): string {
+	if (typeof sessionId === 'string') return sessionId;
+	if (typeof sessionId === 'number' || typeof sessionId === 'boolean') {
+		return String(sessionId);
+	}
+	throw new NodeOperationError(ctx.getNode(), 'Invalid session ID', {
+		description: 'The session ID must be a text value',
+		itemIndex,
+	});
+}
+
 export function getSessionId(
-	ctx: IExecuteFunctions,
+	ctx: ISupplyDataFunctions | IWebhookFunctions,
 	itemIndex: number,
 	selectorKey = 'sessionIdType',
 	autoSelect = 'fromInput',
@@ -79,38 +123,62 @@ export function getSessionId(
 	const selectorType = ctx.getNodeParameter(selectorKey, itemIndex) as string;
 
 	if (selectorType === autoSelect) {
-		sessionId = ctx.evaluateExpression('{{ $json.sessionId }}', itemIndex) as string;
-		if (sessionId === '' || sessionId === undefined) {
+		// If memory node is used in webhook like node(like chat trigger node), it doesn't have access to evaluateExpression
+		// so we try to extract sessionId from the bodyData
+		let rawSessionId: unknown;
+		if ('getBodyData' in ctx) {
+			const bodyData = ctx.getBodyData() ?? {};
+			rawSessionId = bodyData.sessionId;
+		} else {
+			rawSessionId = ctx.evaluateExpression('{{ $json.sessionId }}', itemIndex);
+
+			// try to get sessionId from chat trigger
+			if (rawSessionId === '' || rawSessionId === undefined || rawSessionId === null) {
+				try {
+					const chatTrigger = ctx.getChatTrigger();
+
+					if (chatTrigger) {
+						rawSessionId = ctx.evaluateExpression(
+							`{{ $('${chatTrigger.name}').first().json.sessionId }}`,
+							itemIndex,
+						);
+					}
+				} catch (error) {}
+			}
+		}
+
+		if (rawSessionId === '' || rawSessionId === undefined || rawSessionId === null) {
 			throw new NodeOperationError(ctx.getNode(), 'No session ID found', {
 				description:
 					"Expected to find the session ID in an input field called 'sessionId' (this is what the chat trigger node outputs). To use something else, change the 'Session ID' parameter",
 				itemIndex,
 			});
 		}
+
+		sessionId = coerceSessionIdToString(ctx, rawSessionId, itemIndex);
 	} else {
-		sessionId = ctx.getNodeParameter(customKey, itemIndex, '') as string;
-		if (sessionId === '' || sessionId === undefined) {
+		const rawSessionId = ctx.getNodeParameter(customKey, itemIndex, '');
+		if (rawSessionId === '' || rawSessionId === undefined || rawSessionId === null) {
 			throw new NodeOperationError(ctx.getNode(), 'Key parameter is empty', {
 				description:
-					"Provide a key to use as session ID in the 'Key' parameter or use the 'Take from previous node automatically' option to use the session ID from the previous node, e.t. chat trigger node",
+					"Provide a key to use as session ID in the 'Key' parameter or use the 'Connected Chat Trigger Node' option to use the session ID from your Chat Trigger",
 				itemIndex,
 			});
 		}
+
+		sessionId = coerceSessionIdToString(ctx, rawSessionId, itemIndex);
+	}
+
+	// Scoping uses the memory node's own name, so connecting a single memory
+	// node to multiple callers (e.g. an agent and a sub-agent) will still
+	// produce the same session key for all of them and they will share the
+	// same memory bucket. To isolate memory per caller, duplicate the memory
+	// node instead of reusing one.
+	if (selectorType === autoSelect && shouldScopeSessionKey(ctx)) {
+		sessionId = `${sessionId}__${sanitizeForSessionKey(ctx.getNode().name)}`;
 	}
 
 	return sessionId;
-}
-
-export async function logAiEvent(
-	executeFunctions: IExecuteFunctions,
-	event: EventNamesAiNodesType,
-	data?: IDataObject,
-) {
-	try {
-		await executeFunctions.logAiEvent(event, data ? jsonStringify(data) : undefined);
-	} catch (error) {
-		executeFunctions.logger.debug(`Error logging AI event: ${event}`);
-	}
 }
 
 export function serializeChatHistory(chatHistory: BaseMessage[]): string {
@@ -127,17 +195,96 @@ export function serializeChatHistory(chatHistory: BaseMessage[]): string {
 		.join('\n');
 }
 
-export const getConnectedTools = async (ctx: IExecuteFunctions, enforceUniqueNames: boolean) => {
-	const connectedTools =
-		((await ctx.getInputConnectionData(NodeConnectionType.AiTool, 0)) as Tool[]) || [];
+export function escapeSingleCurlyBrackets(text?: string): string | undefined {
+	if (text === undefined) return undefined;
+
+	let result = text;
+
+	result = result
+		// First handle triple brackets to avoid interference with double brackets
+		.replace(/(?<!{){{{(?!{)/g, '{{{{')
+		.replace(/(?<!})}}}(?!})/g, '}}}}')
+		// Then handle single brackets, but only if they're not part of double brackets
+		// Convert single { to {{ if it's not already part of {{ or {{{
+		.replace(/(?<!{){(?!{)/g, '{{')
+		// Convert single } to }} if it's not already part of }} or }}}
+		.replace(/(?<!})}(?!})/g, '}}');
+
+	return result;
+}
+
+/* Convert tools with json schema to tools with zod schema and type Tool
+ * Most nodes expect tools to have a Zod schema and have Tool type, do this conversion to make sure all tools are compatible
+ */
+const normalizeToolSchema = (tool: Tool | DynamicStructuredTool | StructuredTool) => {
+	if (tool instanceof Tool) {
+		return tool;
+	}
+	const isZodObject = tool.schema instanceof ZodType;
+	if (tool.schema && !isZodObject) {
+		tool.schema = convertJsonSchemaToZod(tool.schema as JSONSchema7);
+	}
+
+	return tool as Tool;
+};
+
+export const getConnectedTools = async (
+	ctx: IExecuteFunctions | IWebhookFunctions | ISupplyDataFunctions,
+	enforceUniqueNames: boolean,
+	convertStructuredTool: boolean = true,
+	escapeCurlyBrackets: boolean = false,
+	options?: { inputData?: IDataObject },
+): Promise<Tool[]> => {
+	// `getRequestObject` narrows to IWebhookFunctions, the only context whose
+	// getInputConnectionData signature takes the input override.
+	const toolkitConnections = (await ('getRequestObject' in ctx
+		? ctx.getInputConnectionData(NodeConnectionTypes.AiTool, 0, options)
+		: ctx.getInputConnectionData(NodeConnectionTypes.AiTool, 0))) as SupplyDataToolResponse[];
+
+	// Get parent nodes to map toolkits to their source nodes.
+	// getInputConnectionData filters out disabled nodes, so parents must be filtered
+	// the same way to keep the index alignment between toolkitConnections and parentNodes.
+	const parentNodes =
+		'getParentNodes' in ctx
+			? ctx
+					.getParentNodes(ctx.getNode().name, {
+						connectionType: NodeConnectionTypes.AiTool,
+						depth: 1,
+					})
+					.filter((node) => !node.disabled)
+			: [];
+
+	const connectedTools = (toolkitConnections ?? [])
+		.flatMap((toolOrToolkit, index) => {
+			if (toolOrToolkit instanceof StructuredToolkit) {
+				const tools = toolOrToolkit.tools;
+				// Add metadata to each tool from the toolkit
+				return tools.map((tool) => {
+					tool.metadata ??= {};
+					tool.metadata.isFromToolkit = true;
+					tool.metadata.sourceNodeName = parentNodes[index]?.name ?? tool.name;
+					// The name can change when the user renames the node, the ID cannot.
+					tool.metadata.sourceNodeId = parentNodes[index]?.id;
+					return tool;
+				});
+			} else {
+				toolOrToolkit.metadata ??= {};
+				toolOrToolkit.metadata.isFromToolkit = false;
+				toolOrToolkit.metadata.sourceNodeName = parentNodes[index]?.name ?? toolOrToolkit.name;
+				toolOrToolkit.metadata.sourceNodeId = parentNodes[index]?.id;
+			}
+
+			return toolOrToolkit;
+		})
+		.map(normalizeToolSchema);
 
 	if (!enforceUniqueNames) return connectedTools;
 
 	const seenNames = new Set<string>();
 
-	for (const tool of connectedTools) {
-		if (!(tool instanceof DynamicTool)) continue;
+	const finalTools: Tool[] = [];
 
+	for (const tool of connectedTools) {
 		const { name } = tool;
 		if (seenNames.has(name)) {
 			throw new NodeOperationError(
@@ -146,7 +293,86 @@ export const getConnectedTools = async (ctx: IExecuteFunctions, enforceUniqueNam
 			);
 		}
 		seenNames.add(name);
+
+		if (escapeCurlyBrackets) {
+			tool.description = escapeSingleCurlyBrackets(tool.description) ?? tool.description;
+		}
+
+		if (convertStructuredTool && tool instanceof N8nTool) {
+			finalTools.push(tool.asDynamicTool());
+		} else {
+			finalTools.push(tool);
+		}
 	}
 
-	return connectedTools;
+	return finalTools;
 };
+
+/**
+ * Reads the custom header configured on a credential, if present and valid.
+ * Shared by header merging and tracing redaction so the guard lives in one place.
+ */
+export function getCustomCredentialHeader(
+	credentials: ICredentialDataDecryptedObject,
+): { name: string; value: string } | undefined {
+	if (
+		credentials.header &&
+		typeof credentials.headerName === 'string' &&
+		credentials.headerName &&
+		typeof credentials.headerValue === 'string'
+	) {
+		return { name: credentials.headerName, value: credentials.headerValue };
+	}
+	return undefined;
+}
+
+/**
+ * Returns the API key of a credential. Throws when the key is missing or blank.
+ * Some SDKs read a process environment variable when they get no key,
+ * so always pass the result of this function to the client.
+ */
+export function getRequiredApiKey(node: INode, apiKey: unknown): string {
+	if (typeof apiKey !== 'string' || apiKey.trim() === '') {
+		throw new NodeOperationError(node, 'The credential has no API key', {
+			description: 'Add an API key to the credential and try again.',
+		});
+	}
+	return apiKey;
+}
+
+/**
+ * Merges custom credential headers into an existing defaultHeaders object.
+ * Used by OpenAI and other LangChain nodes that pass `configuration.defaultHeaders`.
+ */
+export function mergeCustomHeaders(
+	credentials: ICredentialDataDecryptedObject,
+	defaultHeaders: Record<string, string>,
+): Record<string, string> {
+	const customHeader = getCustomCredentialHeader(credentials);
+	if (customHeader) {
+		return {
+			...defaultHeaders,
+			[customHeader.name]: customHeader.value,
+		};
+	}
+	return defaultHeaders;
+}
+
+/**
+ * Sometimes model output is wrapped in an additional object property.
+ * This function unwraps the output if it is in the format { output: { output: { ... } } }
+ */
+export function unwrapNestedOutput(output: Record<string, unknown>): Record<string, unknown> {
+	if (
+		'output' in output &&
+		Object.keys(output).length === 1 &&
+		typeof output.output === 'object' &&
+		output.output !== null &&
+		'output' in output.output &&
+		Object.keys(output.output).length === 1
+	) {
+		return output.output as Record<string, unknown>;
+	}
+
+	return output;
+}

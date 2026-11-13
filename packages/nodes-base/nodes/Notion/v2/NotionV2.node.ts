@@ -6,15 +6,17 @@ import type {
 	INodeTypeBaseDescription,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { jsonParse, NodeApiError } from 'n8n-workflow';
+import { requestPath, jsonParse, NodeApiError } from 'n8n-workflow';
 
+import { loadOptions } from './methods';
+import { versionDescription } from './VersionDescription';
 import type { SortData, FileRecord } from '../shared/GenericFunctions';
 import {
 	downloadFiles,
 	extractBlockId,
-	extractDatabaseId,
 	extractDatabaseMentionRLC,
-	extractPageId,
+	extractResourceId,
+	getPageId,
 	formatBlocks,
 	formatTitle,
 	mapFilters,
@@ -23,14 +25,12 @@ import {
 	notionApiRequest,
 	notionApiRequestAllItems,
 	notionApiRequestGetBlockChildrens,
+	prepareNotionError,
 	simplifyBlocksOutput,
 	simplifyObjects,
 	validateJSON,
 } from '../shared/GenericFunctions';
-
 import { listSearch } from '../shared/methods';
-import { loadOptions } from './methods';
-import { versionDescription } from './VersionDescription';
 
 export class NotionV2 implements INodeType {
 	description: INodeTypeDescription;
@@ -75,7 +75,7 @@ export class NotionV2 implements INodeType {
 						const block = await notionApiRequest.call(
 							this,
 							'PATCH',
-							`/blocks/${blockId}/children`,
+							requestPath`/blocks/${blockId}/children`,
 							body,
 						);
 
@@ -91,7 +91,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -109,7 +109,7 @@ export class NotionV2 implements INodeType {
 								this,
 								'results',
 								'GET',
-								`/blocks/${blockId}/children`,
+								requestPath`/blocks/${blockId}/children`,
 								{},
 							);
 
@@ -117,26 +117,23 @@ export class NotionV2 implements INodeType {
 								responseData = await notionApiRequestGetBlockChildrens.call(this, responseData);
 							}
 						} else {
-							const limit = this.getNodeParameter('limit', i);
-							qs.page_size = limit;
-							responseData = await notionApiRequest.call(
+							const limit = this.getNodeParameter('limit', i) as number;
+							responseData = await notionApiRequestAllItems.call(
 								this,
+								'results',
 								'GET',
-								`/blocks/${blockId}/children`,
+								requestPath`/blocks/${blockId}/children`,
 								{},
-								qs,
+								{ page_size: Math.min(limit, 100), limit },
 							);
-							const results = responseData.results;
 
 							if (fetchNestedBlocks) {
 								responseData = await notionApiRequestGetBlockChildrens.call(
 									this,
-									results,
+									responseData,
 									[],
 									limit,
 								);
-							} else {
-								responseData = results;
 							}
 						}
 
@@ -166,7 +163,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -178,10 +175,14 @@ export class NotionV2 implements INodeType {
 				const simple = this.getNodeParameter('simple', 0) as boolean;
 				for (let i = 0; i < itemsLength; i++) {
 					try {
-						const databaseId = extractDatabaseId(
+						const databaseId = extractResourceId(
 							this.getNodeParameter('databaseId', i, '', { extractValue: true }) as string,
 						);
-						responseData = await notionApiRequest.call(this, 'GET', `/databases/${databaseId}`);
+						responseData = await notionApiRequest.call(
+							this,
+							'GET',
+							requestPath`/databases/${databaseId}`,
+						);
 						if (simple) {
 							responseData = simplifyObjects(responseData, download)[0];
 						}
@@ -198,7 +199,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -217,13 +218,20 @@ export class NotionV2 implements INodeType {
 								this,
 								'results',
 								'POST',
-								'/search',
+								requestPath`/search`,
 								body,
 							);
 						} else {
-							body.page_size = this.getNodeParameter('limit', i);
-							responseData = await notionApiRequest.call(this, 'POST', '/search', body);
-							responseData = responseData.results;
+							const limit = this.getNodeParameter('limit', i) as number;
+							body.page_size = Math.min(limit, 100);
+							responseData = await notionApiRequestAllItems.call(
+								this,
+								'results',
+								'POST',
+								requestPath`/search`,
+								body,
+								{ limit },
+							);
 						}
 						if (simple) {
 							responseData = simplifyObjects(responseData, download);
@@ -241,7 +249,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -273,7 +281,7 @@ export class NotionV2 implements INodeType {
 								this,
 								'results',
 								'POST',
-								'/search',
+								requestPath`/search`,
 								body,
 							);
 						} else {
@@ -282,7 +290,7 @@ export class NotionV2 implements INodeType {
 								this,
 								'results',
 								'POST',
-								'/search',
+								requestPath`/search`,
 								body,
 							);
 							responseData = responseData.splice(0, qs.limit);
@@ -304,7 +312,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -316,7 +324,11 @@ export class NotionV2 implements INodeType {
 				const databaseId = this.getNodeParameter('databaseId', 0, '', {
 					extractValue: true,
 				}) as string;
-				const { properties } = await notionApiRequest.call(this, 'GET', `/databases/${databaseId}`);
+				const { properties } = await notionApiRequest.call(
+					this,
+					'GET',
+					requestPath`/databases/${databaseId}`,
+				);
 				let titleKey = '';
 				for (const key of Object.keys(properties as IDataObject)) {
 					if (properties[key].type === 'title') {
@@ -374,7 +386,7 @@ export class NotionV2 implements INodeType {
 							}
 						}
 
-						responseData = await notionApiRequest.call(this, 'POST', '/pages', body);
+						responseData = await notionApiRequest.call(this, 'POST', requestPath`/pages`, body);
 						if (simple) {
 							responseData = simplifyObjects(responseData);
 						}
@@ -391,7 +403,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -400,11 +412,10 @@ export class NotionV2 implements INodeType {
 			if (operation === 'get') {
 				for (let i = 0; i < itemsLength; i++) {
 					try {
-						const pageId = extractPageId(
-							this.getNodeParameter('pageId', i, '', { extractValue: true }) as string,
-						);
+						const pageId = getPageId.call(this, i);
+
 						const simple = this.getNodeParameter('simple', i) as boolean;
-						responseData = await notionApiRequest.call(this, 'GET', `/pages/${pageId}`);
+						responseData = await notionApiRequest.call(this, 'GET', requestPath`/pages/${pageId}`);
 						if (simple) {
 							responseData = simplifyObjects(responseData, download);
 						}
@@ -421,7 +432,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -459,9 +470,13 @@ export class NotionV2 implements INodeType {
 							if (validateJSON(filterJson) !== undefined) {
 								body.filter = jsonParse(filterJson);
 							} else {
-								throw new NodeApiError(this.getNode(), {
-									message: 'Filters (JSON) must be a valid json',
-								});
+								throw new NodeApiError(
+									this.getNode(),
+									{
+										message: 'Filters (JSON) must be a valid json',
+									},
+									{ itemIndex: i },
+								);
 							}
 						}
 
@@ -476,20 +491,21 @@ export class NotionV2 implements INodeType {
 								this,
 								'results',
 								'POST',
-								`/databases/${databaseId}/query`,
+								requestPath`/databases/${databaseId}/query`,
 								body,
 								{},
 							);
 						} else {
-							body.page_size = this.getNodeParameter('limit', i);
-							responseData = await notionApiRequest.call(
+							const limit = this.getNodeParameter('limit', i) as number;
+							body.page_size = Math.min(limit, 100);
+							responseData = await notionApiRequestAllItems.call(
 								this,
+								'results',
 								'POST',
-								`/databases/${databaseId}/query`,
+								requestPath`/databases/${databaseId}/query`,
 								body,
-								qs,
+								{ limit },
 							);
-							responseData = responseData.results;
 						}
 						if (download) {
 							responseData = await downloadFiles.call(this, responseData as FileRecord[], [
@@ -512,7 +528,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -521,9 +537,7 @@ export class NotionV2 implements INodeType {
 			if (operation === 'update') {
 				for (let i = 0; i < itemsLength; i++) {
 					try {
-						const pageId = extractPageId(
-							this.getNodeParameter('pageId', i, '', { extractValue: true }) as string,
-						);
+						const pageId = getPageId.call(this, i);
 						const simple = this.getNodeParameter('simple', i) as boolean;
 						const properties = this.getNodeParameter(
 							'propertiesUi.propertyValues',
@@ -547,7 +561,12 @@ export class NotionV2 implements INodeType {
 							}
 						}
 
-						responseData = await notionApiRequest.call(this, 'PATCH', `/pages/${pageId}`, body);
+						responseData = await notionApiRequest.call(
+							this,
+							'PATCH',
+							requestPath`/pages/${pageId}`,
+							body,
+						);
 						if (simple) {
 							responseData = simplifyObjects(responseData, false);
 						}
@@ -564,7 +583,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -576,7 +595,7 @@ export class NotionV2 implements INodeType {
 				for (let i = 0; i < itemsLength; i++) {
 					try {
 						const userId = this.getNodeParameter('userId', i) as string;
-						responseData = await notionApiRequest.call(this, 'GET', `/users/${userId}`);
+						responseData = await notionApiRequest.call(this, 'GET', requestPath`/users/${userId}`);
 
 						const executionData = this.helpers.constructExecutionMetaData(
 							this.helpers.returnJsonArray(responseData as IDataObject),
@@ -590,7 +609,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -600,10 +619,20 @@ export class NotionV2 implements INodeType {
 					try {
 						const returnAll = this.getNodeParameter('returnAll', i);
 						if (returnAll) {
-							responseData = await notionApiRequestAllItems.call(this, 'results', 'GET', '/users');
+							responseData = await notionApiRequestAllItems.call(
+								this,
+								'results',
+								'GET',
+								requestPath`/users`,
+							);
 						} else {
 							qs.limit = this.getNodeParameter('limit', i);
-							responseData = await notionApiRequestAllItems.call(this, 'results', 'GET', '/users');
+							responseData = await notionApiRequestAllItems.call(
+								this,
+								'results',
+								'GET',
+								requestPath`/users`,
+							);
 							responseData = responseData.splice(0, qs.limit);
 						}
 
@@ -619,7 +648,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -630,13 +659,16 @@ export class NotionV2 implements INodeType {
 			if (operation === 'archive') {
 				for (let i = 0; i < itemsLength; i++) {
 					try {
-						const pageId = extractPageId(
-							this.getNodeParameter('pageId', i, '', { extractValue: true }) as string,
-						);
+						const pageId = getPageId.call(this, i);
 						const simple = this.getNodeParameter('simple', i) as boolean;
-						responseData = await notionApiRequest.call(this, 'PATCH', `/pages/${pageId}`, {
-							archived: true,
-						});
+						responseData = await notionApiRequest.call(
+							this,
+							'PATCH',
+							requestPath`/pages/${pageId}`,
+							{
+								archived: true,
+							},
+						);
 						if (simple) {
 							responseData = simplifyObjects(responseData, download);
 						}
@@ -653,7 +685,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -667,9 +699,7 @@ export class NotionV2 implements INodeType {
 							parent: {},
 							properties: {},
 						};
-						body.parent.page_id = extractPageId(
-							this.getNodeParameter('pageId', i, '', { extractValue: true }) as string,
-						);
+						body.parent.page_id = getPageId.call(this, i);
 						body.properties = formatTitle(this.getNodeParameter('title', i) as string);
 						const blockValues = this.getNodeParameter(
 							'blockUi.blockValues',
@@ -688,7 +718,7 @@ export class NotionV2 implements INodeType {
 							}
 						}
 
-						responseData = await notionApiRequest.call(this, 'POST', '/pages', body);
+						responseData = await notionApiRequest.call(this, 'POST', requestPath`/pages`, body);
 						if (simple) {
 							responseData = simplifyObjects(responseData, download);
 						}
@@ -705,7 +735,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}
@@ -736,7 +766,7 @@ export class NotionV2 implements INodeType {
 								this,
 								'results',
 								'POST',
-								'/search',
+								requestPath`/search`,
 								body,
 							);
 						} else {
@@ -745,7 +775,7 @@ export class NotionV2 implements INodeType {
 								this,
 								'results',
 								'POST',
-								'/search',
+								requestPath`/search`,
 								body,
 							);
 							responseData = responseData.splice(0, qs.limit);
@@ -767,7 +797,7 @@ export class NotionV2 implements INodeType {
 								pairedItem: { item: i },
 							});
 						} else {
-							throw error;
+							throw prepareNotionError(this.getNode(), error, i);
 						}
 					}
 				}

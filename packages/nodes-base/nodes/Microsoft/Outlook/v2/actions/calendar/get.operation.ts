@@ -1,7 +1,10 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
-import { microsoftApiRequest } from '../../transport';
-import { calendarRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { calendarRLC } from '../../descriptions';
+import { microsoftApiRequest } from '../../transport';
 
 export const properties: INodeProperties[] = [calendarRLC];
 
@@ -24,7 +27,8 @@ export async function execute(this: IExecuteFunctions, index: number) {
 	const responseData = await microsoftApiRequest.call(
 		this,
 		'GET',
-		`/calendars/${calendarId}`,
+		requestPath`/calendars/${calendarId}`,
+		index,
 		undefined,
 		qs,
 	);

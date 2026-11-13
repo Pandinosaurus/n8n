@@ -1,3 +1,6 @@
+import { camelCase, capitalCase, snakeCase } from 'change-case';
+import set from 'lodash/set';
+import moment from 'moment-timezone';
 import type {
 	IBinaryKeyData,
 	IDataObject,
@@ -6,26 +9,33 @@ import type {
 	IHookFunctions,
 	IHttpRequestMethods,
 	ILoadOptionsFunctions,
+	INode,
 	INodeExecutionData,
+	INodeParameterResourceLocator,
 	INodeProperties,
 	IPairedItemData,
 	IPollFunctions,
 	IRequestOptions,
 	JsonObject,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
-
-import { camelCase, capitalCase, snakeCase } from 'change-case';
-
-import moment from 'moment-timezone';
-
+import {
+	requestPath,
+	requestUrl,
+	NodeApiError,
+	NodeOperationError,
+	safeRegex,
+	setSafeObjectProperty,
+} from 'n8n-workflow';
 import { validate as uuidValidate } from 'uuid';
+
+import { blockUrlExtractionRegexp, databasePageUrlValidationRegexp } from './constants';
 import { filters } from './descriptions/Filters';
 
 function uuidValidateWithoutDashes(this: IExecuteFunctions, value: string) {
 	if (uuidValidate(value)) return true;
 	if (value.length == 32) {
-		//prettier-ignore
 		const strWithDashes = `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 		if (uuidValidate(strWithDashes)) return true;
 	}
@@ -47,32 +57,29 @@ const apiVersion: { [key: number]: string } = {
 export async function notionApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions | IPollFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	qs: IDataObject = {},
-	uri?: string,
-	option: IDataObject = {},
+	option: Pick<IRequestOptions, 'headers'> = {},
 ): Promise<any> {
 	try {
-		let options: IRequestOptions = {
-			headers: {
+		const options: WithRequestTarget<IRequestOptions, 'uri'> = {
+			headers: option.headers ?? {
 				'Notion-Version': apiVersion[this.getNode().typeVersion],
 			},
 			method,
 			qs,
 			body,
-			uri: uri || `https://api.notion.com/v1${resource}`,
+			uri: requestUrl`https://api.notion.com/v1${resource}`,
 			json: true,
 		};
-		options = Object.assign({}, options, option);
 		if (Object.keys(body as IDataObject).length === 0) {
 			delete options.body;
 		}
-		if (!uri) {
-			return await this.helpers.requestWithAuthentication.call(this, 'notionApi', options);
-		}
-		return await this.helpers.request(options);
+		const authentication = this.getNodeParameter('authentication', 0, 'apiKey') as string;
+		const credentialType = authentication === 'oAuth2' ? 'notionOAuth2Api' : 'notionApi';
+		return await this.helpers.requestWithAuthentication.call(this, credentialType, options);
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject);
 	}
@@ -82,11 +89,14 @@ export async function notionApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions | IPollFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: any = {},
 	query: IDataObject = {},
 ): Promise<any> {
 	const resource = this.getNodeParameter('resource', 0);
+
+	const limit = query.limit as number | undefined;
+	delete query.limit;
 
 	const returnData: IDataObject[] = [];
 
@@ -101,13 +111,12 @@ export async function notionApiRequestAllItems(
 			body.start_cursor = next_cursor;
 		}
 		returnData.push.apply(returnData, responseData[propertyName] as IDataObject[]);
-		const limit = query.limit as number | undefined;
 		if (limit && limit <= returnData.length) {
-			return returnData;
+			return returnData.slice(0, limit);
 		}
 	} while (responseData.has_more !== false);
 
-	return returnData;
+	return limit ? returnData.slice(0, limit) : returnData;
 }
 
 export async function notionApiRequestGetBlockChildrens(
@@ -121,14 +130,14 @@ export async function notionApiRequestGetBlockChildrens(
 	for (const block of blocks) {
 		responseData.push(block);
 
-		if (block.type === 'child_page') continue;
+		if (block.type === 'child_page' || block.type === 'unsupported') continue;
 
 		if (block.has_children) {
 			let childrens = await notionApiRequestAllItems.call(
 				this,
 				'results',
 				'GET',
-				`/blocks/${block.id}/children`,
+				requestPath`/blocks/${block.id}/children`,
 			);
 
 			childrens = (childrens || []).map((entry: IDataObject) => ({
@@ -270,8 +279,7 @@ function getTexts(texts: TextData[]) {
 					type: 'mention',
 					mention: {
 						type: text.mentionType,
-						//@ts-expect-error any
-						[text.mentionType]: { id: text[text.mentionType] as string },
+						[text.mentionType]: { id: text[text.mentionType as keyof TextData] as string },
 					},
 					annotations: text.annotationUi,
 				});
@@ -307,7 +315,6 @@ export function formatBlocks(blocks: IDataObject[]) {
 			[block.type as string]: {
 				...(block.type === 'to_do' ? { checked: block.checked } : {}),
 				...(block.type === 'image' ? { type: 'external', external: { url: block.url } } : {}),
-				// prettier-ignore,
 				...(!['image'].includes(block.type as string) ? getTextBlocks(block) : {}),
 			},
 		});
@@ -480,10 +487,14 @@ function getPropertyKeyValue(
 }
 
 function getNameAndType(key: string) {
-	const [name, type] = key.split('|');
+	const delimiterIndex = key.lastIndexOf('|');
+	if (delimiterIndex === -1) {
+		return { name: key, type: '' };
+	}
+
 	return {
-		name,
-		type,
+		name: key.slice(0, delimiterIndex),
+		type: key.slice(delimiterIndex + 1),
 	};
 }
 
@@ -495,37 +506,25 @@ export function mapProperties(
 ) {
 	return properties
 		.filter(
-			(property): property is Record<string, { key: string; [k: string]: any }> =>
-				typeof property.key === 'string',
+			(property): property is IDataObject & { key: string } => typeof property.key === 'string',
 		)
-		.map(
-			(property) =>
-				[
-					`${property.key.split('|')[0]}`,
-					getPropertyKeyValue.call(
-						this,
-						property,
-						property.key.split('|')[1] as string,
-						timezone,
-						version,
-					),
-				] as const,
-		)
+		.map((property) => {
+			const { name, type } = getNameAndType(property.key);
+			return [name, getPropertyKeyValue.call(this, property, type, timezone, version)] as const;
+		})
 		.filter(([, value]) => value)
-		.reduce(
-			(obj, [key, value]) =>
-				Object.assign(obj, {
-					[key]: value,
-				}),
-			{},
-		);
+		.reduce((obj, [key, value]) => {
+			setSafeObjectProperty(obj, key, value);
+			return obj;
+		}, {} as IDataObject);
 }
 
 export function mapSorting(data: SortData[]) {
 	return data.map((sort) => {
+		const { name } = getNameAndType(sort.key);
 		return {
 			direction: sort.direction,
-			[sort.timestamp ? 'timestamp' : 'property']: sort.key.split('|')[0],
+			[sort.timestamp ? 'timestamp' : 'property']: name,
 		};
 	});
 }
@@ -573,7 +572,7 @@ export function mapFilters(filtersList: IDataObject[], timezone: string) {
 		}
 
 		return Object.assign(obj, {
-			['property']: getNameAndType(value.key as string).name,
+			['property']: getNameAndType(value.key as string)?.name,
 			[key]: { [`${value.condition}`]: valuePropertyName },
 		});
 	}, {});
@@ -604,7 +603,7 @@ function simplifyProperty(property: any) {
 	) {
 		result = property[type];
 	} else if (['created_by', 'last_edited_by', 'select'].includes(property.type as string)) {
-		result = property[type] ? property[type].name : null;
+		result = property[type] ? property[type]?.name : null;
 	} else if (['people'].includes(property.type as string)) {
 		if (Array.isArray(property[type])) {
 			result = property[type].map((person: any) => person.person?.email || {});
@@ -613,35 +612,35 @@ function simplifyProperty(property: any) {
 		}
 	} else if (['multi_select'].includes(property.type as string)) {
 		if (Array.isArray(property[type])) {
-			result = property[type].map((e: IDataObject) => e.name || {});
+			result = property[type].map((e: IDataObject) => e?.name || {});
 		} else {
-			result = property[type].options.map((e: IDataObject) => e.name || {});
+			result = property[type].options.map((e: IDataObject) => e?.name || {});
 		}
 	} else if (['relation'].includes(property.type as string)) {
 		if (Array.isArray(property[type])) {
-			result = property[type].map((e: IDataObject) => e.id || {});
+			result = property[type].map((e: IDataObject) => e?.id || {});
 		} else {
-			result = property[type].database_id;
+			result = property[type]?.database_id;
 		}
 	} else if (['formula'].includes(property.type as string)) {
-		result = property[type][property[type].type];
+		result = property[type]?.[property[type]?.type];
 	} else if (['rollup'].includes(property.type as string)) {
-		const rollupFunction = property[type].function as string;
+		const rollupFunction = property[type]?.function as string;
 		if (rollupFunction.startsWith('count') || rollupFunction.includes('empty')) {
-			result = property[type].number;
+			result = property[type]?.number;
 			if (rollupFunction.includes('percent')) {
 				result = result * 100;
 			}
-		} else if (rollupFunction.startsWith('show') && property[type].type === 'array') {
+		} else if (rollupFunction.startsWith('show') && property[type]?.type === 'array') {
 			const elements = property[type].array.map(simplifyProperty).flat();
 			result = rollupFunction === 'show_unique' ? [...new Set(elements as string)] : elements;
 		}
 	} else if (['files'].includes(property.type as string)) {
 		result = property[type].map(
-			(file: { type: string; [key: string]: any }) => file[file.type].url,
+			(file: { type: string; [key: string]: any }) => file[file.type]?.url,
 		);
 	} else if (['status'].includes(property.type as string)) {
-		result = property[type].name;
+		result = property[type]?.name;
 	}
 	return result;
 }
@@ -661,9 +660,14 @@ export function getPropertyTitle(properties: { [key: string]: any }) {
 	);
 }
 
-function prepend(stringKey: string, properties: { [key: string]: any }) {
+// Fold non-ASCII to separators so keys keep their pre-change-case-v5 shape (é → `_`).
+const foldedSnakeCase = (value: string) => snakeCase(value.replace(/[^\x20-\x7E]/g, ' '));
+
+function prepend(stringKey: string, properties: { [key: string]: any }, version: number) {
+	// Pre-v3 restores the old ASCII key shape so existing workflows keep resolving.
+	const toKey = version >= 3 ? snakeCase : foldedSnakeCase;
 	for (const key of Object.keys(properties)) {
-		properties[`${stringKey}_${snakeCase(key)}`] = properties[key];
+		properties[`${stringKey}_${toKey(key)}`] = properties[key];
 		delete properties[key];
 	}
 	return properties;
@@ -674,30 +678,33 @@ export function simplifyObjects(objects: any, download = false, version = 2) {
 		objects = [objects];
 	}
 	const results: IDataObject[] = [];
-	for (const { object, id, properties, parent, title, json, binary, url } of objects) {
-		if (object === 'page' && (parent.type === 'page_id' || parent.type === 'workspace')) {
+	const notV1 = version > 1;
+	for (const { object, id, properties, parent, title, name, json, binary, url } of objects) {
+		if (object === 'page' && (parent?.type === 'page_id' || parent?.type === 'workspace')) {
 			results.push({
 				id,
 				name: properties.title.title[0].plain_text,
-				...(version === 2 ? { url } : {}),
+				...(notV1 ? { url } : {}),
 			});
-		} else if (object === 'page' && parent.type === 'database_id') {
+		} else if (object === 'page') {
 			results.push({
 				id,
-				...(version === 2 ? { name: getPropertyTitle(properties as IDataObject) } : {}),
-				...(version === 2 ? { url } : {}),
-				...(version === 2
-					? { ...prepend('property', simplifyProperties(properties) as IDataObject) }
+				...(notV1 ? { name: getPropertyTitle(properties as IDataObject) } : {}),
+				...(notV1 ? { url } : {}),
+				...(notV1
+					? { ...prepend('property', simplifyProperties(properties) as IDataObject, version) }
 					: { ...simplifyProperties(properties) }),
 			} as IDataObject);
-		} else if (download && json.object === 'page' && json.parent.type === 'database_id') {
+		} else if (download && json.object === 'page') {
 			results.push({
 				json: {
 					id: json.id,
-					...(version === 2 ? { name: getPropertyTitle(json.properties as IDataObject) } : {}),
-					...(version === 2 ? { url: json.url } : {}),
-					...(version === 2
-						? { ...prepend('property', simplifyProperties(json.properties) as IDataObject) }
+					...(notV1 ? { name: getPropertyTitle(json.properties as IDataObject) } : {}),
+					...(notV1 ? { url: json.url } : {}),
+					...(notV1
+						? {
+								...prepend('property', simplifyProperties(json.properties) as IDataObject, version),
+							}
 						: { ...simplifyProperties(json.properties) }),
 				},
 				binary,
@@ -705,10 +712,14 @@ export function simplifyObjects(objects: any, download = false, version = 2) {
 		} else if (object === 'database') {
 			results.push({
 				id,
-				...(version === 2
-					? { name: title[0]?.plain_text || '' }
-					: { title: title[0]?.plain_text || '' }),
-				...(version === 2 ? { url } : {}),
+				...(notV1 ? { name: title[0]?.plain_text || '' } : { title: title[0]?.plain_text || '' }),
+				...(notV1 ? { url } : {}),
+			});
+		} else if (object === 'data_source') {
+			results.push({
+				id,
+				name: name ?? title?.[0]?.plain_text ?? '',
+				url,
 			});
 		}
 	}
@@ -763,7 +774,7 @@ export function getConditions() {
 		number: [
 			'equals',
 			'does_not_equal',
-			'grater_than',
+			'greater_than',
 			'less_than',
 			'greater_than_or_equal_to',
 			'less_than_or_equal_to',
@@ -865,9 +876,29 @@ export type FileRecord = {
 			  };
 	};
 };
-// prettier-ignore
-export async function downloadFiles(this: IExecuteFunctions | IPollFunctions, records: FileRecord[], pairedItem?: IPairedItemData[]): Promise<INodeExecutionData[]> {
 
+async function downloadFile(this: IExecuteFunctions | IPollFunctions, uri: string) {
+	try {
+		return await this.helpers.request({
+			headers: {
+				'Notion-Version': apiVersion[this.getNode().typeVersion],
+			},
+			method: 'GET',
+			qs: {},
+			uri,
+			json: false,
+			encoding: null,
+		});
+	} catch (error) {
+		throw new NodeApiError(this.getNode(), error as JsonObject);
+	}
+}
+
+export async function downloadFiles(
+	this: IExecuteFunctions | IPollFunctions,
+	records: FileRecord[],
+	pairedItem?: IPairedItemData[],
+): Promise<INodeExecutionData[]> {
 	const elements: INodeExecutionData[] = [];
 	for (const record of records) {
 		const element: INodeExecutionData = { json: {}, binary: {} };
@@ -879,16 +910,13 @@ export async function downloadFiles(this: IExecuteFunctions | IPollFunctions, re
 			if (record.properties[key].type === 'files') {
 				if (record.properties[key].files.length) {
 					for (const [index, file] of record.properties[key].files.entries()) {
-						const data = await notionApiRequest.call(
+						const data = await downloadFile.call(
 							this,
-							'GET',
-							'',
-							{},
-							{},
-							file?.file?.url as string || file?.external?.url as string,
-							{ json: false, encoding: null },
+							(file?.file?.url as string) || (file?.external?.url as string),
 						);
-						element.binary![`${key}_${index}`] = await this.helpers.prepareBinaryData(data as Buffer);
+						element.binary![`${key}_${index}`] = await this.helpers.prepareBinaryData(
+							data as Buffer,
+						);
 					}
 				}
 			}
@@ -910,16 +938,42 @@ export function extractPageId(page = '') {
 	return page;
 }
 
-export function extractDatabaseId(database: string) {
-	if (database.includes('?v=')) {
-		const data = database.split('?v=')[0].split('/');
+export function getPageId(this: IExecuteFunctions, i: number) {
+	const page = this.getNodeParameter('pageId', i, {}) as INodeParameterResourceLocator;
+	let pageId = '';
+
+	if (page.value && typeof page.value === 'string') {
+		if (page.mode === 'id') {
+			pageId = page.value;
+		} else if (page.value.includes('p=')) {
+			// e.g https://www.notion.so/xxxxx?v=xxxxx&p=xxxxx&pm=s or https://www.notion.com/xxxxx?v=xxxxx&p=xxxxx&pm=s
+			pageId = new URLSearchParams(page.value).get('p') || '';
+		} else {
+			// e.g https://www.notion.so/page_name-xxxxx or https://www.notion.com/page_name-xxxxx
+			pageId = page.value.match(databasePageUrlValidationRegexp)?.[1] || '';
+		}
+	}
+
+	if (!pageId) {
+		throw new NodeOperationError(
+			this.getNode(),
+			'Could not extract page ID from URL: ' + page.value,
+		);
+	}
+
+	return pageId;
+}
+
+export function extractResourceId(resource: string): string {
+	if (resource.includes('?v=')) {
+		const data = resource.split('?v=')[0].split('/');
 		const index = data.length - 1;
 		return data[index];
-	} else if (database.includes('/')) {
-		const index = database.split('/').length - 1;
-		return database.split('/')[index];
+	} else if (resource.includes('/')) {
+		const index = resource.split('/').length - 1;
+		return resource.split('/')[index];
 	} else {
-		return database;
+		return resource;
 	}
 }
 
@@ -1075,8 +1129,7 @@ export function extractDatabaseMentionRLC(blockValues: IDataObject[]) {
 				if (txt.textType === 'mention' && txt.mentionType === 'database') {
 					if (typeof txt.database === 'object' && txt.database.__rl) {
 						if (txt.database.__regex) {
-							const regex = new RegExp(txt.database.__regex);
-							const extracted = regex.exec(txt.database.value);
+							const extracted = safeRegex.exec(txt.database.__regex, txt.database.value);
 							txt.database = extracted![1];
 						} else {
 							txt.database = txt.database.value;
@@ -1147,8 +1200,7 @@ export function extractBlockId(this: IExecuteFunctions, nodeVersion: number, ite
 			const match = (blockIdRLCData.value as string).match(blockRegex);
 
 			if (match === null) {
-				const pageRegex =
-					/(?:https|http):\/\/www\.notion\.so\/(?:[a-z0-9-]{2,}\/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})/;
+				const pageRegex = new RegExp(blockUrlExtractionRegexp);
 				const pageMatch = (blockIdRLCData.value as string).match(pageRegex);
 
 				if (pageMatch === null) {
@@ -1170,3 +1222,17 @@ export function extractBlockId(this: IExecuteFunctions, nodeVersion: number, ite
 
 	return blockId;
 }
+
+export const prepareNotionError = (node: INode, error: Error, itemIndex: number) => {
+	if (error instanceof NodeApiError) {
+		set(error, 'context.itemIndex', itemIndex);
+		return error;
+	}
+
+	if (error instanceof NodeOperationError && error?.context?.itemIndex === undefined) {
+		set(error, 'context.itemIndex', itemIndex);
+		return error;
+	}
+
+	return new NodeOperationError(node, error, { itemIndex });
+};

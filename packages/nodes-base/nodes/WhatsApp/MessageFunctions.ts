@@ -7,8 +7,9 @@ import type {
 	INodeExecutionData,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestPath } from 'n8n-workflow';
 
+import { WHATSAPP_BASE_URL } from './GenericFunctions';
 import { getUploadFormData } from './MediaFunctions';
 
 interface WhatsAppApiError {
@@ -66,8 +67,8 @@ export async function mediaUploadFromItem(
 	const phoneNumberId = this.getNodeParameter('phoneNumberId') as string;
 
 	const result = (await this.helpers.httpRequestWithAuthentication.call(this, 'whatsAppApi', {
-		url: `/${phoneNumberId}/media`,
-		baseURL: requestOptions.baseURL,
+		url: requestPath`/${phoneNumberId}/media`,
+		baseURL: WHATSAPP_BASE_URL,
 		method: 'POST',
 		body: uploadData.formData,
 	})) as IDataObject;
@@ -169,12 +170,13 @@ export async function componentsRequest(
 	return requestOptions;
 }
 
+export const sanitizePhoneNumber = (phoneNumber: string) => phoneNumber.replace(/[\-\(\)\+]/g, '');
+
 export async function cleanPhoneNumber(
 	this: IExecuteSingleFunctions,
 	requestOptions: IHttpRequestOptions,
 ): Promise<IHttpRequestOptions> {
-	let phoneNumber = this.getNodeParameter('recipientPhoneNumber') as string;
-	phoneNumber = phoneNumber.replace(/[\-\(\)\+]/g, '');
+	const phoneNumber = sanitizePhoneNumber(this.getNodeParameter('recipientPhoneNumber') as string);
 
 	if (!requestOptions.body) {
 		requestOptions.body = {};

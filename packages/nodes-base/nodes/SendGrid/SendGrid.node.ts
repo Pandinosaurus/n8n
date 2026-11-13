@@ -1,23 +1,25 @@
-import type {
-	IDataObject,
-	IExecuteFunctions,
-	IHttpRequestMethods,
-	ILoadOptionsFunctions,
-	INodeExecutionData,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeDescription,
+import moment from 'moment-timezone';
+import {
+	NodeConnectionTypes,
+	type IDataObject,
+	type IExecuteFunctions,
+	type IHttpRequestMethods,
+	type ILoadOptionsFunctions,
+	type INodeExecutionData,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeDescription,
+	type RequestPath,
+	requestPath,
 } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
-import { listFields, listOperations } from './ListDescription';
+import { escapeSgqlLikeValue } from '@utils/query-escaping';
 
 import { contactFields, contactOperations } from './ContactDescription';
-
+import { sendGridApiRequest, sendGridApiRequestAllItems } from './GenericFunctions';
+import { listFields, listOperations } from './ListDescription';
 import type { SendMailBody } from './MailDescription';
 import { mailFields, mailOperations } from './MailDescription';
-
-import { sendGridApiRequest, sendGridApiRequestAllItems } from './GenericFunctions';
 
 export class SendGrid implements INodeType {
 	description: INodeTypeDescription = {
@@ -31,8 +33,9 @@ export class SendGrid implements INodeType {
 		defaults: {
 			name: 'SendGrid',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'sendGridApi',
@@ -80,7 +83,7 @@ export class SendGrid implements INodeType {
 				const returnData: INodePropertyOptions[] = [];
 				const { custom_fields } = await sendGridApiRequest.call(
 					this,
-					'/marketing/field_definitions',
+					requestPath`/marketing/field_definitions`,
 					'GET',
 					{},
 					{},
@@ -100,7 +103,7 @@ export class SendGrid implements INodeType {
 				const returnData: INodePropertyOptions[] = [];
 				const lists = await sendGridApiRequestAllItems.call(
 					this,
-					'/marketing/lists',
+					requestPath`/marketing/lists`,
 					'GET',
 					'result',
 					{},
@@ -117,7 +120,7 @@ export class SendGrid implements INodeType {
 			async getTemplateIds(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const responseData = await sendGridApiRequest.call(
 					this,
-					'/templates',
+					requestPath`/templates`,
 					'GET',
 					{},
 					{ generations: 'dynamic' },
@@ -146,11 +149,11 @@ export class SendGrid implements INodeType {
 					try {
 						const returnAll = this.getNodeParameter('returnAll', i);
 						const filters = this.getNodeParameter('filters', i);
-						let endpoint = '/marketing/contacts';
+						let endpoint = requestPath`/marketing/contacts`;
 						let method: IHttpRequestMethods = 'GET';
 						const body: IDataObject = {};
 						if (filters.query && filters.query !== '') {
-							endpoint = '/marketing/contacts/search';
+							endpoint = requestPath`/marketing/contacts/search`;
 							method = 'POST';
 							Object.assign(body, { query: filters.query });
 						}
@@ -186,7 +189,7 @@ export class SendGrid implements INodeType {
 			}
 			if (operation === 'get') {
 				const by = this.getNodeParameter('by', 0) as string;
-				let endpoint;
+				let endpoint: RequestPath;
 				let method: IHttpRequestMethods;
 				const body: IDataObject = {};
 				for (let i = 0; i < length; i++) {
@@ -194,12 +197,14 @@ export class SendGrid implements INodeType {
 						if (by === 'id') {
 							method = 'GET';
 							const contactId = this.getNodeParameter('contactId', i) as string;
-							endpoint = `/marketing/contacts/${contactId}`;
+							endpoint = requestPath`/marketing/contacts/${contactId}`;
 						} else {
 							const email = this.getNodeParameter('email', i) as string;
-							endpoint = '/marketing/contacts/search';
+							endpoint = requestPath`/marketing/contacts/search`;
 							method = 'POST';
-							Object.assign(body, { query: `email LIKE '${email}' ` });
+							Object.assign(body, {
+								query: `email LIKE '${escapeSgqlLikeValue(email)}' `,
+							});
 						}
 						responseData = await sendGridApiRequest.call(this, endpoint, method, body, qs);
 						responseData = responseData.result || responseData;
@@ -298,7 +303,7 @@ export class SendGrid implements INodeType {
 					}
 					responseData = await sendGridApiRequest.call(
 						this,
-						'/marketing/contacts',
+						requestPath`/marketing/contacts`,
 						'PUT',
 						{ list_ids: lists, contacts },
 						qs,
@@ -322,7 +327,7 @@ export class SendGrid implements INodeType {
 						qs.ids = (this.getNodeParameter('ids', i) as string).replace(/\s/g, '');
 						responseData = await sendGridApiRequest.call(
 							this,
-							'/marketing/contacts',
+							requestPath`/marketing/contacts`,
 							'DELETE',
 							{},
 							qs,
@@ -354,7 +359,7 @@ export class SendGrid implements INodeType {
 						const returnAll = this.getNodeParameter('returnAll', i);
 						responseData = await sendGridApiRequestAllItems.call(
 							this,
-							'/marketing/lists',
+							requestPath`/marketing/lists`,
 							'GET',
 							'result',
 							{},
@@ -390,7 +395,7 @@ export class SendGrid implements INodeType {
 						qs.contact_sample = this.getNodeParameter('contactSample', i) as boolean;
 						responseData = await sendGridApiRequest.call(
 							this,
-							`/marketing/lists/${listId}`,
+							requestPath`/marketing/lists/${listId}`,
 							'GET',
 							{},
 							qs,
@@ -420,7 +425,7 @@ export class SendGrid implements INodeType {
 						const name = this.getNodeParameter('name', i) as string;
 						responseData = await sendGridApiRequest.call(
 							this,
-							'/marketing/lists',
+							requestPath`/marketing/lists`,
 							'POST',
 							{ name },
 							qs,
@@ -451,7 +456,7 @@ export class SendGrid implements INodeType {
 						qs.delete_contacts = this.getNodeParameter('deleteContacts', i) as boolean;
 						responseData = await sendGridApiRequest.call(
 							this,
-							`/marketing/lists/${listId}`,
+							requestPath`/marketing/lists/${listId}`,
 							'DELETE',
 							{},
 							qs,
@@ -482,7 +487,7 @@ export class SendGrid implements INodeType {
 						const listId = this.getNodeParameter('listId', i) as string;
 						responseData = await sendGridApiRequest.call(
 							this,
-							`/marketing/lists/${listId}`,
+							requestPath`/marketing/lists/${listId}`,
 							'PATCH',
 							{ name },
 							qs,
@@ -525,6 +530,7 @@ export class SendGrid implements INodeType {
 							attachments,
 							categories,
 							ipPoolName,
+							replyToEmail,
 						} = this.getNodeParameter('additionalFields', i) as {
 							bccEmail: string;
 							ccEmail: string;
@@ -534,6 +540,7 @@ export class SendGrid implements INodeType {
 							attachments: string;
 							categories: string;
 							ipPoolName: string;
+							replyToEmail: string;
 						};
 
 						const body: SendMailBody = {
@@ -631,9 +638,22 @@ export class SendGrid implements INodeType {
 							body.personalizations[0].send_at = moment.tz(sendAt, timezone).unix();
 						}
 
-						const data = await sendGridApiRequest.call(this, '/mail/send', 'POST', body, qs, {
-							resolveWithFullResponse: true,
-						});
+						if (replyToEmail) {
+							body.reply_to_list = replyToEmail
+								.split(',')
+								.map((entry) => ({ email: entry.trim() }));
+						}
+
+						const data = await sendGridApiRequest.call(
+							this,
+							requestPath`/mail/send`,
+							'POST',
+							body,
+							qs,
+							{
+								resolveWithFullResponse: true,
+							},
+						);
 
 						const executionData = this.helpers.constructExecutionMetaData(
 							this.helpers.returnJsonArray({ messageId: data.headers['x-message-id'] }),

@@ -7,6 +7,7 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { pushcutApiRequest } from './GenericFunctions';
 
@@ -23,8 +24,9 @@ export class Pushcut implements INodeType {
 		defaults: {
 			name: 'Pushcut',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'pushcutApi',
@@ -70,7 +72,7 @@ export class Pushcut implements INodeType {
 				name: 'notificationName',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getNotifications',
 				},
@@ -104,7 +106,7 @@ export class Pushcut implements INodeType {
 						},
 						default: [],
 						description:
-							'List of devices this notification is sent to. (default is all devices). Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'List of devices this notification is sent to. (default is all devices). Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Input',
@@ -138,7 +140,7 @@ export class Pushcut implements INodeType {
 			// select them easily
 			async getDevices(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const devices = await pushcutApiRequest.call(this, 'GET', '/devices');
+				const devices = await pushcutApiRequest.call(this, 'GET', requestPath`/devices`);
 				for (const device of devices) {
 					returnData.push({
 						name: device.id,
@@ -151,7 +153,11 @@ export class Pushcut implements INodeType {
 			// select them easily
 			async getNotifications(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const notifications = await pushcutApiRequest.call(this, 'GET', '/notifications');
+				const notifications = await pushcutApiRequest.call(
+					this,
+					'GET',
+					requestPath`/notifications`,
+				);
 				for (const notification of notifications) {
 					returnData.push({
 						name: notification.title,
@@ -184,7 +190,7 @@ export class Pushcut implements INodeType {
 					responseData = await pushcutApiRequest.call(
 						this,
 						'POST',
-						`/notifications/${encodeURI(notificationName)}`,
+						requestPath`/notifications/${notificationName}`,
 						body,
 					);
 				}

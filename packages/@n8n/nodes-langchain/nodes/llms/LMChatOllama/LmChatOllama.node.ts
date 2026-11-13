@@ -1,21 +1,28 @@
-/* eslint-disable n8n-nodes-base/node-dirname-against-convention */
+import type { ChatOllamaInput } from '@langchain/ollama';
+import { ChatOllama } from '@langchain/ollama';
 import {
-	NodeConnectionType,
-	type IExecuteFunctions,
+	makeN8nLlmFailedAttemptHandler,
+	N8nLlmTracing,
+	proxyFetch,
+	getConnectionHintNoticeField,
+} from '@n8n/ai-utilities';
+import {
+	assertCredentialAllowsUrl,
+	NodeConnectionTypes,
 	type INodeType,
 	type INodeTypeDescription,
+	type ISupplyDataFunctions,
 	type SupplyData,
 } from 'n8n-workflow';
 
-import { ChatOllama } from '@langchain/community/chat_models/ollama';
-import { logWrapper } from '../../../utils/logWrapper';
-import { getConnectionHintNoticeField } from '../../../utils/sharedFields';
+import { wrapChatModelMessageInput } from '@utils/chatModelMessageWrapper';
+
 import { ollamaModel, ollamaOptions, ollamaDescription } from '../LMOllama/description';
 
 export class LmChatOllama implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Ollama Chat Model',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-name-miscased
+
 		name: 'lmChatOllama',
 		icon: 'file:ollama.svg',
 		group: ['transform'],
@@ -27,7 +34,8 @@ export class LmChatOllama implements INodeType {
 		codex: {
 			categories: ['AI'],
 			subcategories: {
-				AI: ['Language Models'],
+				AI: ['Language Models', 'Root Nodes'],
+				'Language Models': ['Chat Models (Recommended)'],
 			},
 			resources: {
 				primaryDocumentation: [
@@ -37,33 +45,55 @@ export class LmChatOllama implements INodeType {
 				],
 			},
 		},
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-inputs-wrong-regular-node
+
 		inputs: [],
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-outputs-wrong
-		outputs: [NodeConnectionType.AiLanguageModel],
+
+		outputs: [NodeConnectionTypes.AiLanguageModel],
 		outputNames: ['Model'],
 		...ollamaDescription,
 		properties: [
-			getConnectionHintNoticeField([NodeConnectionType.AiChain, NodeConnectionType.AiAgent]),
+			getConnectionHintNoticeField([NodeConnectionTypes.AiChain, NodeConnectionTypes.AiAgent]),
 			ollamaModel,
 			ollamaOptions,
 		],
 	};
 
-	async supplyData(this: IExecuteFunctions, itemIndex: number): Promise<SupplyData> {
+	async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData> {
 		const credentials = await this.getCredentials('ollamaApi');
+		const baseUrl = credentials.baseUrl as string;
+
+		assertCredentialAllowsUrl({
+			node: this.getNode(),
+			credentialData: credentials,
+			url: baseUrl,
+			surface: 'Ollama',
+		});
 
 		const modelName = this.getNodeParameter('model', itemIndex) as string;
-		const options = this.getNodeParameter('options', itemIndex, {}) as object;
+		const options = this.getNodeParameter('options', itemIndex, {}) as ChatOllamaInput;
+		const headers = credentials.apiKey
+			? {
+					Authorization: `Bearer ${credentials.apiKey as string}`,
+				}
+			: undefined;
+
+		const egressFilter = this.helpers.getSecureEgressFilter();
+		const fetchWithTimeout = async (input: RequestInfo | URL, init?: RequestInit) =>
+			await proxyFetch({ input, init, egressFilter });
 
 		const model = new ChatOllama({
-			baseUrl: credentials.baseUrl as string,
-			model: modelName,
 			...options,
+			baseUrl,
+			model: modelName,
+			format: options.format === 'default' ? undefined : options.format,
+			callbacks: [new N8nLlmTracing(this)],
+			onFailedAttempt: makeN8nLlmFailedAttemptHandler(this),
+			headers,
+			fetch: fetchWithTimeout,
 		});
 
 		return {
-			response: logWrapper(model, this),
+			response: wrapChatModelMessageInput(model),
 		};
 	}
 }

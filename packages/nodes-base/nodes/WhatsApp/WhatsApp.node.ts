@@ -1,7 +1,34 @@
-import type { INodeType, INodeTypeDescription } from 'n8n-workflow';
+import type {
+	IExecuteFunctions,
+	IHttpRequestOptions,
+	ILoadOptionsFunctions,
+	INodePropertyOptions,
+	INodeType,
+	INodeTypeDescription,
+	WithRequestTarget,
+} from 'n8n-workflow';
+import {
+	NodeConnectionTypes,
+	NodeOperationError,
+	requestPath,
+	SEND_AND_WAIT_OPERATION,
+} from 'n8n-workflow';
 
-import { messageFields, messageTypeFields } from './MessagesDescription';
+import { createMessage, WHATSAPP_BASE_URL } from './GenericFunctions';
 import { mediaFields, mediaTypeFields } from './MediaDescription';
+import { sanitizePhoneNumber } from './MessageFunctions';
+import { messageFields, messageTypeFields } from './MessagesDescription';
+import type { WhatsAppTemplate, WhatsAppTemplateListResponse } from './types';
+import { configureWaitTillDate } from '../../utils/sendAndWait/configureWaitTillDate.util';
+import { sendAndWaitWebhooksDescription } from '../../utils/sendAndWait/descriptions';
+import {
+	getSendAndWaitConfig,
+	getSendAndWaitProperties,
+	SEND_AND_WAIT_WAITING_TOOLTIP,
+	sendAndWaitWebhook,
+} from '../../utils/sendAndWait/utils';
+
+const WHATSAPP_CREDENTIALS_TYPE = 'whatsAppApi';
 
 export class WhatsApp implements INodeType {
 	description: INodeTypeDescription = {
@@ -9,22 +36,26 @@ export class WhatsApp implements INodeType {
 		name: 'whatsApp',
 		icon: 'file:whatsapp.svg',
 		group: ['output'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		subtitle: '={{ $parameter["resource"] + ": " + $parameter["operation"] }}',
 		description: 'Access WhatsApp API',
 		defaults: {
 			name: 'WhatsApp Business Cloud',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
+		waitingNodeTooltip: SEND_AND_WAIT_WAITING_TOOLTIP,
+		webhooks: sendAndWaitWebhooksDescription,
 		credentials: [
 			{
-				name: 'whatsAppApi',
+				name: WHATSAPP_CREDENTIALS_TYPE,
 				required: true,
 			},
 		],
 		requestDefaults: {
-			baseURL: 'https://graph.facebook.com/v13.0/',
+			baseURL: WHATSAPP_BASE_URL,
 		},
 		properties: [
 			{
@@ -48,6 +79,94 @@ export class WhatsApp implements INodeType {
 			...mediaFields,
 			...messageTypeFields,
 			...mediaTypeFields,
+			...getSendAndWaitProperties([], 'message', undefined, {
+				noButtonStyle: true,
+				defaultApproveLabel: '✓ Approve',
+				defaultDisapproveLabel: '✗ Decline',
+			}).filter((p) => p.name !== 'subject'),
 		],
+	};
+
+	webhook = sendAndWaitWebhook;
+
+	methods = {
+		loadOptions: {
+			async getTemplates(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				const credentials = await this.getCredentials(WHATSAPP_CREDENTIALS_TYPE);
+				if (typeof credentials.businessAccountId !== 'string') return [];
+
+				const templates: WhatsAppTemplate[] = [];
+				let after: string | undefined;
+
+				do {
+					const response = (await this.helpers.httpRequestWithAuthentication.call(
+						this,
+						WHATSAPP_CREDENTIALS_TYPE,
+						{
+							baseURL: WHATSAPP_BASE_URL,
+							url: requestPath`${credentials.businessAccountId}/message_templates`,
+							method: 'GET',
+							qs: {
+								fields: 'name,language',
+								...(after ? { after } : {}),
+							},
+						},
+					)) as WhatsAppTemplateListResponse;
+
+					templates.push(...response.data);
+					after = response.paging?.next ? response.paging.cursors?.after : undefined;
+				} while (after);
+
+				return templates
+					.map(({ name, language }) => ({
+						name: `${name} - ${language}`,
+						value: `${name}|${language}`,
+					}))
+					.sort((a, b) => {
+						const aName = a.name.toLowerCase();
+						const bName = b.name.toLowerCase();
+						return aName < bName ? -1 : aName > bName ? 1 : 0;
+					});
+			},
+		},
+	};
+
+	customOperations = {
+		message: {
+			async [SEND_AND_WAIT_OPERATION](this: IExecuteFunctions) {
+				const phoneNumberId = this.getNodeParameter('phoneNumberId', 0) as string;
+
+				const recipientPhoneNumber = sanitizePhoneNumber(
+					this.getNodeParameter('recipientPhoneNumber', 0) as string,
+				);
+
+				const config = getSendAndWaitConfig(this);
+				const instanceId = this.getInstanceId();
+
+				try {
+					const options: WithRequestTarget<IHttpRequestOptions> = createMessage(
+						config,
+						phoneNumberId,
+						recipientPhoneNumber,
+						instanceId,
+					);
+					await this.helpers.httpRequestWithAuthentication.call(
+						this,
+						WHATSAPP_CREDENTIALS_TYPE,
+						options,
+					);
+				} catch (error) {
+					if (this.continueOnFail()) {
+						return [[{ json: { error: (error as Error).message } }]];
+					}
+					throw new NodeOperationError(this.getNode(), error as Error);
+				}
+
+				const waitTill = configureWaitTillDate(this);
+
+				await this.putExecutionToWait(waitTill);
+				return [this.getInputData()];
+			},
+		},
 	};
 }

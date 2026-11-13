@@ -5,17 +5,21 @@ import type {
 	ILoadOptionsFunctions,
 	IRequestOptions,
 	JsonObject,
+	RequestPath,
+	RequestUrl,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeOperationError, requestUrl } from 'n8n-workflow';
+
 import { getGoogleAccessToken } from '../../../GenericFunctions';
 
-export async function googleApiRequest(
+export async function googleBigQueryApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
-	uri?: string,
+	uri?: RequestUrl,
 	headers: IDataObject = {},
 ) {
 	const authenticationMethod = this.getNodeParameter(
@@ -24,14 +28,14 @@ export async function googleApiRequest(
 		'serviceAccount',
 	) as string;
 
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		headers: {
 			'Content-Type': 'application/json',
 		},
 		method,
 		body,
 		qs,
-		uri: uri || `https://bigquery.googleapis.com/bigquery${resource}`,
+		uri: uri ?? requestUrl`https://bigquery.googleapis.com/bigquery${resource}`,
 		json: true,
 	};
 	try {
@@ -67,25 +71,26 @@ export async function googleApiRequest(
 	}
 }
 
-export async function googleApiRequestAllItems(
+export async function googleBigQueryApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
-	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	query: IDataObject = {},
 ) {
-	const returnData: IDataObject[] = [];
+	let rows: IDataObject[] = [];
 
 	let responseData;
-	query.maxResults = 10000;
+	if (query.maxResults === undefined) {
+		query.maxResults = 1000;
+	}
 
 	do {
-		responseData = await googleApiRequest.call(this, method, endpoint, body, query);
+		responseData = await googleBigQueryApiRequest.call(this, method, endpoint, body, query);
 
 		query.pageToken = responseData.pageToken;
-		returnData.push.apply(returnData, responseData[propertyName] as IDataObject[]);
+		rows = rows.concat((responseData.rows as IDataObject[]) ?? []);
 	} while (responseData.pageToken !== undefined && responseData.pageToken !== '');
 
-	return returnData;
+	return { ...(responseData || {}), rows };
 }

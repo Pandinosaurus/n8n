@@ -4,6 +4,8 @@ import type {
 	INodeProperties,
 	IExecuteFunctions,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
 import {
 	generatePairedItemData,
 	updateDisplayOptions,
@@ -39,7 +41,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -87,7 +89,7 @@ export const description = updateDisplayOptions(displayOptions, properties);
 export async function execute(this: IExecuteFunctions): Promise<INodeExecutionData[]> {
 	const returnAll = this.getNodeParameter('returnAll', 0);
 
-	const endpoint = 'meta/bases';
+	const endpoint = requestPath`meta/bases`;
 	let bases: IDataObject[] = [];
 
 	if (returnAll) {

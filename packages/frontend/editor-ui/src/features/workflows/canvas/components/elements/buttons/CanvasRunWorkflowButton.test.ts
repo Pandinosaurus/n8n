@@ -1,0 +1,245 @@
+import { createComponentRenderer } from '@/__tests__/render';
+import { queryTooltip, getTooltip, hoverTooltipTrigger } from '@/__tests__/utils';
+import { waitFor } from '@testing-library/vue';
+import CanvasRunWorkflowButton from './CanvasRunWorkflowButton.vue';
+import userEvent from '@testing-library/user-event';
+import { fireEvent } from '@testing-library/vue';
+import { createTestNode } from '@/__tests__/mocks';
+import {
+	CHAT_TRIGGER_NODE_TYPE,
+	MANUAL_CHAT_TRIGGER_NODE_TYPE,
+	MANUAL_TRIGGER_NODE_TYPE,
+	SCHEDULE_TRIGGER_NODE_TYPE,
+} from '@/app/constants';
+import { createPinia, setActivePinia } from 'pinia';
+import type { INodeTypeDescription } from 'n8n-workflow';
+
+describe('CanvasRunWorkflowButton', () => {
+	const renderComponent = createComponentRenderer(CanvasRunWorkflowButton, {
+		props: {
+			triggerNodes: [createTestNode({ type: MANUAL_CHAT_TRIGGER_NODE_TYPE })],
+			getNodeType: () => null,
+		},
+	});
+
+	beforeEach(() => {
+		setActivePinia(createPinia());
+	});
+
+	it('should render correctly', () => {
+		const wrapper = renderComponent({
+			global: {
+				stubs: {
+					N8nButton: { template: '<n8n-button-stub><slot /></n8n-button-stub>' },
+				},
+			},
+		});
+
+		expect(wrapper.html()).toMatchSnapshot();
+	});
+
+	it('should render different label when executing', () => {
+		const wrapper = renderComponent({
+			props: {
+				executing: true,
+			},
+		});
+
+		expect(wrapper.getByText('Executing workflow')).toBeInTheDocument();
+	});
+
+	it('should render different label when executing and waiting for webhook', () => {
+		const wrapper = renderComponent({
+			props: {
+				executing: true,
+				waitingForWebhook: true,
+			},
+		});
+
+		expect(wrapper.getByText('Waiting for trigger event')).toBeInTheDocument();
+	});
+
+	it('should show tooltip when not executing', async () => {
+		const wrapper = renderComponent({ props: { executing: false } });
+		const button = wrapper.getByRole('button');
+
+		// Verify tooltip shows execution label and shortcut on hover
+		await hoverTooltipTrigger(button);
+		// Tooltip has showAfter of 500ms, wait for it
+		await new Promise((r) => setTimeout(r, 600));
+		await waitFor(() => expect(getTooltip()).toHaveTextContent('Execute workflow'));
+	});
+
+	it('should not show tooltip when executing', async () => {
+		const wrapper = renderComponent({ props: { executing: true } });
+		await userEvent.hover(wrapper.getByRole('button'));
+
+		// Wait longer than showAfter (500ms) then verify tooltip didn't appear
+		await new Promise((r) => setTimeout(r, 600));
+		expect(queryTooltip()).not.toBeInTheDocument();
+	});
+
+	it('should render split button if multiple triggers are available', () => {
+		const wrapper = renderComponent({
+			props: {
+				selectedTriggerNodeName: 'A',
+				triggerNodes: [
+					createTestNode({ name: 'A', type: MANUAL_TRIGGER_NODE_TYPE }),
+					createTestNode({ name: 'B', type: SCHEDULE_TRIGGER_NODE_TYPE }),
+				],
+			},
+		});
+
+		expect(wrapper.container.textContent?.trim()).toBe('Execute');
+		expect(wrapper.queryByLabelText('Select trigger node')).toBeInTheDocument();
+	});
+
+	it('should not render split button if there is only one trigger that is not disabled nor a chat trigger', () => {
+		const wrapper = renderComponent({
+			props: {
+				selectedTriggerNodeName: 'A',
+				triggerNodes: [
+					createTestNode({ name: 'A', type: MANUAL_TRIGGER_NODE_TYPE }),
+					createTestNode({ name: 'B', type: MANUAL_TRIGGER_NODE_TYPE, disabled: true }),
+					createTestNode({ name: 'C', type: CHAT_TRIGGER_NODE_TYPE }),
+				],
+			},
+		});
+
+		expect(wrapper.container.textContent?.trim()).toBe('Execute');
+		expect(wrapper.queryByLabelText('Select trigger node')).not.toBeInTheDocument();
+	});
+
+	it('should show available triggers in the ordering of coordinate on the canvas when chevron icon is clicked', async () => {
+		const wrapper = renderComponent({
+			props: {
+				selectedTriggerNodeName: 'A',
+				triggerNodes: [
+					createTestNode({ name: 'A', type: MANUAL_TRIGGER_NODE_TYPE, position: [1, 1] }),
+					createTestNode({ name: 'B', type: MANUAL_TRIGGER_NODE_TYPE, position: [1, 0] }),
+					createTestNode({ name: 'C', type: MANUAL_TRIGGER_NODE_TYPE, position: [0, 0] }),
+					createTestNode({ name: 'D', type: MANUAL_TRIGGER_NODE_TYPE, position: [0, 1] }),
+				],
+			},
+		});
+
+		const chevron = (await wrapper.findAllByRole('button'))[1];
+
+		await fireEvent.click(chevron);
+
+		const menuItems = await wrapper.findAllByRole('menuitem');
+
+		expect(menuItems).toHaveLength(4);
+		expect(menuItems[0]).toHaveTextContent('From C');
+		expect(menuItems[1]).toHaveTextContent('From B');
+		expect(menuItems[2]).toHaveTextContent('From D');
+		expect(menuItems[3]).toHaveTextContent('From A');
+	});
+
+	it('should show keyboard shortcut tooltip when disabled', async () => {
+		const wrapper = renderComponent({
+			props: {
+				disabled: true,
+				triggerNodes: [createTestNode({ type: MANUAL_TRIGGER_NODE_TYPE })],
+			},
+		});
+
+		const button = wrapper.getByRole('button');
+		expect(button).toBeDisabled();
+
+		// Should show the keyboard shortcut tooltip, not a disabled reason
+		await hoverTooltipTrigger(button);
+		await new Promise((r) => setTimeout(r, 600));
+		await waitFor(() => expect(getTooltip()).toHaveTextContent('Execute workflow'));
+	});
+
+	describe('disabled reason', () => {
+		const reason = "Uses Alice's Gmail. Only Alice Chen can run or publish with it.";
+
+		// The reason replaces the shortcut: it says why the click does nothing.
+		it('should show the reason instead of the label and the shortcut', async () => {
+			const wrapper = renderComponent({ props: { disabled: true, disabledReason: reason } });
+
+			await hoverTooltipTrigger(wrapper.getByRole('button'));
+			await new Promise((r) => setTimeout(r, 600));
+
+			await waitFor(() => expect(getTooltip()).toHaveTextContent(reason));
+			expect(getTooltip()).not.toHaveTextContent('Execute workflow');
+			expect(getTooltip()).not.toHaveTextContent('↵');
+		});
+
+		// Both of these hide the tooltip otherwise, and the reason has to survive them.
+		it.each([
+			['executing', { executing: true }],
+			['hideTooltip', { hideTooltip: true }],
+		])('should show the reason while %s suppresses the tooltip', async (_name, props) => {
+			const wrapper = renderComponent({ props: { ...props, disabledReason: reason } });
+
+			await hoverTooltipTrigger(wrapper.getByRole('button'));
+			await new Promise((r) => setTimeout(r, 600));
+
+			await waitFor(() => expect(getTooltip()).toHaveTextContent(reason));
+		});
+	});
+
+	it('should select and execute the trigger picked from the dropdown', async () => {
+		const wrapper = renderComponent({
+			props: {
+				selectedTriggerNodeName: 'A',
+				triggerNodes: [
+					createTestNode({ name: 'A', type: MANUAL_TRIGGER_NODE_TYPE }),
+					createTestNode({ name: 'B', type: MANUAL_TRIGGER_NODE_TYPE }),
+				],
+			},
+		});
+
+		const [, chevron] = await wrapper.findAllByRole('button');
+		await fireEvent.click(chevron);
+		const menuItems = await wrapper.findAllByRole('menuitem');
+		await fireEvent.click(menuItems[1]);
+		expect(wrapper.emitted('selectTriggerNode')).toEqual([['B']]);
+		expect(wrapper.emitted('execute')).toEqual([[]]);
+	});
+
+	describe('trigger icon treatment on the secondary button', () => {
+		const imageIconType = {
+			name: 'test.imageTrigger',
+			displayName: 'Image Trigger',
+			iconUrl: 'icons/image-trigger.svg',
+		} as unknown as INodeTypeDescription;
+		const fontIconType = {
+			name: 'test.fontTrigger',
+			displayName: 'Font Trigger',
+			icon: 'fa:clock',
+			iconBasePath: '',
+		} as unknown as INodeTypeDescription;
+
+		it('should add contrast to an image icon', () => {
+			const wrapper = renderComponent({
+				props: {
+					type: 'secondary',
+					triggerNodes: [createTestNode({ type: imageIconType.name })],
+					getNodeType: () => imageIconType,
+				},
+			});
+
+			expect(wrapper.getByTestId('execute-workflow-button-trigger-icon')).toHaveClass(
+				'secondaryTriggerIcon',
+			);
+		});
+
+		it('should not change a font icon', () => {
+			const wrapper = renderComponent({
+				props: {
+					type: 'secondary',
+					triggerNodes: [createTestNode({ type: fontIconType.name })],
+					getNodeType: () => fontIconType,
+				},
+			});
+
+			expect(wrapper.getByTestId('execute-workflow-button-trigger-icon')).not.toHaveClass(
+				'secondaryTriggerIcon',
+			);
+		});
+	});
+});

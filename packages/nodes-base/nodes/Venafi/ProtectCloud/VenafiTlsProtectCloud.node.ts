@@ -1,22 +1,16 @@
-import type {
-	IExecuteFunctions,
-	IDataObject,
-	ILoadOptionsFunctions,
-	INodeExecutionData,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeDescription,
+import {
+	type IExecuteFunctions,
+	type IDataObject,
+	type ILoadOptionsFunctions,
+	type INodeExecutionData,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeDescription,
+	NodeConnectionTypes,
+	requestPath,
 } from 'n8n-workflow';
 
-import { encryptPassphrase, venafiApiRequest, venafiApiRequestAllItems } from './GenericFunctions';
-
 import { certificateFields, certificateOperations } from './CertificateDescription';
-
-import {
-	certificateRequestFields,
-	certificateRequestOperations,
-} from './CertificateRequestDescription';
-
 import type {
 	ICertficateKeystoreRequest,
 	ICertficateRequest,
@@ -24,6 +18,11 @@ import type {
 	IKeyTypeParameters,
 	ISubjectAltNamesByType,
 } from './CertificateInterface';
+import {
+	certificateRequestFields,
+	certificateRequestOperations,
+} from './CertificateRequestDescription';
+import { encryptPassphrase, venafiApiRequest, venafiApiRequestAllItems } from './GenericFunctions';
 
 export class VenafiTlsProtectCloud implements INodeType {
 	description: INodeTypeDescription = {
@@ -37,8 +36,9 @@ export class VenafiTlsProtectCloud implements INodeType {
 		defaults: {
 			name: 'Venafi TLS Protect Cloud',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'venafiTlsProtectCloudApi',
@@ -77,7 +77,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 				const { applications } = await venafiApiRequest.call(
 					this,
 					'GET',
-					'/outagedetection/v1/applications',
+					requestPath`/outagedetection/v1/applications`,
 				);
 
 				for (const application of applications) {
@@ -97,7 +97,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 				const { certificateIssuingTemplateAliasIdMap } = (await venafiApiRequest.call(
 					this,
 					'GET',
-					`/outagedetection/v1/applications/${currentApplication}`,
+					requestPath`/outagedetection/v1/applications/${currentApplication}`,
 				)) as { certificateIssuingTemplateAliasIdMap: { [key: string]: string } };
 
 				for (const [templateName, templateId] of Object.entries(
@@ -124,7 +124,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 		for (let i = 0; i < length; i++) {
 			try {
 				if (resource === 'certificateRequest') {
-					//https://api.venafi.cloud/webjars/swagger-ui/index.html?configUrl=/v3/api-docs/swagger-config&urls.primaryName=outagedetection-service#//v1/certificaterequests_create
+					//https://developer.venafi.com/tlsprotectcloud/reference/certificaterequests_create
 					if (operation === 'create') {
 						const applicationId = this.getNodeParameter('applicationId', i) as string;
 						const certificateIssuingTemplateId = this.getNodeParameter(
@@ -221,7 +221,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 						responseData = await venafiApiRequest.call(
 							this,
 							'POST',
-							'/outagedetection/v1/certificaterequests',
+							requestPath`/outagedetection/v1/certificaterequests`,
 							body,
 							qs,
 						);
@@ -229,20 +229,20 @@ export class VenafiTlsProtectCloud implements INodeType {
 						responseData = responseData.certificateRequests;
 					}
 
-					//https://api.venafi.cloud/webjars/swagger-ui/index.html?configUrl=/v3/api-docs/swagger-config&urls.primaryName=outagedetection-service#//v1/certificaterequests_getById
+					//https://developer.venafi.com/tlsprotectcloud/reference/certificaterequests_getbyid
 					if (operation === 'get') {
 						const certificateId = this.getNodeParameter('certificateRequestId', i) as string;
 
 						responseData = await venafiApiRequest.call(
 							this,
 							'GET',
-							`/outagedetection/v1/certificaterequests/${certificateId}`,
+							requestPath`/outagedetection/v1/certificaterequests/${certificateId}`,
 							{},
 							qs,
 						);
 					}
 
-					//https://api.venafi.cloud/webjars/swagger-ui/index.html?configUrl=/v3/api-docs/swagger-config&urls.primaryName=outagedetection-service#//v1/certificaterequests_getAll
+					//https://developer.venafi.com/tlsprotectcloud/reference/certificaterequests_getall
 					if (operation === 'getMany') {
 						const returnAll = this.getNodeParameter('returnAll', i);
 
@@ -251,7 +251,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 								this,
 								'certificateRequests',
 								'GET',
-								'/outagedetection/v1/certificaterequests',
+								requestPath`/outagedetection/v1/certificaterequests`,
 								{},
 								qs,
 							);
@@ -260,7 +260,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 							responseData = await venafiApiRequest.call(
 								this,
 								'GET',
-								'/outagedetection/v1/certificaterequests',
+								requestPath`/outagedetection/v1/certificaterequests`,
 								{},
 								qs,
 							);
@@ -271,21 +271,21 @@ export class VenafiTlsProtectCloud implements INodeType {
 				}
 
 				if (resource === 'certificate') {
-					//https://api.venafi.cloud/webjars/swagger-ui/index.html?configUrl=%2Fv3%2Fapi-docs%2Fswagger-config&urls.primaryName=outagedetection-service#/%2Fv1/certificateretirement_deleteCertificates
+					//https://developer.venafi.com/tlsprotectcloud/reference/certificateretirement_deletecertificates
 					if (operation === 'delete') {
 						const certificateId = this.getNodeParameter('certificateId', i) as string;
 
 						responseData = await venafiApiRequest.call(
 							this,
 							'POST',
-							'/outagedetection/v1/certificates/deletion',
+							requestPath`/outagedetection/v1/certificates/deletion`,
 							{ certificateIds: [certificateId] },
 						);
 
 						responseData = responseData.certificates;
 					}
 
-					//https://api.venafi.cloud/webjars/swagger-ui/index.html?configUrl=%2Fv3%2Fapi-docs%2Fswagger-config&urls.primaryName=outagedetection-service#/
+					//https://developer.venafi.com/tlsprotectcloud/reference/certificates_getcontentsbyid
 					if (operation === 'download') {
 						const certificateId = this.getNodeParameter('certificateId', i) as string;
 						const binaryProperty = this.getNodeParameter('binaryProperty', i);
@@ -298,11 +298,10 @@ export class VenafiTlsProtectCloud implements INodeType {
 							responseData = await venafiApiRequest.call(
 								this,
 								'GET',
-								`/outagedetection/v1/certificates/${certificateId}/contents`,
+								requestPath`/outagedetection/v1/certificates/${certificateId}/contents`,
 								{},
 								qs,
-								undefined,
-								{ encoding: null, json: false, resolveWithFullResponse: true, cert: true },
+								{ encoding: null, json: false, resolveWithFullResponse: true },
 							);
 						} else {
 							const exportFormat = this.getNodeParameter('keystoreType', i) as string;
@@ -325,12 +324,12 @@ export class VenafiTlsProtectCloud implements INodeType {
 								keystorePassphrase = this.getNodeParameter('keystorePassphrase', i) as string;
 							}
 
-							const encryptedValues = (await encryptPassphrase.call(
+							const encryptedValues = await encryptPassphrase.call(
 								this,
 								certificateId,
 								privateKeyPassphrase,
 								keystorePassphrase,
-							)) as string;
+							);
 							body.encryptedPrivateKeyPassphrase = encryptedValues[0];
 							if (exportFormat === 'JKS') {
 								body.encryptedKeystorePassphrase = encryptedValues[1];
@@ -339,10 +338,9 @@ export class VenafiTlsProtectCloud implements INodeType {
 							responseData = await venafiApiRequest.call(
 								this,
 								'POST',
-								`/outagedetection/v1/certificates/${certificateId}/keystore`,
+								requestPath`/outagedetection/v1/certificates/${certificateId}/keystore`,
 								body,
 								{},
-								undefined,
 								{ encoding: null, json: false, resolveWithFullResponse: true },
 							);
 						}
@@ -369,20 +367,20 @@ export class VenafiTlsProtectCloud implements INodeType {
 						};
 					}
 
-					//https://api.venafi.cloud/webjars/swagger-ui/index.html?configUrl=%2Fv3%2Fapi-docs%2Fswagger-config&urls.primaryName=outagedetection-service#/%2Fv1/certificates_getById
+					//https://developer.venafi.com/tlsprotectcloud/reference/certificates_getbyid
 					if (operation === 'get') {
 						const certificateId = this.getNodeParameter('certificateId', i) as string;
 
 						responseData = await venafiApiRequest.call(
 							this,
 							'GET',
-							`/outagedetection/v1/certificates/${certificateId}`,
+							requestPath`/outagedetection/v1/certificates/${certificateId}`,
 							{},
 							qs,
 						);
 					}
 
-					//https://api.venafi.cloud/webjars/swagger-ui/index.html?configUrl=%2Fv3%2Fapi-docs%2Fswagger-config&urls.primaryName=outagedetection-service#/%2Fv1/certificates_getAllAsCsv
+					//https://developer.venafi.com/tlsprotectcloud/reference/certificates_getall
 					if (operation === 'getMany') {
 						const returnAll = this.getNodeParameter('returnAll', i);
 						const filters = this.getNodeParameter('filters', i);
@@ -394,7 +392,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 								this,
 								'certificates',
 								'GET',
-								'/outagedetection/v1/certificates',
+								requestPath`/outagedetection/v1/certificates`,
 								{},
 								qs,
 							);
@@ -403,7 +401,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 							responseData = await venafiApiRequest.call(
 								this,
 								'GET',
-								'/outagedetection/v1/certificates',
+								requestPath`/outagedetection/v1/certificates`,
 								{},
 								qs,
 							);
@@ -412,7 +410,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 						}
 					}
 
-					//https://docs.venafi.cloud/api/t-cloud-api-renew-cert/
+					//https://docs.venafi.cloud/api/renewing-a-certificate-api/
 					if (operation === 'renew') {
 						const applicationId = this.getNodeParameter('applicationId', i) as string;
 						const certificateIssuingTemplateId = this.getNodeParameter(
@@ -441,7 +439,7 @@ export class VenafiTlsProtectCloud implements INodeType {
 						responseData = await venafiApiRequest.call(
 							this,
 							'POST',
-							'/outagedetection/v1/certificaterequests',
+							requestPath`/outagedetection/v1/certificaterequests`,
 							body,
 							qs,
 						);

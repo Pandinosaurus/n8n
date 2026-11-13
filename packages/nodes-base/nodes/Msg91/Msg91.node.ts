@@ -5,8 +5,9 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 	IHttpRequestMethods,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { msg91ApiRequest } from './GenericFunctions';
 
@@ -14,8 +15,8 @@ export class Msg91 implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'MSG91',
 		name: 'msg91',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
-		icon: 'file:msg91.png',
+
+		icon: { light: 'file:msg91.svg', dark: 'file:msg91.dark.svg' },
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -23,8 +24,9 @@ export class Msg91 implements INodeType {
 		defaults: {
 			name: 'MSG91',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'msg91Api',
@@ -125,10 +127,9 @@ export class Msg91 implements INodeType {
 		let qs: IDataObject;
 
 		let requestMethod: IHttpRequestMethods;
-		let endpoint: string;
+		let endpoint: RequestPath;
 
 		for (let i = 0; i < items.length; i++) {
-			endpoint = '';
 			body = {};
 			qs = {};
 
@@ -142,7 +143,7 @@ export class Msg91 implements INodeType {
 					// ----------------------------------
 
 					requestMethod = 'GET';
-					endpoint = '/sendhttp.php';
+					endpoint = requestPath`/sendhttp.php`;
 
 					qs.route = 4;
 					qs.country = 0;

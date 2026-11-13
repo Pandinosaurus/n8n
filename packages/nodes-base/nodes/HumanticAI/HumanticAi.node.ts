@@ -5,17 +5,17 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { humanticAiApiRequest } from './GenericFunctions';
-
 import { profileFields, profileOperations } from './ProfileDescription';
 
 export class HumanticAi implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Humantic AI',
 		name: 'humanticAi',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
-		icon: 'file:humanticai.png',
+
+		icon: 'file:humanticai.svg',
 		group: ['output'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -23,8 +23,9 @@ export class HumanticAi implements INodeType {
 		defaults: {
 			name: 'Humantic AI',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'humanticAiApi',
@@ -74,7 +75,7 @@ export class HumanticAi implements INodeType {
 						responseData = await humanticAiApiRequest.call(
 							this,
 							'POST',
-							'/user-profile/create',
+							requestPath`/user-profile/create`,
 							{},
 							qs,
 							{
@@ -92,7 +93,7 @@ export class HumanticAi implements INodeType {
 						responseData = await humanticAiApiRequest.call(
 							this,
 							'GET',
-							'/user-profile/create',
+							requestPath`/user-profile/create`,
 							{},
 							qs,
 						);
@@ -114,7 +115,13 @@ export class HumanticAi implements INodeType {
 						qs.persona = (options.persona as string[]).join(',');
 					}
 
-					responseData = await humanticAiApiRequest.call(this, 'GET', '/user-profile', {}, qs);
+					responseData = await humanticAiApiRequest.call(
+						this,
+						'GET',
+						requestPath`/user-profile`,
+						{},
+						qs,
+					);
 					responseData = responseData.results;
 				}
 				if (operation === 'update') {
@@ -130,7 +137,7 @@ export class HumanticAi implements INodeType {
 						responseData = await humanticAiApiRequest.call(
 							this,
 							'POST',
-							'/user-profile/create',
+							requestPath`/user-profile/create`,
 							{},
 							qs,
 							{
@@ -156,7 +163,7 @@ export class HumanticAi implements INodeType {
 						responseData = await humanticAiApiRequest.call(
 							this,
 							'POST',
-							'/user-profile/create',
+							requestPath`/user-profile/create`,
 							body,
 							qs,
 						);

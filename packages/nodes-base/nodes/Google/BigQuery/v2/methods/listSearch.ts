@@ -1,5 +1,7 @@
 import type { IDataObject, ILoadOptionsFunctions, INodeListSearchResult } from 'n8n-workflow';
-import { googleApiRequest } from '../transport';
+import { requestPath } from 'n8n-workflow';
+
+import { googleBigQueryApiRequest } from '../transport';
 
 export async function searchProjects(
 	this: ILoadOptionsFunctions,
@@ -10,7 +12,13 @@ export async function searchProjects(
 		pageToken: (paginationToken as string) || undefined,
 	};
 
-	const response = await googleApiRequest.call(this, 'GET', '/v2/projects', undefined, qs);
+	const response = await googleBigQueryApiRequest.call(
+		this,
+		'GET',
+		requestPath`/v2/projects`,
+		undefined,
+		qs,
+	);
 
 	let { projects } = response;
 
@@ -45,10 +53,10 @@ export async function searchDatasets(
 		pageToken: (paginationToken as string) || undefined,
 	};
 
-	const response = await googleApiRequest.call(
+	const response = await googleBigQueryApiRequest.call(
 		this,
 		'GET',
-		`/v2/projects/${projectId}/datasets`,
+		requestPath`/v2/projects/${projectId}/datasets`,
 		undefined,
 		qs,
 	);
@@ -87,10 +95,10 @@ export async function searchTables(
 		pageToken: (paginationToken as string) || undefined,
 	};
 
-	const response = await googleApiRequest.call(
+	const response = await googleBigQueryApiRequest.call(
 		this,
 		'GET',
-		`/v2/projects/${projectId}/datasets/${datasetId}/tables`,
+		requestPath`/v2/projects/${projectId}/datasets/${datasetId}/tables`,
 		undefined,
 		qs,
 	);

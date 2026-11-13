@@ -5,8 +5,14 @@ import type {
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import {
+	NodeConnectionTypes,
+	NodeOperationError,
+	decodePathValue,
+	requestPath,
+} from 'n8n-workflow';
 
 import { gitlabApiRequest, gitlabApiRequestAllItems } from './GenericFunctions';
 
@@ -16,14 +22,16 @@ export class Gitlab implements INodeType {
 		name: 'gitlab',
 		icon: 'file:gitlab.svg',
 		group: ['input'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		description: 'Retrieve data from GitLab API',
 		defaults: {
 			name: 'GitLab',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'gitlabApi',
@@ -706,7 +714,7 @@ export class Gitlab implements INodeType {
 						resource: ['release'],
 					},
 				},
-				description: 'The ID or URL-encoded path of the project',
+				description: 'The ID or path of the project, for example <code>group/project</code>',
 			},
 			{
 				displayName: 'Tag Name',
@@ -738,7 +746,7 @@ export class Gitlab implements INodeType {
 						resource: ['release'],
 					},
 				},
-				description: 'The ID or URL-encoded path of the project',
+				description: 'The ID or path of the project, for example <code>group/project</code>',
 			},
 			{
 				displayName: 'Return All',
@@ -838,7 +846,7 @@ export class Gitlab implements INodeType {
 						resource: ['release'],
 					},
 				},
-				description: 'The ID or URL-encoded path of the project',
+				description: 'The ID or path of the project, for example <code>group/project</code>',
 			},
 			{
 				displayName: 'Tag Name',
@@ -1375,33 +1383,32 @@ export class Gitlab implements INodeType {
 		let qs: IDataObject;
 
 		let requestMethod: IHttpRequestMethods;
-		let endpoint: string;
+		let endpoint: RequestPath;
 		let returnAll = false;
 
 		const operation = this.getNodeParameter('operation', 0);
 		const resource = this.getNodeParameter('resource', 0);
 		const fullOperation = `${resource}:${operation}`;
+		const pathValue = (value: string) =>
+			this.getNode().typeVersion < 1.1 ? decodePathValue(value) : value;
 
 		for (let i = 0; i < items.length; i++) {
 			try {
 				// Reset all values
 				requestMethod = 'GET';
-				endpoint = '';
+				endpoint = requestPath``;
 				body = {};
 				qs = {};
 
 				// Request the parameters which almost all operations need
-				let owner = this.getNodeParameter('owner', i) as string;
-
-				// Replace all slashes to work with subgroups
-				owner = owner.replace(new RegExp(/\//g), '%2F');
+				const owner = pathValue(this.getNodeParameter('owner', i) as string);
 
 				let repository = '';
 				if (fullOperation !== 'user:getRepositories') {
-					repository = this.getNodeParameter('repository', i) as string;
+					repository = pathValue(this.getNodeParameter('repository', i) as string);
 				}
 
-				const baseEndpoint = `/projects/${owner}%2F${repository}`;
+				const baseEndpoint = requestPath`/projects/${`${owner}/${repository}`}`;
 
 				if (resource === 'issue') {
 					if (operation === 'create') {
@@ -1421,7 +1428,7 @@ export class Gitlab implements INodeType {
 						body.labels = labels.map((data) => data.label).join(',');
 						body.assignee_ids = assigneeIds.map((data) => data.assignee);
 
-						endpoint = `${baseEndpoint}/issues`;
+						endpoint = requestPath`${baseEndpoint}/issues`;
 					} else if (operation === 'createComment') {
 						// ----------------------------------
 						//         createComment
@@ -1432,7 +1439,7 @@ export class Gitlab implements INodeType {
 
 						body.body = this.getNodeParameter('body', i) as string;
 
-						endpoint = `${baseEndpoint}/issues/${issueNumber}/notes`;
+						endpoint = requestPath`${baseEndpoint}/issues/${issueNumber}/notes`;
 					} else if (operation === 'edit') {
 						// ----------------------------------
 						//         edit
@@ -1451,7 +1458,7 @@ export class Gitlab implements INodeType {
 							body.assignee_ids = (body.assignee_ids as IDataObject[]).map((data) => data.assignee);
 						}
 
-						endpoint = `${baseEndpoint}/issues/${issueNumber}`;
+						endpoint = requestPath`${baseEndpoint}/issues/${issueNumber}`;
 					} else if (operation === 'get') {
 						// ----------------------------------
 						//         get
@@ -1461,7 +1468,7 @@ export class Gitlab implements INodeType {
 
 						const issueNumber = this.getNodeParameter('issueNumber', i) as string;
 
-						endpoint = `${baseEndpoint}/issues/${issueNumber}`;
+						endpoint = requestPath`${baseEndpoint}/issues/${issueNumber}`;
 					} else if (operation === 'lock') {
 						// ----------------------------------
 						//         lock
@@ -1473,7 +1480,7 @@ export class Gitlab implements INodeType {
 
 						body.discussion_locked = true;
 
-						endpoint = `${baseEndpoint}/issues/${issueNumber}`;
+						endpoint = requestPath`${baseEndpoint}/issues/${issueNumber}`;
 					}
 				} else if (resource === 'release') {
 					if (operation === 'create') {
@@ -1487,7 +1494,7 @@ export class Gitlab implements INodeType {
 
 						body.tag_name = this.getNodeParameter('releaseTag', i) as string;
 
-						endpoint = `${baseEndpoint}/releases`;
+						endpoint = requestPath`${baseEndpoint}/releases`;
 					}
 					if (operation === 'delete') {
 						// ----------------------------------
@@ -1496,11 +1503,11 @@ export class Gitlab implements INodeType {
 
 						requestMethod = 'DELETE';
 
-						const id = this.getNodeParameter('projectId', i) as string;
+						const id = pathValue(this.getNodeParameter('projectId', i) as string);
 
-						const tagName = this.getNodeParameter('tag_name', i) as string;
+						const tagName = pathValue(this.getNodeParameter('tag_name', i) as string);
 
-						endpoint = `/projects/${id}/releases/${tagName}`;
+						endpoint = requestPath`/projects/${id}/releases/${tagName}`;
 					}
 					if (operation === 'get') {
 						// ----------------------------------
@@ -1509,11 +1516,11 @@ export class Gitlab implements INodeType {
 
 						requestMethod = 'GET';
 
-						const id = this.getNodeParameter('projectId', i) as string;
+						const id = pathValue(this.getNodeParameter('projectId', i) as string);
 
-						const tagName = this.getNodeParameter('tag_name', i) as string;
+						const tagName = pathValue(this.getNodeParameter('tag_name', i) as string);
 
-						endpoint = `/projects/${id}/releases/${tagName}`;
+						endpoint = requestPath`/projects/${id}/releases/${tagName}`;
 					}
 					if (operation === 'getAll') {
 						// ----------------------------------
@@ -1522,7 +1529,7 @@ export class Gitlab implements INodeType {
 
 						requestMethod = 'GET';
 
-						const id = this.getNodeParameter('projectId', i) as string;
+						const id = pathValue(this.getNodeParameter('projectId', i) as string);
 
 						qs = this.getNodeParameter('additionalFields', i, {});
 
@@ -1532,7 +1539,7 @@ export class Gitlab implements INodeType {
 							qs.per_page = this.getNodeParameter('limit', 0);
 						}
 
-						endpoint = `/projects/${id}/releases`;
+						endpoint = requestPath`/projects/${id}/releases`;
 					}
 					if (operation === 'update') {
 						// ----------------------------------
@@ -1541,16 +1548,16 @@ export class Gitlab implements INodeType {
 
 						requestMethod = 'PUT';
 
-						const id = this.getNodeParameter('projectId', i) as string;
+						const id = pathValue(this.getNodeParameter('projectId', i) as string);
 
-						const tagName = this.getNodeParameter('tag_name', i) as string;
+						const tagName = pathValue(this.getNodeParameter('tag_name', i) as string);
 
 						body = this.getNodeParameter('additionalFields', i, {});
 						if (body.milestones) {
 							body.milestones = (body.milestones as string).split(',');
 						}
 
-						endpoint = `/projects/${id}/releases/${tagName}`;
+						endpoint = requestPath`/projects/${id}/releases/${tagName}`;
 					}
 				} else if (resource === 'repository') {
 					if (operation === 'get') {
@@ -1560,7 +1567,7 @@ export class Gitlab implements INodeType {
 
 						requestMethod = 'GET';
 
-						endpoint = `${baseEndpoint}`;
+						endpoint = baseEndpoint;
 					} else if (operation === 'getIssues') {
 						// ----------------------------------
 						//         getIssues
@@ -1576,7 +1583,7 @@ export class Gitlab implements INodeType {
 							qs.per_page = this.getNodeParameter('limit', 0);
 						}
 
-						endpoint = `${baseEndpoint}/issues`;
+						endpoint = requestPath`${baseEndpoint}/issues`;
 					}
 				} else if (resource === 'user') {
 					if (operation === 'getRepositories') {
@@ -1586,7 +1593,7 @@ export class Gitlab implements INodeType {
 
 						requestMethod = 'GET';
 
-						endpoint = `/users/${owner}/projects`;
+						endpoint = requestPath`/users/${owner}/projects`;
 					}
 				} else if (resource === 'file') {
 					if (['create', 'edit'].includes(operation)) {
@@ -1606,7 +1613,13 @@ export class Gitlab implements INodeType {
 						body.commit_message = this.getNodeParameter('commitMessage', i) as string;
 
 						if (additionalParameters.author) {
-							body.author = additionalParameters.author;
+							const author = additionalParameters.author as IDataObject;
+							if (author.name) {
+								body.author_name = author.name;
+							}
+							if (author.email) {
+								body.author_email = author.email;
+							}
 						}
 						if (
 							additionalParameters.branchStart &&
@@ -1616,12 +1629,12 @@ export class Gitlab implements INodeType {
 						}
 
 						if (this.getNodeParameter('binaryData', i)) {
-							// Currently internally n8n uses base64 and also GitLab expects it base64 encoded.
-							// If that ever changes the data has to get converted here.
+							// GitLab expects base64 encoded content.
+							// Use getBinaryDataBuffer to correctly resolve the binary content
+							// regardless of the binary data storage mode (memory or filesystem).
 							const binaryPropertyName = this.getNodeParameter('binaryPropertyName', i);
-							const binaryData = this.helpers.assertBinaryData(i, binaryPropertyName);
-							// TODO: Does this work with filesystem mode
-							body.content = binaryData.data;
+							const buffer = await this.helpers.getBinaryDataBuffer(i, binaryPropertyName);
+							body.content = buffer.toString('base64');
 							body.encoding = 'base64';
 						} else {
 							// Is text file
@@ -1634,7 +1647,7 @@ export class Gitlab implements INodeType {
 							}
 						}
 
-						endpoint = `${baseEndpoint}/repository/files/${encodeURIComponent(filePath)}`;
+						endpoint = requestPath`${baseEndpoint}/repository/files/${filePath}`;
 					} else if (operation === 'delete') {
 						// ----------------------------------
 						//         delete
@@ -1648,14 +1661,20 @@ export class Gitlab implements INodeType {
 							{},
 						) as IDataObject;
 						if (additionalParameters.author) {
-							body.author = additionalParameters.author;
+							const author = additionalParameters.author as IDataObject;
+							if (author.name) {
+								body.author_name = author.name;
+							}
+							if (author.email) {
+								body.author_email = author.email;
+							}
 						}
 						body.branch = this.getNodeParameter('branch', i) as string;
 						body.commit_message = this.getNodeParameter('commitMessage', i) as string;
 
 						const filePath = this.getNodeParameter('filePath', i);
 
-						endpoint = `${baseEndpoint}/repository/files/${encodeURIComponent(filePath)}`;
+						endpoint = requestPath`${baseEndpoint}/repository/files/${filePath}`;
 					} else if (operation === 'get') {
 						// ----------------------------------
 						//         get
@@ -1675,7 +1694,7 @@ export class Gitlab implements INodeType {
 							qs.ref = 'master';
 						}
 
-						endpoint = `${baseEndpoint}/repository/files/${encodeURIComponent(filePath)}`;
+						endpoint = requestPath`${baseEndpoint}/repository/files/${filePath}`;
 					} else if (operation === 'list') {
 						requestMethod = 'GET';
 
@@ -1692,7 +1711,7 @@ export class Gitlab implements INodeType {
 						if (filePath) {
 							qs.path = filePath;
 						}
-						endpoint = `${baseEndpoint}/repository/tree`;
+						endpoint = requestPath`${baseEndpoint}/repository/tree`;
 					}
 				} else {
 					throw new NodeOperationError(this.getNode(), `The resource "${resource}" is not known!`, {

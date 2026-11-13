@@ -27,7 +27,7 @@ export const userOperations: INodeProperties[] = [
 			{
 				name: "Get User's Profile",
 				value: 'getProfile',
-				description: "Get a user's",
+				description: "Get a user's profile",
 				action: "Get a user's profile",
 			},
 			{
@@ -35,6 +35,12 @@ export const userOperations: INodeProperties[] = [
 				value: 'getPresence',
 				description: 'Get online status of a user',
 				action: "Get a user's presence status",
+			},
+			{
+				name: 'Look Up by Email',
+				value: 'lookupByEmail',
+				description: 'Find a user by their email address',
+				action: 'Look up a user by email',
 			},
 			{
 				name: "Update User's Profile",
@@ -91,6 +97,24 @@ export const userFields: INodeProperties[] = [
 				placeholder: 'U123AB45JGM',
 			},
 		],
+	},
+	/* -------------------------------------------------------------------------- */
+	/*                                user:lookupByEmail                          */
+	/* -------------------------------------------------------------------------- */
+	{
+		displayName: 'Email',
+		name: 'email',
+		type: 'string',
+		placeholder: 'name@email.com',
+		required: true,
+		default: '',
+		displayOptions: {
+			show: {
+				resource: ['user'],
+				operation: ['lookupByEmail'],
+			},
+		},
+		description: 'The email address of the user to look up',
 	},
 	/* -------------------------------------------------------------------------- */
 	/*                                 user:getAll                                */
@@ -210,7 +234,7 @@ export const userFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'ID of the field to set. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'ID of the field to set. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Field Value',

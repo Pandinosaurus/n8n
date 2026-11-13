@@ -1,77 +1,707 @@
-import { Config } from '@oclif/core';
+import {
+	mockInstance,
+	testDb,
+	getPersonalProject,
+	getAllSharedWorkflows,
+	getAllWorkflows,
+} from '@n8n/backend-test-utils';
+import { GlobalConfig } from '@n8n/config';
+import { WorkflowPublishHistoryRepository, WorkflowHistoryRepository } from '@n8n/db';
+import { Container } from '@n8n/di';
+import type { INodeType } from 'n8n-workflow';
+import { nanoid } from 'nanoid';
 
-import { InternalHooks } from '@/InternalHooks';
+import '@/zod-alias-support';
+import { ActiveWorkflowManager } from '@/active-workflow-manager';
 import { ImportWorkflowsCommand } from '@/commands/import/workflow';
-import { LoadNodesAndCredentials } from '@/LoadNodesAndCredentials';
+import { LoadNodesAndCredentials } from '@/load-nodes-and-credentials';
+import { NodeTypes } from '@/node-types';
+import { WorkflowService } from '@/workflows/workflow.service';
+import { setupTestCommand } from '@test-integration/utils/test-command';
 
-import { mockInstance } from '../../shared/mocking';
-import * as testDb from '../shared/testDb';
-import { getAllWorkflows } from '../shared/db/workflows';
+import { createMember, createOwner } from '../shared/db/users';
 
-const oclifConfig = new Config({ root: __dirname });
+mockInstance(LoadNodesAndCredentials);
+mockInstance(ActiveWorkflowManager);
+mockInstance(WorkflowPublishHistoryRepository);
+const mockNodeTypes = mockInstance(NodeTypes);
 
-beforeAll(async () => {
-	mockInstance(InternalHooks);
-	mockInstance(LoadNodesAndCredentials);
-	await testDb.init();
-});
+const command = setupTestCommand(ImportWorkflowsCommand);
 
 beforeEach(async () => {
-	await testDb.truncate(['Workflow']);
-});
-
-afterAll(async () => {
-	await testDb.terminate();
+	await testDb.truncate(['WorkflowEntity', 'SharedWorkflow', 'User']);
 });
 
 test('import:workflow should import active workflow and deactivate it', async () => {
-	const before = await getAllWorkflows();
-	expect(before.length).toBe(0);
-	const importer = new ImportWorkflowsCommand(
-		['--separate', '--input=./test/integration/commands/importWorkflows/separate'],
-		oclifConfig,
-	);
-	const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {
-		throw new Error('process.exit');
-	});
+	//
+	// ARRANGE
+	//
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
 
-	await importer.init();
-	try {
-		await importer.run();
-	} catch (error) {
-		expect(error.message).toBe('process.exit');
-	}
-	const after = await getAllWorkflows();
-	expect(after.length).toBe(2);
-	expect(after[0].name).toBe('active-workflow');
-	expect(after[0].active).toBe(false);
-	expect(after[1].name).toBe('inactive-workflow');
-	expect(after[1].active).toBe(false);
-	mockExit.mockRestore();
+	//
+	// ACT
+	//
+	await command.run([
+		'--separate',
+		'--input=./test/integration/commands/import-workflows/separate',
+	]);
+
+	//
+	// ASSERT
+	//
+	const after = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	expect(after).toMatchObject({
+		workflows: [
+			expect.objectContaining({ name: 'active-workflow', active: false, activeVersionId: null }),
+			expect.objectContaining({ name: 'inactive-workflow', active: false, activeVersionId: null }),
+		],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+			expect.objectContaining({
+				workflowId: '999',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
 });
 
 test('import:workflow should import active workflow from combined file and deactivate it', async () => {
-	const before = await getAllWorkflows();
-	expect(before.length).toBe(0);
-	const importer = new ImportWorkflowsCommand(
-		['--input=./test/integration/commands/importWorkflows/combined/combined.json'],
-		oclifConfig,
+	//
+	// ARRANGE
+	//
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
+
+	//
+	// ACT
+	//
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined/combined.json',
+	]);
+
+	//
+	// ASSERT
+	//
+	const after = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	expect(after).toMatchObject({
+		workflows: [
+			expect.objectContaining({ name: 'active-workflow', active: false, activeVersionId: null }),
+			expect.objectContaining({ name: 'inactive-workflow', active: false, activeVersionId: null }),
+		],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+			expect.objectContaining({
+				workflowId: '999',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+});
+
+test('import:workflow can import a single workflow object', async () => {
+	//
+	// ARRANGE
+	//
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
+
+	//
+	// ACT
+	//
+	await command.run(['--input=./test/integration/commands/import-workflows/combined/single.json']);
+
+	//
+	// ASSERT
+	//
+	const after = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	expect(after).toMatchObject({
+		workflows: [
+			expect.objectContaining({ name: 'active-workflow', active: false, activeVersionId: null }),
+		],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+});
+
+test('import:workflow should generate an ID for a workflow without one', async () => {
+	//
+	// ARRANGE
+	//
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
+
+	//
+	// ACT
+	//
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/without-id/001-workflow.json',
+	]);
+
+	//
+	// ASSERT
+	//
+	const workflows = await getAllWorkflows();
+	expect(workflows).toEqual([
+		expect.objectContaining({ id: expect.any(String), name: 'workflow-without-id-1' }),
+	]);
+	expect(await getAllSharedWorkflows()).toEqual([
+		expect.objectContaining({
+			workflowId: workflows[0].id,
+			projectId: ownerProject.id,
+			role: 'workflow:owner',
+		}),
+	]);
+});
+
+test('`import:workflow --separate ...` should generate an ID for each workflow without one', async () => {
+	//
+	// ARRANGE
+	//
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
+
+	//
+	// ACT
+	//
+	await command.run([
+		'--separate',
+		'--input=./test/integration/commands/import-workflows/without-id',
+	]);
+
+	//
+	// ASSERT
+	//
+	const workflowIds = (await getAllWorkflows()).map(({ id }) => id);
+	expect(workflowIds).toHaveLength(2);
+	expect(new Set(workflowIds).size).toBe(2);
+	expect(await getAllSharedWorkflows()).toEqual(
+		expect.arrayContaining(
+			workflowIds.map((workflowId) =>
+				expect.objectContaining({ workflowId, projectId: ownerProject.id, role: 'workflow:owner' }),
+			),
+		),
 	);
-	const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {
-		throw new Error('process.exit');
+});
+
+test('`import:workflow --userId ...` should fail if the workflow exists already and is owned by somebody else', async () => {
+	//
+	// ARRANGE
+	//
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
+	const member = await createMember();
+
+	// Import workflow the first time, assigning it to a member.
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/original.json',
+		`--userId=${owner.id}`,
+	]);
+
+	const before = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	// Make sure the workflow and sharing have been created.
+	expect(before).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
 	});
 
-	await importer.init();
-	try {
-		await importer.run();
-	} catch (error) {
-		expect(error.message).toBe('process.exit');
-	}
-	const after = await getAllWorkflows();
-	expect(after.length).toBe(2);
-	expect(after[0].name).toBe('active-workflow');
-	expect(after[0].active).toBe(false);
-	expect(after[1].name).toBe('inactive-workflow');
-	expect(after[1].active).toBe(false);
-	mockExit.mockRestore();
+	//
+	// ACT
+	//
+	// Import the same workflow again, with another name but the same ID, and try
+	// to assign it to the member.
+	await expect(
+		command.run([
+			'--input=./test/integration/commands/import-workflows/combined-with-update/updated.json',
+			`--userId=${member.id}`,
+		]),
+	).rejects.toThrowError(
+		`The workflow with ID "998" is already owned by the user with the ID "${owner.id}". It can't be re-owned by the user with the ID "${member.id}"`,
+	);
+
+	//
+	// ASSERT
+	//
+	const after = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	// Make sure there is no new sharing and that the name DID NOT change.
+	expect(after).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+});
+
+test("only update the workflow, don't create or update the owner if `--userId` is not passed", async () => {
+	//
+	// ARRANGE
+	//
+	await createOwner();
+	const member = await createMember();
+	const memberProject = await getPersonalProject(member);
+
+	// Import workflow the first time, assigning it to a member.
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/original.json',
+		`--userId=${member.id}`,
+	]);
+
+	const before = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	// Make sure the workflow and sharing have been created.
+	expect(before).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: memberProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+
+	//
+	// ACT
+	//
+	// Import the same workflow again, with another name but the same ID.
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/updated.json',
+	]);
+
+	//
+	// ASSERT
+	//
+	const after = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	// Make sure there is no new sharing and that the name changed.
+	expect(after).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow updated' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: memberProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+});
+
+test('`import:workflow --userId ...` should succeed if the workflow already exists and is owned by the same user', async () => {
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
+
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/original.json',
+		`--userId=${owner.id}`,
+	]);
+
+	const before = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	expect(before).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/updated.json',
+		`--userId=${owner.id}`,
+	]);
+
+	const after = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	expect(after).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow updated' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+});
+
+test('`import:workflow --projectId ...` should succeed if the workflow already exists and is owned by the same project', async () => {
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
+
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/original.json',
+		`--projectId=${ownerProject.id}`,
+	]);
+
+	const before = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	expect(before).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/updated.json',
+		`--projectId=${ownerProject.id}`,
+	]);
+
+	const after = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	expect(after).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow updated' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+});
+
+test('`import:workflow --projectId ...` should fail if the workflow already exists and is owned by another project', async () => {
+	//
+	// ARRANGE
+	//
+	const owner = await createOwner();
+	const ownerProject = await getPersonalProject(owner);
+	const member = await createMember();
+	const memberProject = await getPersonalProject(member);
+
+	// Import workflow the first time, assigning it to a member.
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/original.json',
+		`--userId=${owner.id}`,
+	]);
+
+	const before = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	// Make sure the workflow and sharing have been created.
+	expect(before).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+
+	//
+	// ACT
+	//
+	// Import the same workflow again, with another name but the same ID, and try
+	// to assign it to the member.
+	await expect(
+		command.run([
+			'--input=./test/integration/commands/import-workflows/combined-with-update/updated.json',
+			`--projectId=${memberProject.id}`,
+		]),
+	).rejects.toThrowError(
+		`The workflow with ID "998" is already owned by the user with the ID "${owner.id}". It can't be re-owned by the project with the ID "${memberProject.id}"`,
+	);
+
+	//
+	// ASSERT
+	//
+	const after = {
+		workflows: await getAllWorkflows(),
+		sharings: await getAllSharedWorkflows(),
+	};
+	// Make sure there is no new sharing and that the name DID NOT change.
+	expect(after).toMatchObject({
+		workflows: [expect.objectContaining({ id: '998', name: 'active-workflow' })],
+		sharings: [
+			expect.objectContaining({
+				workflowId: '998',
+				projectId: ownerProject.id,
+				role: 'workflow:owner',
+			}),
+		],
+	});
+});
+
+test('`import:workflow --projectId ...` should import a workflow without an ID', async () => {
+	//
+	// ARRANGE
+	//
+	const owner = await createOwner();
+	const member = await createMember();
+	const memberProject = await getPersonalProject(member);
+
+	// Another project owns this workflow. The ownership check must not match it to a workflow
+	// that has no ID.
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/combined-with-update/original.json',
+		`--userId=${owner.id}`,
+	]);
+
+	//
+	// ACT
+	//
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/without-id/001-workflow.json',
+		`--projectId=${memberProject.id}`,
+	]);
+
+	//
+	// ASSERT
+	//
+	const imported = (await getAllWorkflows()).filter(({ id }) => id !== '998');
+	expect(imported).toEqual([expect.objectContaining({ name: 'workflow-without-id-1' })]);
+	expect(await getAllSharedWorkflows()).toContainEqual(
+		expect.objectContaining({
+			workflowId: imported[0].id,
+			projectId: memberProject.id,
+			role: 'workflow:owner',
+		}),
+	);
+});
+
+test('`import:workflow --projectId ... --userId ...` fails explaining that only one of the options can be used at a time', async () => {
+	await expect(
+		command.run([
+			'--input=./test/integration/commands/import-workflows/combined-with-update/updated.json',
+			`--userId=${nanoid()}`,
+			`--projectId=${nanoid()}`,
+		]),
+	).rejects.toThrowError(
+		'You cannot use `--userId` and `--projectId` together. Use one or the other.',
+	);
+});
+
+test('should preserve versionMetadata from JSON file when importing', async () => {
+	//
+	// ARRANGE
+	//
+	await createOwner();
+
+	//
+	// ACT
+	//
+	await command.run([
+		'--input=./test/integration/commands/import-workflows/with-history/workflow-with-metadata.json',
+	]);
+
+	//
+	// ASSERT
+	//
+	const workflows = await getAllWorkflows();
+	expect(workflows).toHaveLength(1);
+	expect(workflows[0].id).toBe('test-workflow-123');
+	expect(workflows[0].name).toBe('Workflow with History Metadata');
+
+	const workflowHistoryRecords = await Container.get(WorkflowHistoryRepository).find({
+		where: { workflowId: 'test-workflow-123' },
+	});
+
+	expect(workflowHistoryRecords).toHaveLength(1);
+	expect(workflowHistoryRecords[0].name).toBe('Historical Version Name');
+	expect(workflowHistoryRecords[0].description).toBe('Historical version description');
+});
+
+describe('--activeState flag', () => {
+	const globalConfig = Container.get(GlobalConfig);
+	const originalMode = globalConfig.executions.mode;
+	const originalUseWorkflowPublicationService =
+		globalConfig.workflows.useWorkflowPublicationService;
+
+	// Asserts on the legacy activation path (`ActiveWorkflowManager` calls).
+	beforeAll(() => {
+		globalConfig.executions.mode = 'queue';
+		globalConfig.workflows.useWorkflowPublicationService = false;
+	});
+
+	afterAll(() => {
+		globalConfig.executions.mode = originalMode;
+		globalConfig.workflows.useWorkflowPublicationService = originalUseWorkflowPublicationService;
+	});
+
+	// TODO: fix this workaround being needed for these tests to run.
+	// It was introduced after refactoring the ImportService used by the import command
+	// from using the ActiveWorkflowManager to activate/deactivate workflows to the WorkflowService.
+	beforeEach(() => {
+		// Bypass webhook conflict detection to avoid infrastructure dependencies
+		// (getWorkflowExecutionData → VariablesService.getAllCached → CacheService/Redis)
+		vi.spyOn(Container.get(WorkflowService) as any, '_findConflictingWebhooks').mockResolvedValue(
+			[],
+		);
+
+		mockNodeTypes.getByNameAndVersion.mockImplementation((nodeType) => {
+			if (nodeType === 'n8n-nodes-base.webhook') {
+				return {
+					description: { webhooks: undefined, properties: [] },
+					webhook: vi.fn(),
+				} as unknown as INodeType;
+			}
+			return { description: { properties: [] } } as unknown as INodeType;
+		});
+	});
+
+	describe('fromJson', () => {
+		it('should activate a workflow that is marked as active in the imported json', async () => {
+			const owner = await createOwner();
+
+			await command.run([
+				'--separate',
+				'--input=./test/integration/commands/import-workflows/separate',
+				'--activeState=fromJson',
+			]);
+
+			const workflowsInDB = await getAllWorkflows();
+			const activeWorkflow = workflowsInDB.find((w) => w.name === 'active-workflow');
+			const inactiveWorkflow = workflowsInDB.find((w) => w.name === 'inactive-workflow');
+
+			expect(workflowsInDB).toHaveLength(2);
+			expect(activeWorkflow).toMatchObject({ active: true });
+			expect(activeWorkflow?.activeVersionId).toBe(activeWorkflow?.versionId);
+			expect(inactiveWorkflow).toMatchObject({ active: false, activeVersionId: null });
+
+			const activeWorkflowManager = Container.get(ActiveWorkflowManager);
+			expect(activeWorkflowManager.add).toHaveBeenCalledWith('998', 'activate', undefined, {
+				actor: expect.objectContaining({ kind: 'user' }),
+				publisherId: owner.id,
+			});
+			expect(activeWorkflowManager.add).not.toHaveBeenCalledWith('999', expect.anything());
+		});
+
+		it('should deactivate the previously active version and activate the new version when importing a workflow json with an ID that already exists for an active workflow', async () => {
+			const owner = await createOwner();
+
+			await command.run([
+				'--input=./test/integration/commands/import-workflows/combined-with-update/original.json',
+				'--activeState=fromJson',
+			]);
+
+			const [first] = await getAllWorkflows();
+			const v1VersionId = first.versionId;
+			expect(first).toMatchObject({ id: '998', active: true, name: 'active-workflow' });
+			expect(first.activeVersionId).toBe(v1VersionId);
+
+			await command.run([
+				'--input=./test/integration/commands/import-workflows/combined-with-update/updated.json',
+				'--activeState=fromJson',
+			]);
+
+			const [second] = await getAllWorkflows();
+			expect(second).toMatchObject({
+				id: '998',
+				active: true,
+				name: 'active-workflow updated',
+			});
+			expect(second.versionId).not.toBe(v1VersionId);
+			expect(second.activeVersionId).toBe(second.versionId);
+
+			const activeWorkflowManager = Container.get(ActiveWorkflowManager);
+			expect(activeWorkflowManager.remove).toHaveBeenCalledWith('998');
+			expect(activeWorkflowManager.add).toHaveBeenLastCalledWith('998', 'activate', undefined, {
+				actor: expect.objectContaining({ kind: 'user' }),
+				publisherId: owner.id,
+			});
+
+			const publishHistoryRepo = Container.get(WorkflowPublishHistoryRepository);
+			expect(publishHistoryRepo.addRecord).toHaveBeenCalledTimes(3);
+			expect(publishHistoryRepo.addRecord).toHaveBeenLastCalledWith({
+				workflowId: '998',
+				versionId: second.versionId,
+				event: 'activated',
+				userId: owner.id,
+			});
+		});
+	});
+
+	describe('false', () => {
+		it('should deactivate a workflow that is active in the workflow json to import', async () => {
+			await createOwner();
+			const fixture =
+				'./test/integration/commands/import-workflows/separate/001-activeWorkflow.json';
+
+			await command.run([`--input=${fixture}`, '--activeState=fromJson']);
+
+			const [active] = await getAllWorkflows();
+			expect(active).toMatchObject({ id: '998', active: true });
+			expect(active.activeVersionId).toBe(active.versionId);
+
+			const activeWorkflowManager = Container.get(ActiveWorkflowManager);
+			vi.mocked(activeWorkflowManager.add).mockClear();
+			vi.mocked(activeWorkflowManager.remove).mockClear();
+
+			await command.run([`--input=${fixture}`, '--activeState=false']);
+
+			const [deactivated] = await getAllWorkflows();
+			expect(deactivated).toMatchObject({
+				id: '998',
+				name: 'active-workflow',
+				active: false,
+				activeVersionId: null,
+			});
+
+			expect(activeWorkflowManager.remove).toHaveBeenCalledWith('998');
+			expect(activeWorkflowManager.add).not.toHaveBeenCalled();
+		});
+	});
 });

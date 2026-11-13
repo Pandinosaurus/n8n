@@ -1,4 +1,4 @@
-import { URL } from 'url';
+import { pascalCase } from 'change-case';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -10,10 +10,19 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, requestPath } from 'n8n-workflow';
+import { URL } from 'url';
 
-import { pascalCase } from 'change-case';
 import { awsApiRequestSOAP } from '../GenericFunctions';
+import { awsNodeAuthOptions, awsNodeCredentials } from '../utils';
+
+function safeDecode(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
+}
 
 export class AwsSqs implements INodeType {
 	description: INodeTypeDescription = {
@@ -27,15 +36,11 @@ export class AwsSqs implements INodeType {
 		defaults: {
 			name: 'AWS SQS',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
-		credentials: [
-			{
-				name: 'aws',
-				required: true,
-			},
-		],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
+		credentials: awsNodeCredentials,
 		properties: [
+			awsNodeAuthOptions,
 			{
 				displayName: 'Operation',
 				name: 'operation',
@@ -67,7 +72,7 @@ export class AwsSqs implements INodeType {
 				default: '',
 				required: true,
 				description:
-					'Queue to send a message to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Queue to send a message to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Queue Type',
@@ -132,7 +137,7 @@ export class AwsSqs implements INodeType {
 					},
 				},
 				default: {},
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				options: [
 					{
 						displayName: 'Delay Seconds',
@@ -246,12 +251,21 @@ export class AwsSqs implements INodeType {
 		loadOptions: {
 			// Get all the available queues to display them to user so that it can be selected easily
 			async getQueues(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const params = ['Version=2012-11-05', 'Action=ListQueues'];
-
 				let data;
 				try {
 					// loads first 1000 queues from SQS
-					data = await awsApiRequestSOAP.call(this, 'sqs', 'GET', `?${params.join('&')}`);
+					data = await awsApiRequestSOAP.call(
+						this,
+						'sqs',
+						'GET',
+						requestPath``,
+						undefined,
+						undefined,
+						{
+							Version: '2012-11-05',
+							Action: 'ListQueues',
+						},
+					);
 				} catch (error) {
 					throw new NodeApiError(this.getNode(), error as JsonObject);
 				}
@@ -289,9 +303,12 @@ export class AwsSqs implements INodeType {
 		for (let i = 0; i < items.length; i++) {
 			try {
 				const queueUrl = this.getNodeParameter('queue', i) as string;
-				const queuePath = new URL(queueUrl).pathname;
+				const queuePath = new URL(queueUrl).pathname
+					.split('/')
+					.slice(1)
+					.reduce((path, part) => requestPath`${path}/${safeDecode(part)}`, requestPath``);
 
-				const params = ['Version=2012-11-05', `Action=${pascalCase(operation)}`];
+				const query: IDataObject = { Version: '2012-11-05', Action: pascalCase(operation) };
 
 				const options = this.getNodeParameter('options', i, {});
 				const sendInputData = this.getNodeParameter('sendInputData', i) as boolean;
@@ -305,10 +322,10 @@ export class AwsSqs implements INodeType {
 					message = JSON.stringify(message);
 				}
 
-				params.push(`MessageBody=${encodeURIComponent(message as string)}`);
+				query.MessageBody = message;
 
 				if (options.delaySeconds) {
-					params.push(`DelaySeconds=${options.delaySeconds}`);
+					query.DelaySeconds = options.delaySeconds;
 				}
 
 				const queueType = this.getNodeParameter('queueType', i, {}) as string;
@@ -319,12 +336,12 @@ export class AwsSqs implements INodeType {
 						'',
 					) as string;
 					if (messageDeduplicationId) {
-						params.push(`MessageDeduplicationId=${messageDeduplicationId}`);
+						query.MessageDeduplicationId = messageDeduplicationId;
 					}
 
 					const messageGroupId = this.getNodeParameter('messageGroupId', i) as string;
 					if (messageGroupId) {
-						params.push(`MessageGroupId=${messageGroupId}`);
+						query.MessageGroupId = messageGroupId;
 					}
 				}
 
@@ -334,9 +351,9 @@ export class AwsSqs implements INodeType {
 					this.getNodeParameter('options.messageAttributes.string', i, []) as INodeParameters[]
 				).forEach((attribute) => {
 					attributeCount++;
-					params.push(`MessageAttribute.${attributeCount}.Name=${attribute.name}`);
-					params.push(`MessageAttribute.${attributeCount}.Value.StringValue=${attribute.value}`);
-					params.push(`MessageAttribute.${attributeCount}.Value.DataType=String`);
+					query[`MessageAttribute.${attributeCount}.Name`] = attribute.name;
+					query[`MessageAttribute.${attributeCount}.Value.StringValue`] = attribute.value;
+					query[`MessageAttribute.${attributeCount}.Value.DataType`] = 'String';
 				});
 
 				// Add binary values
@@ -348,9 +365,9 @@ export class AwsSqs implements INodeType {
 					const dataPropertyName = attribute.dataPropertyName as string;
 					const binaryData = this.helpers.assertBinaryData(i, dataPropertyName);
 
-					params.push(`MessageAttribute.${attributeCount}.Name=${attribute.name}`);
-					params.push(`MessageAttribute.${attributeCount}.Value.BinaryValue=${binaryData.data}`);
-					params.push(`MessageAttribute.${attributeCount}.Value.DataType=Binary`);
+					query[`MessageAttribute.${attributeCount}.Name`] = attribute.name;
+					query[`MessageAttribute.${attributeCount}.Value.BinaryValue`] = binaryData.data;
+					query[`MessageAttribute.${attributeCount}.Value.DataType`] = 'Binary';
 				});
 
 				// Add number values
@@ -358,9 +375,9 @@ export class AwsSqs implements INodeType {
 					this.getNodeParameter('options.messageAttributes.number', i, []) as INodeParameters[]
 				).forEach((attribute) => {
 					attributeCount++;
-					params.push(`MessageAttribute.${attributeCount}.Name=${attribute.name}`);
-					params.push(`MessageAttribute.${attributeCount}.Value.StringValue=${attribute.value}`);
-					params.push(`MessageAttribute.${attributeCount}.Value.DataType=Number`);
+					query[`MessageAttribute.${attributeCount}.Name`] = attribute.name;
+					query[`MessageAttribute.${attributeCount}.Value.StringValue`] = attribute.value;
+					query[`MessageAttribute.${attributeCount}.Value.DataType`] = 'Number';
 				});
 
 				let responseData;
@@ -369,7 +386,10 @@ export class AwsSqs implements INodeType {
 						this,
 						'sqs',
 						'GET',
-						`${queuePath}?${params.join('&')}`,
+						queuePath,
+						undefined,
+						undefined,
+						query,
 					);
 				} catch (error) {
 					throw new NodeApiError(this.getNode(), error as JsonObject);

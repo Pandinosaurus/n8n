@@ -6,6 +6,10 @@ import type {
 } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
 
+import { createEventLoopYielder } from '@n8n/utils/promise/create-event-loop-yielder';
+
+import { updateDisplayOptions } from '@utils/utilities';
+
 import type {
 	PgpDatabase,
 	PostgresNodeOptions,
@@ -13,7 +17,6 @@ import type {
 	QueryValues,
 	QueryWithValues,
 } from '../../helpers/interfaces';
-
 import {
 	addReturning,
 	checkItemAgainstSchema,
@@ -21,11 +24,11 @@ import {
 	doesRowExist,
 	getTableSchema,
 	prepareItem,
+	convertArraysToPostgresFormat,
 	replaceEmptyStringsByNulls,
+	runQueriesAndHandleErrors,
 } from '../../helpers/utils';
-
 import { optionsCollection } from '../common.descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 const properties: INodeProperties[] = [
 	{
@@ -75,13 +78,13 @@ const properties: INodeProperties[] = [
 		required: true,
 		// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
 		description:
-			'The column to compare when finding the rows to update. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/" target="_blank">expression</a>.',
+			'The column to compare when finding the rows to update. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/" target="_blank">expression</a>.',
 		typeOptions: {
 			loadOptionsMethod: 'getColumns',
 			loadOptionsDependsOn: ['schema.value', 'table.value'],
 		},
 		default: '',
-		hint: 'The column that identifies the row(s) to modify',
+		hint: 'The column to use when matching rows in Postgres to the input items of this node. Usually an ID.',
 		displayOptions: {
 			show: {
 				'@version': [2, 2.1],
@@ -130,7 +133,7 @@ const properties: INodeProperties[] = [
 						type: 'options',
 						// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/" target="_blank">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/" target="_blank">expression</a>',
 						typeOptions: {
 							loadOptionsMethod: 'getColumnsWithoutColumnToMatchOn',
 							loadOptionsDependsOn: ['schema.value', 'table.value'],
@@ -172,7 +175,7 @@ const properties: INodeProperties[] = [
 		},
 		displayOptions: {
 			show: {
-				'@version': [2.2, 2.3],
+				'@version': [{ _cnd: { gte: 2.2 } }],
 			},
 		},
 	},
@@ -214,140 +217,158 @@ export async function execute(
 	let tableSchema = await getTableSchema(db, schema, table);
 
 	const queries: QueryWithValues[] = [];
-
+	const errorItemsMap = new Map<number, INodeExecutionData>();
+	const yieldToEventLoop = createEventLoopYielder();
 	for (let i = 0; i < items.length; i++) {
-		schema = this.getNodeParameter('schema', i, undefined, {
-			extractValue: true,
-		}) as string;
+		await yieldToEventLoop();
+		try {
+			schema = this.getNodeParameter('schema', i, undefined, {
+				extractValue: true,
+			}) as string;
 
-		table = this.getNodeParameter('table', i, undefined, {
-			extractValue: true,
-		}) as string;
+			table = this.getNodeParameter('table', i, undefined, {
+				extractValue: true,
+			}) as string;
 
-		const columnsToMatchOn: string[] =
-			nodeVersion < 2.2
-				? [this.getNodeParameter('columnToMatchOn', i) as string]
-				: (this.getNodeParameter('columns.matchingColumns', i) as string[]);
-
-		const dataMode =
-			nodeVersion < 2.2
-				? (this.getNodeParameter('dataMode', i) as string)
-				: (this.getNodeParameter('columns.mappingMode', i) as string);
-
-		let item: IDataObject = {};
-		let valueToMatchOn: string | IDataObject = '';
-		if (nodeVersion < 2.2) {
-			valueToMatchOn = this.getNodeParameter('valueToMatchOn', i) as string;
-		}
-
-		if (dataMode === 'autoMapInputData') {
-			item = items[i].json;
-			if (nodeVersion < 2.2) {
-				valueToMatchOn = item[columnsToMatchOn[0]] as string;
-			}
-		}
-
-		if (dataMode === 'defineBelow') {
-			const valuesToSend =
+			const columnsToMatchOn: string[] =
 				nodeVersion < 2.2
-					? ((this.getNodeParameter('valuesToSend', i, []) as IDataObject).values as IDataObject[])
-					: ((this.getNodeParameter('columns.values', i, []) as IDataObject)
-							.values as IDataObject[]);
+					? [this.getNodeParameter('columnToMatchOn', i) as string]
+					: (this.getNodeParameter('columns.matchingColumns', i) as string[]);
 
+			const dataMode =
+				nodeVersion < 2.2
+					? (this.getNodeParameter('dataMode', i) as string)
+					: (this.getNodeParameter('columns.mappingMode', i) as string);
+
+			let item: IDataObject = {};
+			let valueToMatchOn: string | IDataObject = '';
 			if (nodeVersion < 2.2) {
-				item = prepareItem(valuesToSend);
-				item[columnsToMatchOn[0]] = this.getNodeParameter('valueToMatchOn', i) as string;
+				valueToMatchOn = this.getNodeParameter('valueToMatchOn', i) as string;
+			}
+
+			if (dataMode === 'autoMapInputData') {
+				item = items[i].json;
+				if (nodeVersion < 2.2) {
+					valueToMatchOn = item[columnsToMatchOn[0]] as string;
+				}
+			}
+
+			if (dataMode === 'defineBelow') {
+				const valuesToSend =
+					nodeVersion < 2.2
+						? ((this.getNodeParameter('valuesToSend', i, []) as IDataObject)
+								.values as IDataObject[])
+						: ((this.getNodeParameter('columns.values', i, []) as IDataObject)
+								.values as IDataObject[]);
+
+				if (nodeVersion < 2.2) {
+					item = prepareItem(valuesToSend);
+					item[columnsToMatchOn[0]] = this.getNodeParameter('valueToMatchOn', i) as string;
+				} else {
+					item = this.getNodeParameter('columns.value', i) as IDataObject;
+				}
+			}
+
+			const matchValues: string[] = [];
+			if (nodeVersion < 2.2) {
+				if (!item[columnsToMatchOn[0]] && dataMode === 'autoMapInputData') {
+					throw new NodeOperationError(
+						this.getNode(),
+						"Column to match on not found in input item. Add a column to match on or set the 'Data Mode' to 'Define Below' to define the value to match on.",
+					);
+				}
+				matchValues.push(valueToMatchOn);
+				matchValues.push(columnsToMatchOn[0]);
 			} else {
-				item = this.getNodeParameter('columns.value', i) as IDataObject;
-			}
-		}
-
-		const matchValues: string[] = [];
-		if (nodeVersion < 2.2) {
-			if (!item[columnsToMatchOn[0]] && dataMode === 'autoMapInputData') {
-				throw new NodeOperationError(
-					this.getNode(),
-					"Column to match on not found in input item. Add a column to match on or set the 'Data Mode' to 'Define Below' to define the value to match on.",
-				);
-			}
-			matchValues.push(valueToMatchOn);
-			matchValues.push(columnsToMatchOn[0]);
-		} else {
-			columnsToMatchOn.forEach((column) => {
-				matchValues.push(column);
-				matchValues.push(item[column] as string);
-			});
-			const rowExists = await doesRowExist(db, schema, table, matchValues);
-			if (!rowExists) {
-				const descriptionValues: string[] = [];
-				matchValues.forEach((_, index) => {
-					if (index % 2 === 0) {
-						descriptionValues.push(`${matchValues[index]}=${matchValues[index + 1]}`);
-					}
+				columnsToMatchOn.forEach((column) => {
+					matchValues.push(column);
+					matchValues.push(item[column] as string);
 				});
+				const rowExists = await doesRowExist(db, schema, table, matchValues);
+				if (!rowExists) {
+					const descriptionValues: string[] = [];
+					matchValues.forEach((_, index) => {
+						if (index % 2 === 0) {
+							descriptionValues.push(`${matchValues[index]}=${matchValues[index + 1]}`);
+						}
+					});
 
+					throw new NodeOperationError(
+						this.getNode(),
+						"The row you are trying to update doesn't exist",
+						{
+							description: `No rows matching the provided values (${descriptionValues.join(
+								', ',
+							)}) were found in the table "${table}".`,
+							itemIndex: i,
+						},
+					);
+				}
+			}
+
+			tableSchema = await updateTableSchema(db, tableSchema, schema, table);
+
+			if (nodeVersion >= 2.4) {
+				item = convertArraysToPostgresFormat(item, tableSchema, this.getNode(), i);
+			}
+
+			item = checkItemAgainstSchema(this.getNode(), item, tableSchema, i);
+
+			let values: QueryValues = [schema, table];
+
+			let valuesLength = values.length + 1;
+
+			let condition = '';
+			if (nodeVersion < 2.2) {
+				condition = `$${valuesLength}:name = $${valuesLength + 1}`;
+				valuesLength = valuesLength + 2;
+				values.push(columnsToMatchOn[0], valueToMatchOn);
+			} else {
+				const conditions: string[] = [];
+				for (const column of columnsToMatchOn) {
+					conditions.push(`$${valuesLength}:name = $${valuesLength + 1}`);
+					valuesLength = valuesLength + 2;
+					values.push(column, item[column] as string);
+				}
+				condition = conditions.join(' AND ');
+			}
+
+			const updateColumns = Object.keys(item).filter(
+				(column) => !columnsToMatchOn.includes(column),
+			);
+
+			if (!Object.keys(updateColumns).length) {
 				throw new NodeOperationError(
 					this.getNode(),
-					"The row you are trying to update doesn't exist",
-					{
-						description: `No rows matching the provided values (${descriptionValues.join(
-							', ',
-						)}) were found in the table "${table}".`,
-						itemIndex: i,
-					},
+					"Add values to update to the input item or set the 'Data Mode' to 'Define Below' to define the values to update.",
 				);
 			}
-		}
 
-		tableSchema = await updateTableSchema(db, tableSchema, schema, table);
+			const updates: string[] = [];
 
-		item = checkItemAgainstSchema(this.getNode(), item, tableSchema, i);
-
-		let values: QueryValues = [schema, table];
-
-		let valuesLength = values.length + 1;
-
-		let condition = '';
-		if (nodeVersion < 2.2) {
-			condition = `$${valuesLength}:name = $${valuesLength + 1}`;
-			valuesLength = valuesLength + 2;
-			values.push(columnsToMatchOn[0], valueToMatchOn);
-		} else {
-			const conditions: string[] = [];
-			for (const column of columnsToMatchOn) {
-				conditions.push(`$${valuesLength}:name = $${valuesLength + 1}`);
+			for (const column of updateColumns) {
+				updates.push(`$${valuesLength}:name = $${valuesLength + 1}`);
 				valuesLength = valuesLength + 2;
 				values.push(column, item[column] as string);
 			}
-			condition = conditions.join(' AND ');
+
+			let query = `UPDATE $1:name.$2:name SET ${updates.join(', ')} WHERE ${condition}`;
+
+			const outputColumns = this.getNodeParameter('options.outputColumns', i, ['*']) as string[];
+
+			[query, values] = addReturning(query, outputColumns, values);
+
+			queries.push({ query, values });
+		} catch (e) {
+			if (this.continueOnFail()) {
+				const error = e instanceof Error ? e : String(e);
+				errorItemsMap.set(i, { json: { error }, pairedItem: { item: i } });
+				continue;
+			}
+
+			throw e;
 		}
-
-		const updateColumns = Object.keys(item).filter((column) => !columnsToMatchOn.includes(column));
-
-		if (!Object.keys(updateColumns).length) {
-			throw new NodeOperationError(
-				this.getNode(),
-				"Add values to update to the input item or set the 'Data Mode' to 'Define Below' to define the values to update.",
-			);
-		}
-
-		const updates: string[] = [];
-
-		for (const column of updateColumns) {
-			updates.push(`$${valuesLength}:name = $${valuesLength + 1}`);
-			valuesLength = valuesLength + 2;
-			values.push(column, item[column] as string);
-		}
-
-		let query = `UPDATE $1:name.$2:name SET ${updates.join(', ')} WHERE ${condition}`;
-
-		const outputColumns = this.getNodeParameter('options.outputColumns', i, ['*']) as string[];
-
-		[query, values] = addReturning(query, outputColumns, values);
-
-		queries.push({ query, values });
 	}
 
-	const results = await runQueries(queries, items, nodeOptions);
-	return results;
+	return await runQueriesAndHandleErrors(runQueries, queries, nodeOptions, errorItemsMap);
 }

@@ -4,10 +4,12 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { returnAllOrLimit } from '../../../../../utils/descriptions';
 import { updateDisplayOptions } from '../../../../../utils/utilities';
 import { parseDiscordError, prepareErrorData } from '../../helpers/utils';
 import { discordApiRequest } from '../../transport';
-import { returnAllOrLimit } from '../../../../../utils/descriptions';
 
 const properties: INodeProperties[] = [
 	...returnAllOrLimit,
@@ -15,7 +17,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -62,7 +64,11 @@ export async function execute(
 
 	try {
 		const returnAll = this.getNodeParameter('returnAll', 0, false);
-		let response = await discordApiRequest.call(this, 'GET', `/guilds/${guildId}/channels`);
+		let response = await discordApiRequest.call(
+			this,
+			'GET',
+			requestPath`/guilds/${guildId}/channels`,
+		);
 
 		if (!returnAll) {
 			const limit = this.getNodeParameter('limit', 0);

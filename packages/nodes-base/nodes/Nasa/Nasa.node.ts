@@ -1,3 +1,4 @@
+import moment from 'moment-timezone';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -5,9 +6,8 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
 import { nasaApiRequest, nasaApiRequestAllItems } from './GenericFunctions';
 
 export class Nasa implements INodeType {
@@ -23,8 +23,9 @@ export class Nasa implements INodeType {
 		defaults: {
 			name: 'NASA',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'nasaApi',
@@ -859,7 +860,7 @@ export class Nasa implements INodeType {
 
 		for (let i = 0; i < items.length; i++) {
 			try {
-				let endpoint = '';
+				let endpoint = requestPath``;
 				let includeCloseApproachData = false;
 
 				// additionalFields are brought up here to prevent repetition on most endpoints.
@@ -874,7 +875,7 @@ export class Nasa implements INodeType {
 
 				if (resource === 'astronomyPictureOfTheDay') {
 					if (operation === 'get') {
-						endpoint = '/planetary/apod';
+						endpoint = requestPath`/planetary/apod`;
 
 						qs.date =
 							moment(additionalFields.date as string).format('YYYY-MM-DD') ||
@@ -883,7 +884,7 @@ export class Nasa implements INodeType {
 				}
 				if (resource === 'asteroidNeoFeed') {
 					if (operation === 'get') {
-						endpoint = '/neo/rest/v1/feed';
+						endpoint = requestPath`/neo/rest/v1/feed`;
 
 						propertyName = 'near_earth_objects';
 
@@ -901,7 +902,7 @@ export class Nasa implements INodeType {
 
 						includeCloseApproachData = additionalFields.includeCloseApproachData as boolean;
 
-						endpoint = `/neo/rest/v1/neo/${asteroidId}`;
+						endpoint = requestPath`/neo/rest/v1/neo/${asteroidId}`;
 					} else {
 						throw new NodeOperationError(
 							this.getNode(),
@@ -920,7 +921,7 @@ export class Nasa implements INodeType {
 
 						propertyName = 'near_earth_objects';
 
-						endpoint = '/neo/rest/v1/neo/browse';
+						endpoint = requestPath`/neo/rest/v1/neo/browse`;
 					} else {
 						throw new NodeOperationError(
 							this.getNode(),
@@ -944,46 +945,46 @@ export class Nasa implements INodeType {
 
 					if (resource === 'donkiCoronalMassEjection') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/CME';
+							endpoint = requestPath`/DONKI/CME`;
 						}
 					} else if (resource === 'donkiGeomagneticStorm') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/GST';
+							endpoint = requestPath`/DONKI/GST`;
 						}
 					} else if (resource === 'donkiInterplanetaryShock') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/IPS';
+							endpoint = requestPath`/DONKI/IPS`;
 
 							qs.location = (additionalFields.location as string) || 'ALL'; // default per API
 							qs.catalog = (additionalFields.catalog as string) || 'ALL'; // default per API
 						}
 					} else if (resource === 'donkiSolarFlare') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/FLR';
+							endpoint = requestPath`/DONKI/FLR`;
 						}
 					} else if (resource === 'donkiSolarEnergeticParticle') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/SEP';
+							endpoint = requestPath`/DONKI/SEP`;
 						}
 					} else if (resource === 'donkiMagnetopauseCrossing') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/MPC';
+							endpoint = requestPath`/DONKI/MPC`;
 						}
 					} else if (resource === 'donkiRadiationBeltEnhancement') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/RBE';
+							endpoint = requestPath`/DONKI/RBE`;
 						}
 					} else if (resource === 'donkiHighSpeedStream') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/HSS';
+							endpoint = requestPath`/DONKI/HSS`;
 						}
 					} else if (resource === 'donkiWsaEnlilSimulation') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/WSAEnlilSimulations';
+							endpoint = requestPath`/DONKI/WSAEnlilSimulations`;
 						}
 					} else if (resource === 'donkiNotifications') {
 						if (operation === 'get') {
-							endpoint = '/DONKI/notifications';
+							endpoint = requestPath`/DONKI/notifications`;
 
 							qs.type = (additionalFields.type as string) || 'all'; // default per API
 						}
@@ -991,7 +992,7 @@ export class Nasa implements INodeType {
 				}
 				if (resource === 'earthImagery') {
 					if (operation === 'get') {
-						endpoint = '/planetary/earth/imagery';
+						endpoint = requestPath`/planetary/earth/imagery`;
 
 						qs.lat = this.getNodeParameter('lat', i) as IDataObject;
 						qs.lon = this.getNodeParameter('lon', i) as IDataObject;
@@ -1007,7 +1008,7 @@ export class Nasa implements INodeType {
 				}
 				if (resource === 'earthAssets') {
 					if (operation === 'get') {
-						endpoint = '/planetary/earth/assets';
+						endpoint = requestPath`/planetary/earth/assets`;
 
 						qs.lat = this.getNodeParameter('lat', i) as IDataObject;
 						qs.lon = this.getNodeParameter('lon', i) as IDataObject;
@@ -1020,7 +1021,7 @@ export class Nasa implements INodeType {
 					}
 
 					if (operation === 'get') {
-						endpoint = '/insight_weather/earth/imagery';
+						endpoint = requestPath`/insight_weather/earth/imagery`;
 
 						// Hardcoded because these are the only options available right now.
 						qs.feedtype = 'json';
@@ -1069,7 +1070,7 @@ export class Nasa implements INodeType {
 				if (resource === 'astronomyPictureOfTheDay') {
 					download = this.getNodeParameter('download', 0);
 
-					if (download) {
+					if (download && responseData?.media_type === 'image') {
 						const binaryProperty = this.getNodeParameter('binaryPropertyName', i);
 
 						const data = await nasaApiRequest.call(
@@ -1130,7 +1131,12 @@ export class Nasa implements INodeType {
 
 		if (resource === 'earthImagery' && operation === 'get') {
 			return [items];
-		} else if (resource === 'astronomyPictureOfTheDay' && operation === 'get' && download) {
+		} else if (
+			resource === 'astronomyPictureOfTheDay' &&
+			operation === 'get' &&
+			download &&
+			responseData?.media_type === 'image'
+		) {
 			return [items];
 		} else {
 			return [returnData];

@@ -1,4 +1,3 @@
-import { ApplicationError } from 'n8n-workflow';
 import type {
 	ITriggerFunctions,
 	IDataObject,
@@ -6,8 +5,35 @@ import type {
 	INodeListSearchResult,
 	INodeListSearchItems,
 } from 'n8n-workflow';
-import pgPromise from 'pg-promise';
-import type pg from 'pg-promise/typescript/pg-subset';
+import { OperationalError, UserError } from '@n8n/errors';
+
+import { configurePostgres } from './transport';
+import type { PgpDatabase, PostgresNodeCredentials } from './v2/helpers/interfaces';
+
+const postgresIdentifierRegex = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const triggerEvents = ['INSERT', 'UPDATE', 'DELETE'] as const;
+
+type TriggerEvent = (typeof triggerEvents)[number];
+
+export function validatePostgresIdentifier(
+	name: unknown,
+	parameterName: string,
+): asserts name is string {
+	if (typeof name !== 'string' || !postgresIdentifierRegex.test(name)) {
+		throw new UserError(
+			`${parameterName} must start with a letter or underscore and contain only letters, digits, and underscores`,
+			{ level: 'warning' },
+		);
+	}
+}
+
+function getTriggerEvent(firesOn: string): TriggerEvent {
+	if (triggerEvents.includes(firesOn as TriggerEvent)) {
+		return firesOn as TriggerEvent;
+	}
+
+	throw new UserError('Event must be Insert, Update, or Delete', { level: 'warning' });
+}
 
 export function prepareNames(id: string, mode: string, additionalFields: IDataObject) {
 	let suffix = id.replace(/-/g, '_');
@@ -16,26 +42,25 @@ export function prepareNames(id: string, mode: string, additionalFields: IDataOb
 		suffix = `${suffix}_manual`;
 	}
 
-	let functionName =
-		(additionalFields.functionName as string) || `n8n_trigger_function_${suffix}()`;
+	let functionName = (additionalFields.functionName as string) || `n8n_trigger_function_${suffix}`;
 
-	if (!(functionName.includes('(') && functionName.includes(')'))) {
-		functionName = `${functionName}()`;
+	if (typeof functionName === 'string' && functionName.endsWith('()')) {
+		functionName = functionName.slice(0, -2);
 	}
 
 	const triggerName = (additionalFields.triggerName as string) || `n8n_trigger_${suffix}`;
 	const channelName = (additionalFields.channelName as string) || `n8n_channel_${suffix}`;
 
-	if (channelName.includes('-')) {
-		throw new ApplicationError('Channel name cannot contain hyphens (-)', { level: 'warning' });
-	}
+	validatePostgresIdentifier(functionName, 'Function name');
+	validatePostgresIdentifier(triggerName, 'Trigger name');
+	validatePostgresIdentifier(channelName, 'Channel name');
 
 	return { functionName, triggerName, channelName };
 }
 
 export async function pgTriggerFunction(
 	this: ITriggerFunctions,
-	db: pgPromise.IDatabase<{}, pg.IClient>,
+	db: PgpDatabase,
 	additionalFields: IDataObject,
 	functionName: string,
 	triggerName: string,
@@ -46,83 +71,37 @@ export async function pgTriggerFunction(
 		extractValue: true,
 	}) as string;
 
-	const target = `${schema}."${tableName}"`;
+	const firesOn = getTriggerEvent(this.getNodeParameter('firesOn', 0) as string);
+	const rowRecord = firesOn === 'DELETE' ? 'OLD' : 'NEW';
 
-	const firesOn = this.getNodeParameter('firesOn', 0) as string;
+	// Identifiers use :name (double-quote escaped); the channel is bound as a text
+	// value to pg_notify, and the event/row-record are validated keywords.
+	const functionBody = `$1:name() RETURNS trigger LANGUAGE 'plpgsql' COST 100 VOLATILE NOT LEAKPROOF AS $BODY$ begin perform pg_notify($2, row_to_json(${rowRecord})::text); return null; end; $BODY$`;
+	const functionReplace = `CREATE OR REPLACE FUNCTION ${functionBody};`;
+	const functionExists = `CREATE FUNCTION ${functionBody}`;
 
-	const functionReplace =
-		"CREATE OR REPLACE FUNCTION $1:raw RETURNS trigger LANGUAGE 'plpgsql' COST 100 VOLATILE NOT LEAKPROOF AS $BODY$ begin perform pg_notify('$2:raw', row_to_json($3:raw)::text); return null; end; $BODY$;";
+	const dropIfExist = 'DROP TRIGGER IF EXISTS $1:name ON $2:name.$3:name';
 
-	const dropIfExist = 'DROP TRIGGER IF EXISTS $1:raw ON $2:raw';
-
-	const functionExists =
-		"CREATE FUNCTION $1:raw RETURNS trigger LANGUAGE 'plpgsql' COST 100 VOLATILE NOT LEAKPROOF AS $BODY$ begin perform pg_notify('$2:raw', row_to_json($3:raw)::text); return null; end; $BODY$";
-
-	const trigger =
-		'CREATE TRIGGER $4:raw AFTER $3:raw ON $1:raw FOR EACH ROW EXECUTE FUNCTION $2:raw';
-
-	const whichData = firesOn === 'DELETE' ? 'old' : 'new';
-
-	if (channelName.includes('-')) {
-		throw new ApplicationError('Channel name cannot contain hyphens (-)', { level: 'warning' });
-	}
+	const trigger = `CREATE TRIGGER $3:name AFTER ${firesOn} ON $1:name.$2:name FOR EACH ROW EXECUTE FUNCTION $4:name()`;
 
 	const replaceIfExists = additionalFields.replaceIfExists ?? false;
 
-	try {
-		if (replaceIfExists || !(additionalFields.triggerName ?? additionalFields.functionName)) {
-			await db.any(functionReplace, [functionName, channelName, whichData]);
-			await db.any(dropIfExist, [triggerName, target, whichData]);
-		} else {
-			await db.any(functionExists, [functionName, channelName, whichData]);
-		}
-		await db.any(trigger, [target, functionName, firesOn, triggerName]);
-	} catch (error) {
-		if ((error as Error).message.includes('near "-"')) {
-			throw new ApplicationError('Names cannot contain hyphens (-)', { level: 'warning' });
-		}
-		throw error;
+	if (replaceIfExists || !(additionalFields.triggerName ?? additionalFields.functionName)) {
+		await db.any(functionReplace, [functionName, channelName]);
+		await db.any(dropIfExist, [triggerName, schema, tableName]);
+	} else {
+		await db.any(functionExists, [functionName, channelName]);
 	}
+	await db.any(trigger, [schema, tableName, triggerName, functionName]);
 }
 
 export async function initDB(this: ITriggerFunctions | ILoadOptionsFunctions) {
-	const credentials = await this.getCredentials('postgres');
+	const credentials = await this.getCredentials<PostgresNodeCredentials>('postgres');
 	const options = this.getNodeParameter('options', {}) as {
 		connectionTimeout?: number;
 		delayClosingIdleConnection?: number;
 	};
-	const pgp = pgPromise({
-		// prevent spam in console "WARNING: Creating a duplicate database object for the same connection."
-		noWarnings: true,
-	});
-	const config: IDataObject = {
-		host: credentials.host as string,
-		port: credentials.port as number,
-		database: credentials.database as string,
-		user: credentials.user as string,
-		password: credentials.password as string,
-		keepAlive: true,
-	};
-
-	if (options.connectionTimeout) {
-		config.connectionTimeoutMillis = options.connectionTimeout * 1000;
-	}
-
-	if (options.delayClosingIdleConnection) {
-		config.keepAliveInitialDelayMillis = options.delayClosingIdleConnection * 1000;
-	}
-
-	if (credentials.allowUnauthorizedCerts === true) {
-		config.ssl = {
-			rejectUnauthorized: false,
-		};
-	} else {
-		config.ssl = !['disable', undefined].includes(credentials.ssl as string | undefined);
-		config.sslmode = (credentials.ssl as string) || 'disable';
-	}
-
-	const db = pgp(config);
-	return { db, pgp };
+	return await configurePostgres.call(this, credentials, options);
 }
 
 export async function searchSchema(this: ILoadOptionsFunctions): Promise<INodeListSearchResult> {
@@ -132,7 +111,6 @@ export async function searchSchema(this: ILoadOptionsFunctions): Promise<INodeLi
 		name: s.schema_name as string,
 		value: s.schema_name as string,
 	}));
-	await db.$pool.end();
 	return { results };
 }
 
@@ -146,12 +124,11 @@ export async function searchTables(this: ILoadOptionsFunctions): Promise<INodeLi
 			[schema.value],
 		);
 	} catch (error) {
-		throw new ApplicationError(error as string);
+		throw new OperationalError(error as string);
 	}
 	const results: INodeListSearchItems[] = (tableList as IDataObject[]).map((s) => ({
 		name: s.table_name as string,
 		value: s.table_name as string,
 	}));
-	await db.$pool.end();
 	return { results };
 }

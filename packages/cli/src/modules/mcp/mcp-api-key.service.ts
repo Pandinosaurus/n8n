@@ -1,0 +1,163 @@
+import { ApiKey, ApiKeyRepository, User } from '@n8n/db';
+import { Service } from '@n8n/di';
+import type { AuthMethod } from '@n8n/permissions';
+import { EntityManager } from '@n8n/typeorm';
+import { randomUUID } from 'crypto';
+import { ensureError } from '@n8n/utils/errors/ensure-error';
+import { ApiKeyAudience } from 'n8n-workflow';
+
+import { AuthStrategyRegistry, UserWithContext } from '@n8n/backend-services/auth';
+import { JwtService } from '@n8n/backend-services';
+
+const API_KEY_AUDIENCE: ApiKeyAudience = 'mcp-server-api';
+const API_KEY_ISSUER = 'n8n';
+const REDACT_API_KEY_REVEAL_COUNT = 4;
+const REDACT_API_KEY_MAX_LENGTH = 10;
+const API_KEY_LABEL = 'MCP Server API Key';
+const REDACT_API_KEY_MIN_HIDDEN_CHARS = 6;
+
+export type McpApiKeyResult = UserWithContext & {
+	/** Set on success, for the authentication log line. */
+	authMethod?: Extract<AuthMethod, 'api-key' | 'scoped-jwt'>;
+};
+
+/**
+ * Service for managing MCP server API keys, including creation, retrieval, deletion, and authentication middleware.
+ */
+@Service()
+export class McpServerApiKeyService {
+	constructor(
+		private readonly apiKeyRepository: ApiKeyRepository,
+		private readonly jwtService: JwtService,
+		private readonly authStrategyRegistry: AuthStrategyRegistry,
+	) {}
+
+	async createMcpServerApiKey(user: User, trx?: EntityManager) {
+		const manager = trx ?? this.apiKeyRepository.manager;
+
+		const apiKey = this.jwtService.sign('mcpApiKey', {
+			sub: user.id,
+			iss: API_KEY_ISSUER,
+			jti: randomUUID(),
+		});
+
+		const apiKeyEntity = this.apiKeyRepository.create({
+			userId: user.id,
+			apiKey,
+			audience: API_KEY_AUDIENCE,
+			scopes: [],
+			label: API_KEY_LABEL,
+		});
+
+		await manager.insert(ApiKey, apiKeyEntity);
+
+		return await manager.findOneByOrFail(ApiKey, { apiKey });
+	}
+
+	async findServerApiKeyForUser(user: User, { redact = true } = {}) {
+		const apiKey = await this.apiKeyRepository.findOne({
+			where: {
+				userId: user.id,
+				audience: API_KEY_AUDIENCE,
+			},
+		});
+
+		if (apiKey && redact) {
+			apiKey.apiKey = this.redactApiKey(apiKey.apiKey);
+		}
+
+		return apiKey;
+	}
+
+	/** `null`: no strategy knows the token, so the caller must send it down another path. */
+	async verifyApiKey(apiKey: string): Promise<McpApiKeyResult | null> {
+		try {
+			const tokenGrant = await this.authStrategyRegistry.buildContextFromToken(apiKey, {
+				audience: API_KEY_AUDIENCE,
+			});
+
+			if (tokenGrant === null) return null;
+
+			if (tokenGrant === false) {
+				return {
+					user: null,
+					context: {
+						reason: 'invalid_token',
+						auth_type: 'api_key',
+					},
+				};
+			}
+
+			return {
+				user: tokenGrant.actor ?? tokenGrant.subject,
+				actor: tokenGrant.actor,
+				// Every non-OAuth bearer token the strategy chain admits is reported
+				// as `api_key`, token-exchange scoped JWTs included. The distinction
+				// between them is not surfaced to telemetry or log streaming.
+				caller: {
+					authType: 'api_key',
+					// Experiment cleanup (123_surface_mcp_to_claude_trial_users)
+					...(tokenGrant.apiKeyId ? { apiKeyId: tokenGrant.apiKeyId } : {}),
+					// EOF Experiment cleanup
+				},
+				// Only the API-key strategy sets `apiKeyId`; a token-exchange grant has none.
+				authMethod: tokenGrant.apiKeyId === undefined ? 'scoped-jwt' : 'api-key',
+			};
+		} catch (error) {
+			const errorForSure = ensureError(error);
+			return {
+				user: null,
+				context: {
+					reason: errorForSure.name === 'JsonWebTokenError' ? 'invalid_token' : 'unknown_error',
+					auth_type: 'api_key',
+					error_details: errorForSure.message,
+				},
+			};
+		}
+	}
+
+	async deleteAllMcpApiKeysForUser(user: User, trx?: EntityManager) {
+		const manager = trx ?? this.apiKeyRepository.manager;
+
+		await manager.delete(ApiKey, {
+			userId: user.id,
+			audience: API_KEY_AUDIENCE,
+		});
+	}
+
+	private redactApiKey(apiKey: string) {
+		if (REDACT_API_KEY_REVEAL_COUNT >= apiKey.length - REDACT_API_KEY_MIN_HIDDEN_CHARS) {
+			return '*'.repeat(apiKey.length);
+		}
+
+		const visiblePart = apiKey.slice(-REDACT_API_KEY_REVEAL_COUNT);
+		const redactedPart = '*'.repeat(
+			Math.max(0, REDACT_API_KEY_MAX_LENGTH - REDACT_API_KEY_REVEAL_COUNT),
+		);
+
+		return redactedPart + visiblePart;
+	}
+
+	async getOrCreateApiKey(user: User) {
+		const apiKey = await this.apiKeyRepository.findOne({
+			where: {
+				userId: user.id,
+				audience: API_KEY_AUDIENCE,
+			},
+		});
+
+		if (apiKey) {
+			apiKey.apiKey = this.redactApiKey(apiKey.apiKey);
+			return apiKey;
+		}
+
+		return await this.createMcpServerApiKey(user);
+	}
+
+	async rotateMcpServerApiKey(user: User) {
+		return await this.apiKeyRepository.manager.transaction(async (trx) => {
+			await this.deleteAllMcpApiKeysForUser(user, trx);
+			return await this.createMcpServerApiKey(user, trx);
+		});
+	}
+}

@@ -2,31 +2,73 @@ import type {
 	IExecuteFunctions,
 	IDataObject,
 	JsonObject,
-	IRequestOptions,
+	IHttpRequestOptions,
 	IHttpRequestMethods,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestPath, requestUrl } from 'n8n-workflow';
 
 import type { ElasticsearchApiCredentials } from './types';
+
+export async function elasticsearchBulkApiRequest(this: IExecuteFunctions, body: IDataObject) {
+	const { baseUrl, ignoreSSLIssues } =
+		await this.getCredentials<ElasticsearchApiCredentials>('elasticsearchApi');
+
+	const bulkBody = Object.values(body).flat().join('\n') + '\n';
+
+	const options: WithRequestTarget<IHttpRequestOptions> = {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-ndjson' },
+		body: bulkBody,
+		url: requestUrl`${baseUrl}/_bulk`,
+		skipSslCertificateValidation: ignoreSSLIssues,
+		returnFullResponse: true,
+		ignoreHttpStatusErrors: true,
+	};
+
+	const response = await this.helpers.httpRequestWithAuthentication.call(
+		this,
+		'elasticsearchApi',
+		options,
+	);
+
+	if (response.statusCode > 299) {
+		if (this.continueOnFail()) {
+			return Object.values(body).map((_) => ({ error: response.body.error }));
+		} else {
+			throw new NodeApiError(this.getNode(), { error: response.body.error } as JsonObject);
+		}
+	}
+
+	return response.body.items.map((item: IDataObject) => {
+		return {
+			...(item.index as IDataObject),
+			...(item.update as IDataObject),
+			...(item.create as IDataObject),
+			...(item.delete as IDataObject),
+			...(item.error as IDataObject),
+		};
+	});
+}
 
 export async function elasticsearchApiRequest(
 	this: IExecuteFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
 ) {
-	const { baseUrl, ignoreSSLIssues } = (await this.getCredentials(
-		'elasticsearchApi',
-	)) as ElasticsearchApiCredentials;
+	const { baseUrl, ignoreSSLIssues } =
+		await this.getCredentials<ElasticsearchApiCredentials>('elasticsearchApi');
 
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IHttpRequestOptions> = {
 		method,
 		body,
 		qs,
-		uri: `${baseUrl}${endpoint}`,
+		url: requestUrl`${baseUrl}${endpoint}`,
 		json: true,
-		rejectUnauthorized: !ignoreSSLIssues,
+		skipSslCertificateValidation: ignoreSSLIssues,
 	};
 
 	if (!Object.keys(body).length) {
@@ -38,7 +80,7 @@ export async function elasticsearchApiRequest(
 	}
 
 	try {
-		return await this.helpers.requestWithAuthentication.call(this, 'elasticsearchApi', options);
+		return await this.helpers.httpRequestWithAuthentication.call(this, 'elasticsearchApi', options);
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject);
 	}
@@ -51,10 +93,14 @@ export async function elasticsearchApiRequestAllItems(
 	qs: IDataObject = {},
 ): Promise<any> {
 	//https://www.elastic.co/guide/en/elasticsearch/reference/7.16/paginate-search-results.html#search-after
+	// Validated up front so an invalid id surfaces as itself rather than being
+	// caught below and rewrapped as an Elasticsearch API failure.
+	const pitEndpoint = requestPath`/${indexId}/_pit`;
+
 	try {
 		//create a point in time (PIT) to preserve the current index state over your searches
 		let pit = (
-			await elasticsearchApiRequest.call(this, 'POST', `/${indexId}/_pit`, {}, { keep_alive: '1m' })
+			await elasticsearchApiRequest.call(this, 'POST', pitEndpoint, {}, { keep_alive: '1m' })
 		)?.id as string;
 
 		let returnData: IDataObject[] = [];
@@ -71,7 +117,13 @@ export async function elasticsearchApiRequestAllItems(
 			track_total_hits: false, //Disable the tracking of total hits to speed up pagination
 		};
 
-		responseData = await elasticsearchApiRequest.call(this, 'GET', '/_search', requestBody, qs);
+		responseData = await elasticsearchApiRequest.call(
+			this,
+			'POST',
+			requestPath`/_search`,
+			requestBody,
+			qs,
+		);
 		if (responseData?.hits?.hits) {
 			returnData = returnData.concat(responseData.hits.hits as IDataObject[]);
 			const lastHitIndex = responseData.hits.hits.length - 1;
@@ -87,7 +139,13 @@ export async function elasticsearchApiRequestAllItems(
 			requestBody.search_after = searchAfter;
 			requestBody.pit = { id: pit, keep_alive: '1m' };
 
-			responseData = await elasticsearchApiRequest.call(this, 'GET', '/_search', requestBody, qs);
+			responseData = await elasticsearchApiRequest.call(
+				this,
+				'POST',
+				requestPath`/_search`,
+				requestBody,
+				qs,
+			);
 
 			if (responseData?.hits?.hits?.length) {
 				returnData = returnData.concat(responseData.hits.hits as IDataObject[]);
@@ -99,7 +157,7 @@ export async function elasticsearchApiRequestAllItems(
 			}
 		}
 
-		await elasticsearchApiRequest.call(this, 'DELETE', '/_pit', { id: pit });
+		await elasticsearchApiRequest.call(this, 'DELETE', requestPath`/_pit`, { id: pit });
 
 		return returnData;
 	} catch (error) {

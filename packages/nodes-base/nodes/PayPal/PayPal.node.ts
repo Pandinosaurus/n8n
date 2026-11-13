@@ -8,8 +8,11 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 	IRequestOptions,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath, requestUrl } from 'n8n-workflow';
+
+import { payPalApiRequest, payPalApiRequestAllItems, validateJSON } from './GenericFunctions';
 import {
 	payoutFields,
 	payoutItemFields,
@@ -24,7 +27,6 @@ import type {
 	RecipientType,
 	RecipientWallet,
 } from './PaymentInteface';
-import { payPalApiRequest, payPalApiRequestAllItems, validateJSON } from './GenericFunctions';
 
 export class PayPal implements INodeType {
 	description: INodeTypeDescription = {
@@ -38,8 +40,8 @@ export class PayPal implements INodeType {
 		defaults: {
 			name: 'PayPal',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'payPalApi',
@@ -101,18 +103,17 @@ export class PayPal implements INodeType {
 
 				const base64Key = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
-				const options: IRequestOptions = {
-					headers: {
-						Authorization: `Basic ${base64Key}`,
-					},
-					method: 'POST',
-					uri: `${baseUrl}/v1/oauth2/token`,
-					form: {
-						grant_type: 'client_credentials',
-					},
-				};
-
 				try {
+					const options: WithRequestTarget<IRequestOptions, 'uri'> = {
+						headers: {
+							Authorization: `Basic ${base64Key}`,
+						},
+						method: 'POST',
+						uri: requestUrl`${baseUrl}/v1/oauth2/token`,
+						form: {
+							grant_type: 'client_credentials',
+						},
+					};
 					await this.helpers.request(options);
 					return {
 						status: 'OK',
@@ -186,7 +187,12 @@ export class PayPal implements INodeType {
 							const itemsJson = validateJSON(this.getNodeParameter('itemsJson', i) as string);
 							body.items = itemsJson;
 						}
-						responseData = await payPalApiRequest.call(this, '/payments/payouts', 'POST', body);
+						responseData = await payPalApiRequest.call(
+							this,
+							requestPath`/payments/payouts`,
+							'POST',
+							body,
+						);
 					}
 					if (operation === 'get') {
 						const payoutBatchId = this.getNodeParameter('payoutBatchId', i) as string;
@@ -195,7 +201,7 @@ export class PayPal implements INodeType {
 							responseData = await payPalApiRequestAllItems.call(
 								this,
 								'items',
-								`/payments/payouts/${payoutBatchId}`,
+								requestPath`/payments/payouts/${payoutBatchId}`,
 								'GET',
 								{},
 								qs,
@@ -204,7 +210,7 @@ export class PayPal implements INodeType {
 							qs.page_size = this.getNodeParameter('limit', i);
 							responseData = await payPalApiRequest.call(
 								this,
-								`/payments/payouts/${payoutBatchId}`,
+								requestPath`/payments/payouts/${payoutBatchId}`,
 								'GET',
 								{},
 								qs,
@@ -217,7 +223,7 @@ export class PayPal implements INodeType {
 						const payoutItemId = this.getNodeParameter('payoutItemId', i) as string;
 						responseData = await payPalApiRequest.call(
 							this,
-							`/payments/payouts-item/${payoutItemId}`,
+							requestPath`/payments/payouts-item/${payoutItemId}`,
 							'GET',
 							{},
 							qs,
@@ -227,7 +233,7 @@ export class PayPal implements INodeType {
 						const payoutItemId = this.getNodeParameter('payoutItemId', i) as string;
 						responseData = await payPalApiRequest.call(
 							this,
-							`/payments/payouts-item/${payoutItemId}/cancel`,
+							requestPath`/payments/payouts-item/${payoutItemId}/cancel`,
 							'POST',
 							{},
 							qs,

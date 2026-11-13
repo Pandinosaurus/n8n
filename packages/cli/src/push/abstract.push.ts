@@ -1,9 +1,20 @@
-import { EventEmitter } from 'events';
-import { assert, jsonStringify } from 'n8n-workflow';
-import type { IPushDataType } from '@/Interfaces';
-import type { Logger } from '@/Logger';
-import type { User } from '@db/entities/User';
-import type { OrchestrationService } from '@/services/orchestration.service';
+import type { PushMessage } from '@n8n/api-types';
+import { Logger, TypedEmitter } from '@n8n/backend-common';
+import type { User } from '@n8n/db';
+import { Service } from '@n8n/di';
+import { ErrorReporter } from 'n8n-core';
+import { jsonStringify } from 'n8n-workflow';
+
+import type { OnPushMessage } from '@/push/types';
+
+export interface AbstractPushEvents {
+	message: OnPushMessage;
+}
+
+type PushTarget<Connection> = { pushRef: string; userId: User['id']; connection: Connection };
+
+/** User ids are UUIDs with no `:`, so two pairs never share a key. */
+const connectionKey = (pushRef: string, userId: User['id']): string => `${userId}:${pushRef}`;
 
 /**
  * Abstract class for two-way push communication.
@@ -11,115 +22,136 @@ import type { OrchestrationService } from '@/services/orchestration.service';
  *
  * @emits message when a message is received from a client
  */
-export abstract class AbstractPush<T> extends EventEmitter {
-	protected connections: Record<string, T> = {};
+@Service()
+export abstract class AbstractPush<Connection> extends TypedEmitter<AbstractPushEvents> {
+	/** One entry per user and push ref, so users on the same push ref never replace each other. */
+	protected connections = new Map<string, PushTarget<Connection>>();
 
-	protected userIdByPushRef: Record<string, string> = {};
-
-	protected abstract close(connection: T): void;
-	protected abstract sendToOneConnection(connection: T, data: string): void;
+	protected abstract close(connection: Connection): void;
+	protected abstract sendToOneConnection(
+		connection: Connection,
+		data: string,
+		isBinary: boolean,
+	): void;
+	protected abstract ping(connection: Connection): void;
 
 	constructor(
 		protected readonly logger: Logger,
-		private readonly orchestrationService: OrchestrationService,
+		protected readonly errorReporter: ErrorReporter,
 	) {
 		super();
+		// Ping all connected clients every 60 seconds
+		setInterval(() => this.pingAll(), 60 * 1000);
 	}
 
-	protected add(pushRef: string, userId: User['id'], connection: T) {
-		const { connections, userIdByPushRef } = this;
+	protected add(pushRef: string, userId: User['id'], connection: Connection): void {
 		this.logger.debug('Add editor-UI session', { pushRef });
 
-		const existingConnection = connections[pushRef];
+		const key = connectionKey(pushRef, userId);
+		const existing = this.connections.get(key);
 
-		if (existingConnection) {
-			// Make sure to remove existing connection with the same ID
-			this.close(existingConnection);
+		if (existing) {
+			// Make sure to remove the existing connection of this user with the same ID
+			this.close(existing.connection);
 		}
 
-		connections[pushRef] = connection;
-		userIdByPushRef[pushRef] = userId;
+		this.connections.set(key, { pushRef, userId, connection });
 	}
 
-	protected onMessageReceived(pushRef: string, msg: unknown) {
+	protected onMessageReceived(pushRef: string, userId: User['id'], msg: unknown): void {
 		this.logger.debug('Received message from editor-UI', { pushRef, msg });
-
-		const userId = this.userIdByPushRef[pushRef];
 
 		this.emit('message', { pushRef, userId, msg });
 	}
 
-	protected remove(pushRef?: string) {
-		if (!pushRef) return;
-
-		this.logger.debug('Removed editor-UI session', { pushRef });
-
-		delete this.connections[pushRef];
-		delete this.userIdByPushRef[pushRef];
+	protected getConnection(pushRef: string, userId: User['id']): Connection | undefined {
+		return this.connections.get(connectionKey(pushRef, userId))?.connection;
 	}
 
-	private sendTo(type: IPushDataType, data: unknown, pushRefs: string[]) {
-		this.logger.debug(`Send data of type "${type}" to editor-UI`, {
+	protected remove(pushRef: string, userId: User['id']): void {
+		this.logger.debug('Removed editor-UI session', { pushRef });
+
+		this.connections.delete(connectionKey(pushRef, userId));
+	}
+
+	private sendTo(
+		{ type, data }: PushMessage,
+		targets: Array<PushTarget<Connection>>,
+		asBinary: boolean = false,
+	): void {
+		if (targets.length === 0) return;
+
+		this.logger.debug(`Pushed to frontend: ${type}`, {
 			dataType: type,
-			pushRefs: pushRefs.join(', '),
+			pushRefs: targets.map(({ pushRef }) => pushRef).join(', '),
 		});
 
 		const stringifiedPayload = jsonStringify({ type, data }, { replaceCircularRefs: true });
 
-		for (const pushRef of pushRefs) {
-			const connection = this.connections[pushRef];
-			assert(connection);
-			this.sendToOneConnection(connection, stringifiedPayload);
+		for (const { connection } of targets) {
+			this.sendToOneConnection(connection, stringifiedPayload, asBinary);
 		}
 	}
 
-	sendToAll(type: IPushDataType, data?: unknown) {
-		this.sendTo(type, data, Object.keys(this.connections));
+	private pingAll(): void {
+		for (const { connection } of this.connections.values()) {
+			this.ping(connection);
+		}
 	}
 
-	sendToOneSession(type: IPushDataType, data: unknown, pushRef: string) {
-		/**
-		 * Multi-main setup: In a manual webhook execution, the main process that
-		 * handles a webhook might not be the same as the main process that created
-		 * the webhook. If so, the handler process commands the creator process to
-		 * relay the former's execution lifecycle events to the creator's frontend.
-		 */
-		if (this.orchestrationService.isMultiMainSetupEnabled && !this.hasPushRef(pushRef)) {
-			const payload = { type, args: data, pushRef };
-
-			void this.orchestrationService.publish('relay-execution-lifecycle-event', payload);
-
-			return;
-		}
-
-		if (this.connections[pushRef] === undefined) {
-			this.logger.error(`The session "${pushRef}" is not registered.`, { pushRef });
-			return;
-		}
-
-		this.sendTo(type, data, [pushRef]);
+	sendToAll(pushMsg: PushMessage): void {
+		this.sendTo(pushMsg, [...this.connections.values()]);
 	}
 
-	sendToUsers(type: IPushDataType, data: unknown, userIds: Array<User['id']>) {
-		const { connections } = this;
-		const userPushRefs = Object.keys(connections).filter((pushRef) =>
-			userIds.includes(this.userIdByPushRef[pushRef]),
+	sendToOne(
+		pushMsg: PushMessage,
+		pushRef: string,
+		userId: User['id'] | undefined,
+		asBinary: boolean = false,
+	): void {
+		const target =
+			userId === undefined ? undefined : this.connections.get(connectionKey(pushRef, userId));
+
+		if (target) {
+			this.sendTo(pushMsg, [target], asBinary);
+		} else {
+			this.logger.debug(`The session "${pushRef}" is not registered for this user.`, { pushRef });
+		}
+	}
+
+	sendToUsers(
+		pushMsg: PushMessage,
+		userIds: Array<User['id']>,
+		options?: { excludePushRef?: string },
+	): void {
+		const userIdSet = new Set(userIds);
+		const userTargets = [...this.connections.values()].filter(
+			({ pushRef, userId }) => pushRef !== options?.excludePushRef && userIdSet.has(userId),
 		);
 
-		this.sendTo(type, data, userPushRefs);
+		this.sendTo(pushMsg, userTargets);
 	}
 
-	closeAllConnections() {
-		for (const pushRef in this.connections) {
+	/** Sizes of the in-memory collections, for diagnostics and tests. */
+	getDiagnosticCounts(): { connections: number } {
+		return { connections: this.connections.size };
+	}
+
+	closeAllConnections(): void {
+		for (const { connection } of this.connections.values()) {
 			// Signal the connection that we want to close it.
 			// We are not removing the sessions here because it should be
 			// the implementation's responsibility to do so once the connection
 			// has actually closed.
-			this.close(this.connections[pushRef]);
+			this.close(connection);
 		}
 	}
 
-	hasPushRef(pushRef: string) {
-		return this.connections[pushRef] !== undefined;
+	hasPushRef(pushRef: string): boolean {
+		return [...this.connections.values()].some((target) => target.pushRef === pushRef);
+	}
+
+	hasPushRefOfUser(pushRef: string, userId: User['id'] | undefined): boolean {
+		return userId !== undefined && this.connections.has(connectionKey(pushRef, userId));
 	}
 }

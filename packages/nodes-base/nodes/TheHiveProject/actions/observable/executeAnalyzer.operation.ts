@@ -4,9 +4,13 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { observableRLC, observableTypeOptions } from '../../descriptions';
-import { theHiveApiRequest } from '../../transport';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { observableRLC, observableTypeOptions } from '../../descriptions';
+import { parseAnalyzers } from '../../helpers/utils';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	observableRLC,
@@ -16,7 +20,7 @@ const properties: INodeProperties[] = [
 		name: 'analyzers',
 		type: 'multiOptions',
 		description:
-			'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		required: true,
 		default: [],
 		typeOptions: {
@@ -47,13 +51,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		extractValue: true,
 	}) as string;
 
-	const analyzers = (this.getNodeParameter('analyzers', i) as string[]).map((analyzer) => {
-		const parts = analyzer.split('::');
-		return {
-			analyzerId: parts[0],
-			cortexId: parts[1],
-		};
-	});
+	const analyzers = parseAnalyzers(this.getNodeParameter('analyzers', i) as string | string[]);
 	let response: any;
 	let body: IDataObject;
 
@@ -67,7 +65,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		response = await theHiveApiRequest.call(
 			this,
 			'POST',
-			'/connector/cortex/job' as string,
+			requestPath`/connector/cortex/job`,
 			body,
 			qs,
 		);
@@ -78,7 +76,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 			responseData = await theHiveApiRequest.call(
 				this,
 				'GET',
-				`/connector/cortex/job/${jobId}`,
+				requestPath`/connector/cortex/job/${jobId}`,
 				body,
 				qs,
 			);

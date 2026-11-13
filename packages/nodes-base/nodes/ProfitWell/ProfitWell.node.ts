@@ -1,30 +1,30 @@
-import type {
-	IExecuteFunctions,
-	IDataObject,
-	ILoadOptionsFunctions,
-	INodeExecutionData,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeDescription,
+import {
+	type IExecuteFunctions,
+	type IDataObject,
+	type ILoadOptionsFunctions,
+	type INodeExecutionData,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeDescription,
+	NodeConnectionTypes,
+	requestPath,
 } from 'n8n-workflow';
 
+import { companyOperations } from './CompanyDescription';
 import type { Metrics } from './GenericFunctions';
 import {
 	profitWellApiRequest,
 	simplifyDailyMetrics,
 	simplifyMontlyMetrics,
 } from './GenericFunctions';
-
-import { companyOperations } from './CompanyDescription';
-
 import { metricFields, metricOperations } from './MetricDescription';
 
 export class ProfitWell implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'ProfitWell',
 		name: 'profitWell',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
-		icon: 'file:profitwell.png',
+
+		icon: { light: 'file:profitwell.svg', dark: 'file:profitwell.dark.svg' },
 		group: ['output'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -32,8 +32,9 @@ export class ProfitWell implements INodeType {
 		defaults: {
 			name: 'ProfitWell',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'profitWellApi',
@@ -70,7 +71,7 @@ export class ProfitWell implements INodeType {
 		loadOptions: {
 			async getPlanIds(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const planIds = await profitWellApiRequest.call(this, 'GET', '/metrics/plans');
+				const planIds = await profitWellApiRequest.call(this, 'GET', requestPath`/metrics/plans`);
 				for (const planId of planIds.plan_ids) {
 					returnData.push({
 						name: planId,
@@ -94,7 +95,11 @@ export class ProfitWell implements INodeType {
 			try {
 				if (resource === 'company') {
 					if (operation === 'getSetting') {
-						responseData = await profitWellApiRequest.call(this, 'GET', '/company/settings/');
+						responseData = await profitWellApiRequest.call(
+							this,
+							'GET',
+							requestPath`/company/settings/`,
+						);
 					}
 				}
 				if (resource === 'metric') {
@@ -120,7 +125,13 @@ export class ProfitWell implements INodeType {
 							delete qs.monthlyMetrics;
 						}
 
-						responseData = await profitWellApiRequest.call(this, 'GET', `/metrics/${type}`, {}, qs);
+						responseData = await profitWellApiRequest.call(
+							this,
+							'GET',
+							requestPath`/metrics/${type}`,
+							{},
+							qs,
+						);
 						responseData = responseData.data as Metrics;
 
 						if (simple) {

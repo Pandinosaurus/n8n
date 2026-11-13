@@ -1,14 +1,16 @@
+import set from 'lodash/set';
 import type {
 	IDataObject,
 	IExecuteFunctions,
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
-import set from 'lodash/set';
-import { theHiveApiRequest } from '../../transport';
-import { fixFieldType, prepareInputItem } from '../../helpers/utils';
+import { NodeOperationError, requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { fixFieldType, prepareInputItem } from '../../helpers/utils';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	{
@@ -82,7 +84,7 @@ export async function execute(
 	}
 
 	if (fieldsToMatchOn.includes('id')) {
-		await theHiveApiRequest.call(this, 'PATCH', `/v1/task/${id}`, body);
+		await theHiveApiRequest.call(this, 'PATCH', requestPath`/v1/task/${id}`, body);
 	} else {
 		const filter = {
 			_name: 'filter',
@@ -106,7 +108,7 @@ export async function execute(
 		const matches = (await theHiveApiRequest.call(
 			this,
 			'POST',
-			'/v1/query',
+			requestPath`/v1/query`,
 			queryBody,
 		)) as IDataObject[];
 
@@ -118,7 +120,7 @@ export async function execute(
 
 		updateBody.ids = ids;
 
-		await theHiveApiRequest.call(this, 'PATCH', '/v1/task/_bulk', updateBody);
+		await theHiveApiRequest.call(this, 'PATCH', requestPath`/v1/task/_bulk`, updateBody);
 	}
 
 	const executionData = this.helpers.constructExecutionMetaData(

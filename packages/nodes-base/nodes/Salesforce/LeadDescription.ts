@@ -93,7 +93,7 @@ export const leadFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'The field to check to see if the lead already exists. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'The field to check to see if the lead already exists. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 	},
 	{
 		displayName: 'Value to Match',
@@ -200,7 +200,7 @@ export const leadFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Value',
@@ -290,7 +290,7 @@ export const leadFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Mobile Phone',
@@ -307,15 +307,38 @@ export const leadFields: INodeProperties[] = [
 				description: 'Number of employees at the lead’s company. Label is Employees.',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getLeadOwners',
-				},
-				default: '',
-				description:
-					'The owner of the lead. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user or queue...',
+						typeOptions: {
+							searchListMethod: 'searchLeadOwners',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'Owner ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user or queue that owns the lead',
 			},
 			{
 				displayName: 'Phone',
@@ -336,7 +359,7 @@ export const leadFields: INodeProperties[] = [
 				name: 'recordTypeId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getRecordTypes',
 				},
@@ -372,7 +395,7 @@ export const leadFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Status code for this converted lead. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Status code for this converted lead. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Street',
@@ -484,7 +507,7 @@ export const leadFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Value',
@@ -581,7 +604,7 @@ export const leadFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Mobile Phone',
@@ -598,15 +621,38 @@ export const leadFields: INodeProperties[] = [
 				description: 'Number of employees at the lead’s company. Label is Employees.',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getLeadOwners',
-				},
-				default: '',
-				description:
-					'The owner of the lead. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user or queue...',
+						typeOptions: {
+							searchListMethod: 'searchLeadOwners',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'Owner ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user or queue that owns the lead',
 			},
 			{
 				displayName: 'Postal Code',
@@ -627,7 +673,7 @@ export const leadFields: INodeProperties[] = [
 				name: 'recordTypeId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getRecordTypes',
 				},
@@ -663,7 +709,7 @@ export const leadFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Status code for this converted lead. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Status code for this converted lead. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Street',
@@ -796,7 +842,7 @@ export const leadFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'For date, number, or boolean, please use expressions. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'For date, number, or boolean, please use expressions. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							// eslint-disable-next-line n8n-nodes-base/node-param-operation-without-no-data-expression
 							{
@@ -880,7 +926,7 @@ export const leadFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'ID of the campaign that needs to be fetched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'ID of the campaign that needs to be fetched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 	},
 	{
 		displayName: 'Options',
@@ -965,15 +1011,38 @@ export const leadFields: INodeProperties[] = [
 					'Whether true, only the note owner or a user with the “Modify All Data” permission can view the note or query it via the API',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'ID of the user who owns the note. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the note',
 			},
 		],
 	},

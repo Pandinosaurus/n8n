@@ -1,13 +1,22 @@
-import type {
-	IDataObject,
-	INodeExecutionData,
-	IOAuth2Options,
-	IRequestOptions,
-} from 'n8n-workflow';
-
-import set from 'lodash/set';
-
+import { formatPemBlock } from '@n8n/utils/format-pem-block';
 import FormData from 'form-data';
+import get from 'lodash/get';
+import isPlainObject from 'lodash/isPlainObject';
+import set from 'lodash/set';
+import {
+	deepCopy,
+	getCredentialAllowedDomains,
+	type ICredentialDataDecryptedObject,
+	type IDataObject,
+	type INode,
+	type INodeExecutionData,
+	type IOAuth2Options,
+	type IRequestOptions,
+} from 'n8n-workflow';
+import { Readable, Stream } from 'stream';
+import type { SecureContextOptions } from 'tls';
+
+import type { HttpSslAuthCredentials } from './interfaces';
 
 export type BodyParameter = {
 	name: string;
@@ -26,37 +35,160 @@ export const replaceNullValues = (item: INodeExecutionData) => {
 	return item;
 };
 
-export function sanitizeUiMessage(request: IRequestOptions, authDataKeys: IAuthDataSanitizeKeys) {
-	let sendRequest = request as unknown as IDataObject;
+export function removeRequestOptions(error: unknown) {
+	if (typeof error !== 'object' || error === null) return;
 
-	// Protect browser from sending large binary data
-	if (Buffer.isBuffer(sendRequest.body) && sendRequest.body.length > 250000) {
-		sendRequest = {
-			...request,
-			body: `Binary data got replaced with this text. Original was a Buffer with a size of ${
-				(request.body as string).length
-			} byte.`,
-		};
+	Reflect.deleteProperty(error, 'options');
+
+	const cause = Reflect.get(error, 'cause');
+	if (typeof cause === 'object' && cause !== null) {
+		Reflect.deleteProperty(cause, 'options');
+	}
+}
+
+export const REDACTED = '**hidden**';
+
+export const STREAM_REPLACEMENT = 'Binary data got replaced with this text. Original was a stream.';
+
+function isObject(obj: unknown): obj is IDataObject {
+	return isPlainObject(obj);
+}
+
+/**
+ * Checks for a stream by its shape, not its class. An `instanceof` check misses a
+ * stream from another realm or from a different stream implementation.
+ */
+export function isStream(value: unknown): boolean {
+	if (value instanceof Stream) {
+		return true;
+	}
+
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		'pipe' in value &&
+		typeof value.pipe === 'function'
+	);
+}
+/**
+ * Swaps an upload out of a value headed for the browser. A stream has to go
+ * before `deepCopy` runs: once the request is in flight its pipe chain is
+ * circular, and `deepCopy` faithfully preserves cycles.
+ *
+ * A multipart upload is a `form-data` instance from node version 4.2 on, but a
+ * plain `{ field: { value, options } }` map below that and in V1/V2, so a field
+ * value gets the same treatment as the root — it is a stream or a Buffer
+ * depending on whether binary data is stored outside the run data.
+ */
+function replaceUploads(value: IDataObject[string]): IDataObject[string] {
+	if (value instanceof Stream) return STREAM_REPLACEMENT;
+
+	if (Buffer.isBuffer(value)) {
+		return value.length > 250000
+			? `Binary data got replaced with this text. Original was a Buffer with a size of ${value.length} bytes.`
+			: value;
+	}
+
+	if (!isObject(value)) return value;
+
+	// `Object.fromEntries` defines each key instead of assigning it, so a request
+	// property carrying an own `__proto__` key keeps it rather than retargeting
+	// this object's prototype.
+	return Object.fromEntries(
+		Object.entries(value).map(([key, entry]) => [
+			key,
+			isObject(entry) && 'value' in entry
+				? { ...entry, value: replaceUploads(entry.value) }
+				: entry,
+		]),
+	) as IDataObject;
+}
+
+function redactString(str: string, secrets: string[]): string {
+	return secrets.reduce((safe, secret) => safe.split(secret).join(REDACTED), str);
+}
+
+function redact<T = unknown>(obj: T, secrets: string[]): T {
+	if (typeof obj === 'string') {
+		return redactString(obj, secrets) as T;
+	}
+
+	if (Array.isArray(obj)) {
+		return obj.map((item) => redact(item, secrets)) as T;
+	} else if (isObject(obj)) {
+		const result: IDataObject = {};
+		for (const [key, value] of Object.entries(obj)) {
+			const redactedKey = redactString(key, secrets);
+			result[redactedKey] = redact(value, secrets);
+		}
+		return result as T;
+	}
+
+	return obj;
+}
+
+export function sanitizeUiMessage(
+	request: IRequestOptions,
+	authDataKeys: IAuthDataSanitizeKeys,
+	secrets?: string[],
+) {
+	const { body, ...rest } = request as IDataObject;
+
+	// `body` is not copied: `deepCopy` turns a Buffer into `{ type, data }`.
+	const sendRequest: IDataObject = { body: replaceUploads(body) };
+	for (const [key, value] of Object.entries(rest)) {
+		sendRequest[key] = deepCopy(replaceUploads(value));
 	}
 
 	// Remove credential information
-	for (const requestProperty of Object.keys(authDataKeys)) {
-		sendRequest = {
-			...sendRequest,
-			[requestProperty]: Object.keys(sendRequest[requestProperty] as object).reduce(
-				// eslint-disable-next-line @typescript-eslint/no-loop-func
-				(acc: IDataObject, curr) => {
-					acc[curr] = authDataKeys[requestProperty].includes(curr)
-						? '** hidden **'
-						: (sendRequest[requestProperty] as IDataObject)[curr];
-					return acc;
-				},
-				{},
-			),
-		};
+	for (const [requestProperty, authKeys] of Object.entries(authDataKeys)) {
+		const target = sendRequest[requestProperty];
+		// A property swapped for a placeholder string has nothing to redact, and
+		// iterating it would yield one key per character.
+		if (!isObject(target)) continue;
+
+		const redacted = { ...target };
+		for (const key of authKeys) {
+			if (key in redacted) redacted[key] = REDACTED;
+		}
+		sendRequest[requestProperty] = redacted;
+	}
+	const HEADER_BLOCKLIST = new Set([
+		'authorization',
+		'x-api-key',
+		'x-auth-token',
+		'cookie',
+		'proxy-authorization',
+		'sslclientcert',
+	]);
+
+	const headers = sendRequest.headers as IDataObject;
+
+	if (headers) {
+		for (const headerName of Object.keys(headers)) {
+			if (HEADER_BLOCKLIST.has(headerName.toLowerCase())) {
+				headers[headerName] = REDACTED;
+			}
+		}
+	}
+	if (secrets && secrets.length > 0) {
+		return redact(sendRequest, secrets);
 	}
 
 	return sendRequest;
+}
+
+export function getSecrets(credentials: ICredentialDataDecryptedObject): string[] {
+	const secrets = Object.values(credentials).filter(
+		(value): value is string => typeof value === 'string' && value.length > 0,
+	);
+
+	const oauthAccessToken = get(credentials, 'oauthTokenData.access_token');
+	if (typeof oauthAccessToken === 'string' && !secrets.includes(oauthAccessToken)) {
+		secrets.push(oauthAccessToken);
+	}
+
+	return secrets;
 }
 
 export const getOAuth2AdditionalParameters = (nodeCredentialType: string) => {
@@ -97,8 +229,8 @@ export const getOAuth2AdditionalParameters = (nodeCredentialType: string) => {
 		mauticOAuth2Api: {
 			includeCredentialsOnRefreshOnBody: true,
 		},
-		microsoftDynamicsOAuth2Api: {
-			property: 'id_token',
+		microsoftAzureMonitorOAuth2Api: {
+			tokenExpiredStatusCode: 403,
 		},
 		philipsHueOAuth2Api: {
 			tokenType: 'Bearer',
@@ -176,21 +308,61 @@ export const prepareRequestBody = async (
 		}, Promise.resolve({}));
 	} else if (bodyType === 'multipart-form-data' && version >= 4.2) {
 		const formData = new FormData();
+		const streams: Readable[] = [];
 
 		for (const parameter of parameters) {
 			if (parameter.parameterType === 'formBinaryData') {
 				const entry = await defaultReducer({}, parameter);
 				const key = Object.keys(entry)[0];
-				const data = entry[key] as { value: Buffer; options: FormData.AppendOptions };
+				const data = entry[key] as { value: Buffer | Readable; options: FormData.AppendOptions };
 				formData.append(key, data.value, data.options);
+				if (data.value instanceof Readable) streams.push(data.value);
 				continue;
 			}
 
 			formData.append(parameter.name, parameter.value);
 		}
 
+		// `FormData.destroy()` drops the appended streams without destroying them.
+		formData.once('close', () => streams.forEach((stream) => stream.destroy()));
 		return formData;
 	} else {
 		return await reduceAsync(parameters, defaultReducer);
 	}
 };
+
+export const setAgentOptions = (
+	requestOptions: IRequestOptions,
+	sslCertificates: HttpSslAuthCredentials | undefined,
+) => {
+	if (sslCertificates) {
+		const agentOptions: SecureContextOptions = {};
+		if (sslCertificates.ca) agentOptions.ca = formatPemBlock(sslCertificates.ca);
+		if (sslCertificates.cert) agentOptions.cert = formatPemBlock(sslCertificates.cert);
+		if (sslCertificates.key) agentOptions.key = formatPemBlock(sslCertificates.key);
+		if (sslCertificates.passphrase) agentOptions.passphrase = sslCertificates.passphrase;
+		requestOptions.agentOptions = agentOptions;
+	}
+};
+
+export const updadeQueryParameterConfig = (version: number) => {
+	if (version < 4.3) {
+		return (qs: IDataObject, name: string, value: string) => (qs[name] = value);
+	} else {
+		return (qs: { [key: string]: any }, name: string, value: any) => {
+			if (qs[name] === undefined) {
+				qs[name] = value;
+			} else if (Array.isArray(qs[name])) {
+				qs[name].push(value);
+			} else {
+				qs[name] = [qs[name], value];
+			}
+		};
+	}
+};
+
+export const getAllowedDomains = (
+	node: INode,
+	credentialData: ICredentialDataDecryptedObject,
+): string | undefined =>
+	getCredentialAllowedDomains({ node, credentialData, surface: 'HTTP Request or GraphQL' });

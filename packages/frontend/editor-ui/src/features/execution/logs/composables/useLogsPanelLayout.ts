@@ -1,0 +1,191 @@
+import {
+	computed,
+	inject,
+	onBeforeUnmount,
+	toValue,
+	watch,
+	type ComputedRef,
+	type ShallowRef,
+} from 'vue';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
+import { useLogsStore } from '@/app/stores/logs.store';
+import { LogsPanelHostKey } from '@/app/constants/injectionKeys';
+import { useResizablePanel } from '@n8n/design-system';
+import { usePopOutWindow } from '@/features/execution/logs/composables/usePopOutWindow';
+import {
+	LOGS_PANEL_STATE,
+	LOCAL_STORAGE_OVERVIEW_PANEL_WIDTH,
+	LOCAL_STORAGE_PANEL_HEIGHT,
+	LOCAL_STORAGE_PANEL_WIDTH,
+	MIN_IO_PANEL_WIDTH,
+} from '@/features/execution/logs/logs.constants';
+
+const INITIAL_POPUP_HEIGHT = 400;
+const COLLAPSED_PANEL_HEIGHT = 32;
+
+export function useLogsPanelLayout(
+	workflowName: ComputedRef<string>,
+	popOutContainer: Readonly<ShallowRef<HTMLElement | null>>,
+	popOutContent: Readonly<ShallowRef<HTMLElement | null>>,
+	container: Readonly<ShallowRef<HTMLElement | null>>,
+	logsContainer: Readonly<ShallowRef<HTMLElement | null>>,
+) {
+	const logsStore = useLogsStore();
+	const telemetry = useTelemetry();
+	// The host defines where the panel lives and how it persists its height (INS-1192).
+	const host = inject(LogsPanelHostKey, {
+		context: 'editor',
+		heightStorageKey: LOCAL_STORAGE_PANEL_HEIGHT,
+	});
+
+	const resizer = useResizablePanel({
+		container: () => toValue(host.heightContainer) ?? document.body,
+		height: {
+			localStorageKey: host.heightStorageKey,
+			defaultSize: function getDefaultHeight(size) {
+				return size * 0.3;
+			},
+			minSize: 160,
+			maxSize: function getMaxHeight(size) {
+				return size * 0.75;
+			},
+			allowCollapse: true,
+		},
+	});
+
+	const chatPanelResizer = useResizablePanel({
+		container,
+		width: {
+			localStorageKey: LOCAL_STORAGE_PANEL_WIDTH,
+			defaultSize: function getDefaultWidth(size) {
+				return Math.min(800, size * 0.3);
+			},
+			minSize: 240,
+			maxSize: function getMaxWidth(size) {
+				return size * 0.8;
+			},
+			snap: true,
+		},
+	});
+
+	const overviewPanelResizer = useResizablePanel({
+		container: logsContainer,
+		width: {
+			localStorageKey: LOCAL_STORAGE_OVERVIEW_PANEL_WIDTH,
+			defaultSize: function getDefaultWidth(size) {
+				// Reserve space for both I/O panes in compact hosts.
+				return Math.min(400, size * 0.3, size - 2 * MIN_IO_PANEL_WIDTH);
+			},
+			minSize: 80,
+			maxSize: 500,
+			allowFullSize: true,
+			snap: true,
+		},
+	});
+
+	const isOpen = computed(() =>
+		logsStore.isOpen
+			? !resizer.isCollapsed.value
+			: resizer.isResizing.value && resizer.height.value > 0,
+	);
+	const isCollapsingDetailsPanel = computed(() => overviewPanelResizer.isFullSize.value);
+	const popOutWindowTitle = computed(() => `Logs - ${workflowName.value}`);
+	const shouldPopOut = computed(() => logsStore.state === LOGS_PANEL_STATE.FLOATING);
+
+	function trackToggle(newState: 'attached' | 'collapsed' | 'floating') {
+		telemetry.track('User toggled log view', {
+			new_state: newState,
+			source: 'user',
+			context: host.context,
+		});
+	}
+
+	const { canPopOut, isPoppedOut, popOutWindow } = usePopOutWindow({
+		title: popOutWindowTitle,
+		initialHeight: INITIAL_POPUP_HEIGHT,
+		initialWidth: window.document.body.offsetWidth * 0.8,
+		container: popOutContainer,
+		content: popOutContent,
+		shouldPopOut,
+		onRequestClose: () => {
+			if (!isOpen.value) {
+				return;
+			}
+
+			trackToggle('attached');
+			logsStore.setPreferPoppedOut(false);
+		},
+	});
+
+	function handleToggleOpen(open?: boolean) {
+		const wasOpen = logsStore.isOpen;
+
+		if (open === wasOpen) {
+			return;
+		}
+
+		logsStore.toggleOpen(open);
+		trackToggle(wasOpen ? 'collapsed' : 'attached');
+	}
+
+	function handlePopOut() {
+		trackToggle('floating');
+		logsStore.toggleOpen(true);
+		logsStore.setPreferPoppedOut(true);
+	}
+
+	function handleResizeEnd() {
+		if (!resizer.isResizing.value) return;
+		if (!logsStore.isOpen && !resizer.isCollapsed.value) {
+			handleToggleOpen(true);
+		}
+
+		if (resizer.isCollapsed.value) {
+			handleToggleOpen(false);
+		}
+	}
+
+	watch(
+		[() => logsStore.state, resizer.height, isPoppedOut],
+		([state, height]) => {
+			const updatedHeight =
+				state === LOGS_PANEL_STATE.FLOATING
+					? 0
+					: state === LOGS_PANEL_STATE.ATTACHED
+						? height
+						: COLLAPSED_PANEL_HEIGHT;
+
+			if (state === LOGS_PANEL_STATE.FLOATING) {
+				popOutWindow?.value?.document.documentElement.style.setProperty(
+					'--logs-panel--height',
+					'100vh',
+				);
+			} else {
+				document.documentElement.style.setProperty('--logs-panel--height', `${updatedHeight}px`);
+			}
+
+			logsStore.setHeight(updatedHeight);
+		},
+		{ immediate: true },
+	);
+
+	onBeforeUnmount(() => logsStore.setHeight(0));
+
+	return {
+		height: resizer.height,
+		chatPanelWidth: chatPanelResizer.width,
+		overviewPanelWidth: overviewPanelResizer.width,
+		canPopOut,
+		isOpen,
+		isCollapsingDetailsPanel,
+		isPoppedOut,
+		isOverviewPanelFullWidth: overviewPanelResizer.isFullSize,
+		popOutWindow,
+		onToggleOpen: handleToggleOpen,
+		onPopOut: handlePopOut,
+		resizer,
+		chatPanelResizer,
+		overviewPanelResizer,
+		onResizeEnd: handleResizeEnd,
+	};
+}

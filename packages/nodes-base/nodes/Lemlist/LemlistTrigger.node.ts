@@ -7,8 +7,9 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
-import { getEvents, lemlistApiRequest } from './GenericFunctions';
+import { getEvents, lemlistApiRequest, lemlistApiRequestAllItems } from './GenericFunctions';
 
 export class LemlistTrigger implements INodeType {
 	description: INodeTypeDescription = {
@@ -23,7 +24,7 @@ export class LemlistTrigger implements INodeType {
 			name: 'Lemlist Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'lemlistApi',
@@ -55,7 +56,7 @@ export class LemlistTrigger implements INodeType {
 				default: {},
 				options: [
 					{
-						displayName: 'Campaing Name or ID',
+						displayName: 'Campaign Name or ID',
 						name: 'campaignId',
 						type: 'options',
 						typeOptions: {
@@ -63,7 +64,7 @@ export class LemlistTrigger implements INodeType {
 						},
 						default: '',
 						description:
-							'We\'ll call this hook only for this campaignId. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'We\'ll call this hook only for this campaignId. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Is First',
@@ -80,11 +81,14 @@ export class LemlistTrigger implements INodeType {
 	methods = {
 		loadOptions: {
 			async getCampaigns(this: ILoadOptionsFunctions) {
-				const campaigns = await lemlistApiRequest.call(this, 'GET', '/campaigns');
-				return campaigns.map(({ _id, name }: { _id: string; name: string }) => ({
-					name,
-					value: _id,
-				}));
+				const campaigns = await lemlistApiRequestAllItems.call(
+					this,
+					'GET',
+					requestPath`/campaigns`,
+				);
+				return campaigns.flatMap(({ _id, name }) =>
+					typeof name === 'string' && typeof _id === 'string' ? [{ name, value: _id }] : [],
+				);
 			},
 		},
 	};
@@ -94,10 +98,14 @@ export class LemlistTrigger implements INodeType {
 			async checkExists(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				const webhookUrl = this.getNodeWebhookUrl('default');
-				const webhooks = await lemlistApiRequest.call(this, 'GET', '/hooks');
+				const webhooks = await lemlistApiRequest.call(this, 'GET', requestPath`/hooks`);
 				for (const webhook of webhooks) {
 					if (webhook.targetUrl === webhookUrl) {
-						await lemlistApiRequest.call(this, 'DELETE', `/hooks/${webhookData.webhookId}`);
+						await lemlistApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/hooks/${webhookData.webhookId}`,
+						);
 						return false;
 					}
 				}
@@ -116,14 +124,18 @@ export class LemlistTrigger implements INodeType {
 					delete body.type;
 				}
 				Object.assign(body, options);
-				const webhook = await lemlistApiRequest.call(this, 'POST', '/hooks', body);
+				const webhook = await lemlistApiRequest.call(this, 'POST', requestPath`/hooks`, body);
 				webhookData.webhookId = webhook._id;
 				return true;
 			},
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				try {
-					await lemlistApiRequest.call(this, 'DELETE', `/hooks/${webhookData.webhookId}`);
+					await lemlistApiRequest.call(
+						this,
+						'DELETE',
+						requestPath`/hooks/${webhookData.webhookId}`,
+					);
 				} catch (error) {
 					return false;
 				}

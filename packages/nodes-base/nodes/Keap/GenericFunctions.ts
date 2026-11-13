@@ -1,47 +1,44 @@
+import { snakeCase } from 'change-case';
 import type {
 	IDataObject,
 	IExecuteFunctions,
 	IHookFunctions,
 	IHttpRequestMethods,
 	ILoadOptionsFunctions,
-	IRequestOptions,
 	IWebhookFunctions,
 	JsonObject,
+	LegacyRequestOptions,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
-
-import { snakeCase } from 'change-case';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
 export async function keapApiRequest(
 	this: IWebhookFunctions | IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	qs: IDataObject = {},
 	uri?: string,
 	headers: IDataObject = {},
-	option: IDataObject = {},
 ): Promise<any> {
-	let options: IRequestOptions = {
+	const options: LegacyRequestOptions = {
 		headers: {
 			'Content-Type': 'application/json',
 		},
 		method,
 		body,
 		qs,
-		uri: uri || `https://api.infusionsoft.com/crm/rest/v1${resource}`,
+		...(uri ? { uri } : { uri: requestUrl`https://api.infusionsoft.com/crm/rest/v1${resource}` }),
 		json: true,
 	};
 	try {
-		options = Object.assign({}, options, option);
 		if (Object.keys(headers).length !== 0) {
 			options.headers = Object.assign({}, options.headers, headers);
 		}
 		if (Object.keys(body as IDataObject).length === 0) {
 			delete options.body;
 		}
-		//@ts-ignore
 		return await this.helpers.requestOAuth2.call(this, 'keapOAuth2Api', options);
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject);
@@ -52,7 +49,7 @@ export async function keapApiRequestAllItems(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},

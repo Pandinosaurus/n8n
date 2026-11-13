@@ -4,6 +4,8 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
 import type { IData, IDimension, IMetric } from '../../helpers/Interfaces';
 import {
 	checkDuplicates,
@@ -80,7 +82,7 @@ const dimensionDropdown: INodeProperties[] = [
 		},
 		default: 'ga:date',
 		description:
-			'Name of the dimension to fetch, for example ga:browser. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'Name of the dimension to fetch, for example ga:browser. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		displayOptions: {
 			show: {
 				listName: ['other'],
@@ -301,7 +303,7 @@ export const description: INodeProperties[] = [
 						default: 'ga:users',
 						hint: 'If expression is specified, name can be any string that you would like',
 						description:
-							'The name of the metric. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The name of the metric. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 						displayOptions: {
 							show: {
 								listName: ['other'],
@@ -691,7 +693,7 @@ export async function execute(
 	}
 
 	const method = 'POST';
-	const endpoint = '/v4/reports:batchGet';
+	const endpoint = requestPath`/v4/reports:batchGet`;
 
 	if (returnAll) {
 		responseData = await googleApiRequestAllItems.call(

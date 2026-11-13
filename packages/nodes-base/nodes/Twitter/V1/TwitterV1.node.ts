@@ -1,3 +1,4 @@
+import ISO6391 from 'iso-639-1';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -9,18 +10,15 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
-import ISO6391 from 'iso-639-1';
 import { directMessageFields, directMessageOperations } from './DirectMessageDescription';
-
-import { tweetFields, tweetOperations } from './TweetDescription';
-
 import {
 	twitterApiRequest,
 	twitterApiRequestAllItems,
 	uploadAttachments,
 } from './GenericFunctions';
-
+import { tweetFields, tweetOperations } from './TweetDescription';
 import type { ITweet, ITweetCreate } from './TweetInterface';
 
 export class TwitterV1 implements INodeType {
@@ -35,8 +33,8 @@ export class TwitterV1 implements INodeType {
 			defaults: {
 				name: 'Twitter',
 			},
-			inputs: ['main'],
-			outputs: ['main'],
+			inputs: [NodeConnectionTypes.Main],
+			outputs: [NodeConnectionTypes.Main],
 			credentials: [
 				{
 					name: 'twitterOAuth1Api',
@@ -139,7 +137,7 @@ export class TwitterV1 implements INodeType {
 						responseData = await twitterApiRequest.call(
 							this,
 							'POST',
-							'/direct_messages/events/new.json',
+							requestPath`/direct_messages/events/new.json`,
 							{ event: body },
 						);
 
@@ -194,7 +192,7 @@ export class TwitterV1 implements INodeType {
 						responseData = await twitterApiRequest.call(
 							this,
 							'POST',
-							'/statuses/update.json',
+							requestPath`/statuses/update.json`,
 							{},
 							body as unknown as IDataObject,
 						);
@@ -206,7 +204,7 @@ export class TwitterV1 implements INodeType {
 						responseData = await twitterApiRequest.call(
 							this,
 							'POST',
-							`/statuses/destroy/${tweetId}.json`,
+							requestPath`/statuses/destroy/${tweetId}.json`,
 							{},
 							{},
 						);
@@ -253,7 +251,7 @@ export class TwitterV1 implements INodeType {
 								this,
 								'statuses',
 								'GET',
-								'/search/tweets.json',
+								requestPath`/search/tweets.json`,
 								{},
 								qs,
 							);
@@ -262,7 +260,7 @@ export class TwitterV1 implements INodeType {
 							responseData = await twitterApiRequest.call(
 								this,
 								'GET',
-								'/search/tweets.json',
+								requestPath`/search/tweets.json`,
 								{},
 								qs,
 							);
@@ -285,7 +283,7 @@ export class TwitterV1 implements INodeType {
 						responseData = await twitterApiRequest.call(
 							this,
 							'POST',
-							'/favorites/create.json',
+							requestPath`/favorites/create.json`,
 							{},
 							qs,
 						);
@@ -306,7 +304,7 @@ export class TwitterV1 implements INodeType {
 						responseData = await twitterApiRequest.call(
 							this,
 							'POST',
-							`/statuses/retweet/${tweetId}.json`,
+							requestPath`/statuses/retweet/${tweetId}.json`,
 							{},
 							qs,
 						);

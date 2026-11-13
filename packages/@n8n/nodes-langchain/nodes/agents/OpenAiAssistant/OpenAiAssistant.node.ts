@@ -1,17 +1,23 @@
-import { AgentExecutor } from 'langchain/agents';
-import { OpenAI as OpenAIClient } from 'openai';
-import { OpenAIAssistantRunnable } from 'langchain/experimental/openai_assistant';
-import { NodeConnectionType, NodeOperationError } from 'n8n-workflow';
+import { AgentExecutor } from '@langchain/classic/agents';
+import type { OpenAIToolType } from '@langchain/classic/dist/experimental/openai_assistant/schema';
+import { OpenAIAssistantRunnable } from '@langchain/classic/experimental/openai_assistant';
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import type {
 	IExecuteFunctions,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import type { OpenAIToolType } from 'langchain/dist/experimental/openai_assistant/schema';
-import { getConnectedTools } from '../../../utils/helpers';
-import { getTracingConfig } from '../../../utils/tracing';
+import { aiClientFetch } from '@n8n/ai-utilities';
+import { OpenAI as OpenAIClient } from 'openai';
+
+import { getConnectedTools, mergeCustomHeaders, getRequiredApiKey } from '@utils/helpers';
+import { getTracingConfig } from '@utils/tracing';
+
 import { formatToOpenAIAssistantTool } from './utils';
+import { assertOpenAiCredentialAllowsUrl } from '../../vendors/OpenAi/helpers/credentials';
+import { Container } from '@n8n/di';
+import { AiConfig } from '@n8n/config';
 
 export class OpenAiAssistant implements INodeType {
 	description: INodeTypeDescription = {
@@ -31,21 +37,26 @@ export class OpenAiAssistant implements INodeType {
 			alias: ['LangChain'],
 			categories: ['AI'],
 			subcategories: {
-				AI: ['Agents'],
+				AI: ['Agents', 'Root Nodes'],
 			},
 			resources: {
 				primaryDocumentation: [
 					{
-						url: 'https://docs.n8n.io/integrations/builtin/cluster-nodes/root-nodes/n8n-nodes-langchain.openaiassistant/',
+						url: 'https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-langchain.openai/assistant-operations',
 					},
 				],
 			},
 		},
 		inputs: [
-			{ type: NodeConnectionType.Main },
-			{ type: NodeConnectionType.AiTool, displayName: 'Tools' },
+			{ type: NodeConnectionTypes.Main },
+			{ type: NodeConnectionTypes.AiTool, displayName: 'Tools' },
 		],
-		outputs: [NodeConnectionType.Main],
+		outputs: [NodeConnectionTypes.Main],
+		builderHint: {
+			inputs: {
+				ai_tool: { required: false },
+			},
+		},
 		credentials: [
 			{
 				name: 'openAiApi',
@@ -107,7 +118,7 @@ export class OpenAiAssistant implements INodeType {
 				name: 'model',
 				type: 'options',
 				description:
-					'The model which will be used to power the assistant. <a href="https://beta.openai.com/docs/models/overview">Learn more</a>. The Retrieval tool requires gpt-3.5-turbo-1106 and gpt-4-1106-preview models.',
+					'The model which will be used to power the assistant. <a href="https://developers.openai.com/api/docs/models">Learn more</a>. The Retrieval tool requires gpt-3.5-turbo-1106 and gpt-4-1106-preview models.',
 				required: true,
 				displayOptions: {
 					show: {
@@ -172,7 +183,7 @@ export class OpenAiAssistant implements INodeType {
 					},
 				},
 				description:
-					'The assistant to use. <a href="https://beta.openai.com/docs/assistants/overview">Learn more</a>.',
+					'The assistant to use. <a href="https://developers.openai.com/api/docs/assistants/migration">Learn more</a>.',
 				typeOptions: {
 					loadOptions: {
 						routing: {
@@ -196,7 +207,7 @@ export class OpenAiAssistant implements INodeType {
 										properties: {
 											name: '={{$responseItem.name}}',
 											value: '={{$responseItem.id}}',
-											// eslint-disable-next-line n8n-local-rules/no-interpolation-in-regular-string
+
 											description: '={{$responseItem.model}}',
 										},
 									},
@@ -268,7 +279,7 @@ export class OpenAiAssistant implements INodeType {
 			},
 			{
 				displayName:
-					'Upload files for retrieval using the <a href="https://platform.openai.com/playground" target="_blank">OpenAI website<a/>',
+					'Upload files for retrieval using the <a href="https://platform.openai.com/storage/files" target="_blank">OpenAI website<a/>',
 				name: 'noticeTools',
 				type: 'notice',
 				typeOptions: {
@@ -313,7 +324,7 @@ export class OpenAiAssistant implements INodeType {
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const nodeVersion = this.getNode().typeVersion;
-		const tools = await getConnectedTools(this, nodeVersion > 1);
+		const tools = await getConnectedTools(this, nodeVersion > 1, false);
 		const credentials = await this.getCredentials('openAiApi');
 
 		const items = this.getInputData();
@@ -337,11 +348,20 @@ export class OpenAiAssistant implements INodeType {
 					throw new NodeOperationError(this.getNode(), 'The ‘text‘ parameter is empty.');
 				}
 
+				const { openAiDefaultHeaders } = Container.get(AiConfig);
+				const defaultHeaders = mergeCustomHeaders(credentials, openAiDefaultHeaders ?? {});
+
+				if (options.baseURL) {
+					assertOpenAiCredentialAllowsUrl(this.getNode(), credentials, options.baseURL);
+				}
+
 				const client = new OpenAIClient({
-					apiKey: credentials.apiKey as string,
+					fetch: aiClientFetch,
+					apiKey: getRequiredApiKey(this.getNode(), credentials.apiKey),
 					maxRetries: options.maxRetries ?? 2,
 					timeout: options.timeout ?? 10000,
 					baseURL: options.baseURL,
+					defaultHeaders,
 				});
 				let agent;
 				const nativeToolsParsed: OpenAIToolType = nativeTools.map((tool) => ({ type: tool }));
@@ -392,6 +412,6 @@ export class OpenAiAssistant implements INodeType {
 			}
 		}
 
-		return await this.prepareOutputData(returnData);
+		return [returnData];
 	}
 }

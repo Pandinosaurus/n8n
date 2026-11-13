@@ -4,35 +4,35 @@ import type {
 	IDataObject,
 	JsonObject,
 	IHttpRequestMethods,
-	IRequestOptions,
+	LegacyRequestOptions,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, decodePathValue, requestUrl } from 'n8n-workflow';
 
 export async function microsoftApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	qs: IDataObject = {},
 	uri?: string,
 	headers: IDataObject = {},
 ): Promise<any> {
-	const options: IRequestOptions = {
+	const options: LegacyRequestOptions = {
 		headers: {
 			'Content-Type': 'application/json',
 		},
 		method,
 		body,
 		qs,
-		uri: uri || `https://graph.microsoft.com${resource}`,
+		...(uri ? { uri } : { uri: requestUrl`https://graph.microsoft.com${resource}` }),
 		json: true,
 	};
 	try {
 		if (Object.keys(headers).length !== 0) {
 			options.headers = Object.assign({}, options.headers, headers);
 		}
-		//@ts-ignore
 		return await this.helpers.requestOAuth2.call(this, 'microsoftTeamsOAuth2Api', options);
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject);
@@ -43,10 +43,11 @@ export async function microsoftApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},
+	limit?: number,
 ): Promise<any> {
 	const returnData: IDataObject[] = [];
 
@@ -54,12 +55,19 @@ export async function microsoftApiRequestAllItems(
 	let uri: string | undefined;
 
 	do {
-		responseData = await microsoftApiRequest.call(this, method, endpoint, body, query, uri);
+		// `@odata.nextLink` already carries the query params; don't re-send them
+		responseData = await microsoftApiRequest.call(
+			this,
+			method,
+			endpoint,
+			body,
+			uri ? {} : query,
+			uri,
+		);
 		uri = responseData['@odata.nextLink'];
 		returnData.push.apply(returnData, responseData[propertyName] as IDataObject[]);
-		const limit = query.limit as number | undefined;
-		if (limit && limit <= returnData.length) {
-			return returnData;
+		if (limit && returnData.length >= limit) {
+			return returnData.slice(0, limit);
 		}
 	} while (responseData['@odata.nextLink'] !== undefined);
 
@@ -70,8 +78,7 @@ export async function microsoftApiRequestAllItemsSkip(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
-
+	endpoint: RequestPath,
 	body: any = {},
 	query: IDataObject = {},
 ): Promise<any> {
@@ -112,4 +119,8 @@ export function prepareMessage(
 			content: message,
 		},
 	};
+}
+
+export function getLinkId(this: IExecuteFunctions, name: 'channelId' | 'chatId', i: number) {
+	return decodePathValue(this.getNodeParameter(name, i) as string);
 }

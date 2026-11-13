@@ -1,3 +1,6 @@
+import isEmpty from 'lodash/isEmpty';
+import map from 'lodash/map';
+import moment from 'moment-timezone';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -8,12 +11,8 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeApiError, requestPath } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
-
-import map from 'lodash/map';
-import isEmpty from 'lodash/isEmpty';
 import {
 	getGoogleAnalyticsDomainsArray,
 	getTags,
@@ -106,8 +105,9 @@ export class Mandrill implements INodeType {
 		defaults: {
 			name: 'Mandrill',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'mandrillApi',
@@ -171,7 +171,7 @@ export class Mandrill implements INodeType {
 				options: [],
 				required: true,
 				description:
-					'The template you want to send. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The template you want to send. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'From Email',
@@ -216,7 +216,7 @@ export class Mandrill implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				default: {},
 				displayOptions: {
 					show: {
@@ -690,7 +690,12 @@ export class Mandrill implements INodeType {
 				const returnData: INodePropertyOptions[] = [];
 				let templates;
 				try {
-					templates = await mandrillApiRequest.call(this, '/templates', 'POST', '/list');
+					templates = await mandrillApiRequest.call(
+						this,
+						requestPath`/templates`,
+						'POST',
+						requestPath`/list`,
+					);
 				} catch (error) {
 					throw new NodeApiError(this.getNode(), error as JsonObject);
 				}
@@ -766,8 +771,8 @@ export class Mandrill implements INodeType {
 						message.from_name = options.fromName;
 					}
 
-					if (options.subaccount) {
-						message.subaccount = options.subaccount;
+					if (options.subAccount) {
+						message.subaccount = options.subAccount.toString();
 					}
 
 					const body: Body = {
@@ -838,7 +843,6 @@ export class Mandrill implements INodeType {
 								// @ts-ignore
 								attachmentsValues = map(attachmentsUi.attachmentsValues, (o: IDataObject) => {
 									const aux: IDataObject = {};
-									// @ts-ignore
 									aux.name = o.name;
 									aux.content = o.content;
 									aux.type = o.type;
@@ -872,13 +876,19 @@ export class Mandrill implements INodeType {
 						body.template_name = template;
 						emailSentResponse = mandrillApiRequest.call(
 							this,
-							'/messages',
+							requestPath`/messages`,
 							'POST',
-							'/send-template',
+							requestPath`/send-template`,
 							body,
 						);
 					} else if (operation === 'sendHtml') {
-						emailSentResponse = mandrillApiRequest.call(this, '/messages', 'POST', '/send', body);
+						emailSentResponse = mandrillApiRequest.call(
+							this,
+							requestPath`/messages`,
+							'POST',
+							requestPath`/send`,
+							body,
+						);
 					}
 
 					responseData = await emailSentResponse;

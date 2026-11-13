@@ -49,7 +49,7 @@ export const itemFields: INodeProperties[] = [
 		displayName: 'Table Name or ID',
 		name: 'tableName',
 		description:
-			'Table to operate on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'Table to operate on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		type: 'options',
 		required: true,
 		displayOptions: {
@@ -89,6 +89,19 @@ export const itemFields: INodeProperties[] = [
 		},
 		default: 'defineBelow',
 		description: 'Whether to insert the input data this node receives in the new row',
+	},
+	{
+		displayName: 'Automatically Parse Numbers',
+		name: 'autoParseNumbers',
+		type: 'boolean',
+		displayOptions: {
+			show: {
+				operation: ['upsert'],
+			},
+		},
+		default: true,
+		description:
+			'Whether to convert number-looking string values to DynamoDB Number (N). Disable to keep strings as String (S).',
 	},
 	{
 		displayName: 'Inputs to Ignore',
@@ -418,7 +431,7 @@ export const itemFields: INodeProperties[] = [
 				options: [
 					{
 						name: 'expressionAttributeValues',
-						displayName: 'Expression Attribute Vaue',
+						displayName: 'Expression Attribute Value',
 						values: [
 							{
 								displayName: 'Attribute',

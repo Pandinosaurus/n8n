@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
-
+import flow from 'lodash/flow';
+import omit from 'lodash/omit';
 import type {
 	ICredentialDataDecryptedObject,
 	IDataObject,
@@ -7,14 +8,13 @@ import type {
 	IHookFunctions,
 	IHttpRequestMethods,
 	ILoadOptionsFunctions,
-	IRequestOptions,
+	IHttpRequestOptions,
 	IWebhookFunctions,
 	JsonObject,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
-
-import flow from 'lodash/flow';
-import omit from 'lodash/omit';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
 import type {
 	AddressFixedCollection,
@@ -29,25 +29,19 @@ import type {
 export async function copperApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions | IWebhookFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
-	uri = '',
-	option: IDataObject = {},
+	option: { resolveWithFullResponse?: boolean } = {},
 ) {
-	const credentials = (await this.getCredentials('copperApi')) as { apiKey: string; email: string };
-
-	let options: IRequestOptions = {
+	let options: WithRequestTarget<IHttpRequestOptions> = {
 		headers: {
-			'X-PW-AccessToken': credentials.apiKey,
-			'X-PW-Application': 'developer_api',
-			'X-PW-UserEmail': credentials.email,
 			'Content-Type': 'application/json',
 		},
 		method,
 		qs,
 		body,
-		uri: uri || `https://api.prosperworks.com/developer_api/v1${resource}`,
+		url: requestUrl`https://api.copper.com/developer_api/v1${resource}`,
 		json: true,
 	};
 
@@ -62,7 +56,7 @@ export async function copperApiRequest(
 	}
 
 	try {
-		return await this.helpers.request(options);
+		return await this.helpers.requestWithAuthentication.call(this, 'copperApi', options);
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject);
 	}
@@ -148,11 +142,10 @@ export const adjustTaskFields = flow(adjustLeadFields, adjustProjectIds);
 export async function copperApiRequestAllItems(
 	this: IHookFunctions | ILoadOptionsFunctions | IExecuteFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
-	uri = '',
-	option: IDataObject = {},
+	option: { resolveWithFullResponse?: boolean } = {},
 ) {
 	let responseData;
 	qs.page_size = 200;
@@ -160,7 +153,7 @@ export async function copperApiRequestAllItems(
 	const returnData: IDataObject[] = [];
 
 	do {
-		responseData = await copperApiRequest.call(this, method, resource, body, qs, uri, option);
+		responseData = await copperApiRequest.call(this, method, resource, body, qs, option);
 		totalItems = responseData.headers['x-pw-total'];
 		returnData.push(...(responseData.body as IDataObject[]));
 	} while (totalItems > returnData.length);
@@ -174,17 +167,16 @@ export async function copperApiRequestAllItems(
 export async function handleListing(
 	this: IExecuteFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	qs: IDataObject = {},
 	body: IDataObject = {},
-	uri = '',
 ) {
 	const returnAll = this.getNodeParameter('returnAll', 0);
 
 	const option = { resolveWithFullResponse: true };
 
 	if (returnAll) {
-		return await copperApiRequestAllItems.call(this, method, endpoint, body, qs, uri, option);
+		return await copperApiRequestAllItems.call(this, method, endpoint, body, qs, option);
 	}
 
 	const limit = this.getNodeParameter('limit', 0);
@@ -194,7 +186,6 @@ export async function handleListing(
 		endpoint,
 		body,
 		qs,
-		uri,
 		option,
 	);
 	return responseData.slice(0, limit);

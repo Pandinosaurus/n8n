@@ -1,0 +1,223 @@
+import { createDeferredPromise } from '@n8n/utils/promise/deferred-promise';
+import type {
+	AINodeConnectionType,
+	CallbackManager,
+	CloseFunction,
+	IExecuteData,
+	IExecuteFunctions,
+	IExecuteResponsePromiseData,
+	IGetNodeParameterOptions,
+	INode,
+	INodeExecutionData,
+	IRunExecutionData,
+	ITaskDataConnections,
+	IWorkflowExecuteAdditionalData,
+	NodeExecutionHint,
+	Workflow,
+	WorkflowExecuteMode,
+	EngineResponse,
+} from 'n8n-workflow';
+import { jsonParse, NodeConnectionTypes } from 'n8n-workflow';
+import { UnexpectedError, UserError } from '@n8n/errors';
+
+import { buildHitlCallbackReference } from '@/utils/hitl-callback-reference';
+
+import { BaseExecuteContext } from './base-execute-context';
+import { SupplyDataContext } from './supply-data-context';
+import {
+	assertBinaryData,
+	getBinaryDataBuffer,
+	getNodeBinaryHelperFunctions,
+	getBinaryHelperFunctions,
+	detectBinaryEncoding,
+} from './utils/binary-helper-functions';
+import { constructExecutionMetaData } from './utils/construct-execution-metadata';
+import { copyInputItems } from './utils/copy-input-items';
+import { getCredentialCheckHelperFunctions } from './utils/credential-check-helper-functions';
+import { getDataTableHelperFunctions } from './utils/data-table-helper-functions';
+import { getDeduplicationHelperFunctions } from './utils/deduplication-helper-functions';
+import { getFileSystemHelperFunctions } from './utils/file-system-helper-functions';
+import { getInputConnectionData } from './utils/get-input-connection-data';
+import { normalizeItems } from './utils/normalize-items';
+import { getRequestHelperFunctions } from './utils/request-helper-functions';
+import { returnJsonArray } from './utils/return-json-array';
+import { getSSHTunnelFunctions } from './utils/ssh-tunnel-helper-functions';
+
+export class ExecuteContext extends BaseExecuteContext implements IExecuteFunctions {
+	readonly helpers: IExecuteFunctions['helpers'];
+
+	readonly nodeHelpers: IExecuteFunctions['nodeHelpers'];
+
+	readonly getNodeParameter: IExecuteFunctions['getNodeParameter'];
+
+	readonly hints: NodeExecutionHint[] = [];
+
+	constructor(
+		workflow: Workflow,
+		node: INode,
+		additionalData: IWorkflowExecuteAdditionalData,
+		mode: WorkflowExecuteMode,
+		runExecutionData: IRunExecutionData,
+		runIndex: number,
+		connectionInputData: INodeExecutionData[],
+		inputData: ITaskDataConnections,
+		executeData: IExecuteData,
+		readonly closeFunctions: CloseFunction[],
+		abortSignal?: AbortSignal,
+		public subNodeExecutionResults?: EngineResponse,
+	) {
+		super(
+			workflow,
+			node,
+			additionalData,
+			mode,
+			runExecutionData,
+			runIndex,
+			connectionInputData,
+			inputData,
+			executeData,
+			abortSignal,
+		);
+
+		this.helpers = {
+			createDeferredPromise,
+			returnJsonArray,
+			copyInputItems,
+			normalizeItems,
+			constructExecutionMetaData,
+			...getRequestHelperFunctions(
+				workflow,
+				node,
+				additionalData,
+				runExecutionData,
+				connectionInputData,
+			),
+			...getBinaryHelperFunctions(additionalData, workflow.id),
+			...getDataTableHelperFunctions(additionalData, workflow, node),
+			...getCredentialCheckHelperFunctions(additionalData),
+			...getSSHTunnelFunctions(),
+			...getFileSystemHelperFunctions(node),
+			...getDeduplicationHelperFunctions(workflow, node),
+
+			assertBinaryData: (itemIndex, propertyName) =>
+				assertBinaryData(inputData, node, itemIndex, propertyName, 0, workflow.settings.binaryMode),
+			getBinaryDataBuffer: async (itemIndex, propertyName) =>
+				await getBinaryDataBuffer(
+					inputData,
+					itemIndex,
+					propertyName,
+					0,
+					workflow.settings.binaryMode,
+				),
+			detectBinaryEncoding: (buffer: Buffer) => detectBinaryEncoding(buffer),
+		};
+
+		this.nodeHelpers = getNodeBinaryHelperFunctions(this.workflow, this.additionalData);
+
+		this.getNodeParameter = ((
+			parameterName: string,
+			itemIndex: number,
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			fallbackValue?: any,
+			options?: IGetNodeParameterOptions,
+		) =>
+			this._getNodeParameter(
+				parameterName,
+				itemIndex,
+				fallbackValue,
+				options,
+			)) as IExecuteFunctions['getNodeParameter'];
+	}
+
+	async getInputConnectionData(
+		connectionType: AINodeConnectionType,
+		itemIndex: number,
+	): Promise<unknown> {
+		return await getInputConnectionData.call(
+			this,
+			SupplyDataContext,
+			this.workflow,
+			this.runExecutionData,
+			this.runIndex,
+			this.connectionInputData,
+			this.inputData,
+			this.additionalData,
+			this.executeData,
+			this.mode,
+			this.closeFunctions,
+			connectionType,
+			itemIndex,
+			this.abortSignal,
+		);
+	}
+
+	getInputData(inputIndex = 0, connectionType = NodeConnectionTypes.Main) {
+		if (!this.inputData.hasOwnProperty(connectionType)) {
+			// Return empty array because else it would throw error when nothing is connected to input
+			return [];
+		}
+		return super.getInputItems(inputIndex, connectionType) ?? [];
+	}
+
+	logNodeOutput(...args: unknown[]): void {
+		if (this.mode === 'manual') {
+			const parsedLogArgs = args.map((arg) =>
+				typeof arg === 'string' ? jsonParse(arg, { fallbackValue: arg }) : arg,
+			);
+			this.sendMessageToUI(...parsedLogArgs);
+			return;
+		}
+
+		if (process.env.CODE_ENABLE_STDOUT === 'true') {
+			console.log(
+				`[Workflow "${this.getWorkflow().id}"][Node "${this.node.name}"]`,
+				...this.redactedConsoleArgs(args),
+			);
+		}
+	}
+
+	async sendResponse(response: IExecuteResponsePromiseData): Promise<void> {
+		await this.additionalData.hooks?.runHook('sendResponse', [response]);
+	}
+
+	/** @deprecated use ISupplyDataFunctions.addInputData */
+	addInputData(): { index: number } {
+		throw new UnexpectedError('addInputData should not be called on IExecuteFunctions');
+	}
+
+	/** @deprecated use ISupplyDataFunctions.addOutputData */
+	addOutputData(): void {
+		throw new UnexpectedError('addOutputData should not be called on IExecuteFunctions');
+	}
+
+	getParentCallbackManager(): CallbackManager | undefined {
+		return this.additionalData.parentCallbackManager;
+	}
+
+	addExecutionHints(...hints: NodeExecutionHint[]) {
+		this.hints.push(...hints);
+	}
+
+	getApprovalCallbackReference(decision: 'approve' | 'decline') {
+		if (this.instanceSettings.instanceType === 'engine') {
+			throw new UserError('Engine v2 does not support approval callbacks yet');
+		}
+
+		const { executionId } = this.additionalData;
+
+		if (typeof executionId !== 'string') {
+			throw new UnexpectedError('Execution id is missing');
+		}
+
+		return buildHitlCallbackReference(
+			executionId,
+			decision === 'approve' ? 'a' : 'd',
+			this.instanceSettings.hmacSignatureSecret,
+		);
+	}
+
+	/** Returns true if the node is being executed as an AI Agent tool */
+	isToolExecution(): boolean {
+		return false;
+	}
+}

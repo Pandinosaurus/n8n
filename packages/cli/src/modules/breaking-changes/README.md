@@ -1,0 +1,399 @@
+# Breaking Changes Detection Module
+
+A rule-based system for detecting breaking changes before migrating to a new n8n version.
+
+## Overview
+
+This module scans the n8n instance (workflows, configuration, environment) to identify issues that will be affected by breaking changes in the target version.
+
+## Architecture
+
+```
+breaking-changes/
+   types/
+      rule.types.ts           # Core interfaces and enums
+      detection.types.ts      # Report types
+      index.ts
+   rules/
+      v2/                     # V2-specific rules
+         removed-nodes.rule.ts
+         process-env-access.rule.ts
+         file-access.rule.ts
+         ...
+      index.ts                # Side-effect imports for all rules
+   database/
+      entities/               # migration_finding, migration_finding_sync, migration_workflow_owner tables
+      repositories/           # Use-case-named DB access (BaseRepository + OperationContext)
+   owners/
+      migration-owner-suggestion.service.ts # Proposes who should fix a workflow's findings
+   notifications/
+      migration-finding-notification.service.ts # Emails owners about a rule's findings and marks them notified
+   sync/
+      migration-finding-diff.ts  # Pure diff of scan hits against stored findings
+      migration-finding-sync.service.ts  # Runs a scan and writes the diff, one transaction per batch
+      migration-finding-sync.listener.ts # Re-checks one workflow on create, save, publish, unpublish, archive, and pull
+   query/
+      migration-finding-query.service.ts  # Shapes finding table reads into the report response types
+   triage/
+      migration-finding-triage.service.ts # Sets the status a user picks for a finding
+   group-nodes-by-type.ts                   # Nodes grouped by type, as workflow rules expect
+   summarize-execution-statistics.ts        # Run count and last run from statistics rows
+   breaking-changes.service.ts              # Detection orchestration
+   breaking-changes.rule-registry.service.ts # Rule management
+   breaking-changes.controller.ts           # REST API
+   breaking-changes.module.ts               # Module definition
+```
+
+### Registration
+
+Rules are registered at startup using the `@BreakingChangeRule` decorator from
+`@n8n/decorators` (following the same pattern as `@BackendModule` / `ModuleMetadata`).
+Each rule file is explicitly imported in `rules/index.ts` as a side-effect
+import, which triggers the decorator and registers the rule class. Because the
+decorator lives in `@n8n/decorators`, rules can be defined anywhere in the codebase.
+
+```
+Module.init()
+  → import './rules'          side-effect imports of all rule files
+    → @BreakingChangeRule fires on each class
+      → BreakingChangeRuleMetadata.register()
+  → import controller
+    → BreakingChangeService constructor
+      → registerRules()       reads from metadata, resolves via DI
+        → RuleRegistry.registerAll()
+```
+
+## API Endpoint
+
+### Detect Breaking Changes
+```
+GET /breaking-changes/report?version=v2
+```
+
+Returns:
+```json
+{
+ "report": {
+  "generatedAt": "2025-10-17T00:00:00.000Z",
+  "targetVersion": "v2",
+  "currentVersion": "1.x.x",
+  "instanceResults": [
+   {
+    "ruleId": "process-env-access-v2",
+    "ruleTitle": "Process Environment Access Restrictions",
+    "ruleDescription": "Access to process.env is now restricted",
+    "ruleImpact": "executionsFail",
+    "instanceIssues": [
+     {
+      "title": "Environment access detected",
+      "description": "Workflows using process.env may be affected",
+      "level": "warning"
+     }
+    ],
+    "recommendations": [
+     {
+      "action": "Review environment variable usage",
+      "description": "Update workflows to use secure environment variable access"
+     }
+    ]
+   }
+  ],
+  "workflowResults": [
+   {
+    "ruleId": "removed-nodes-v2",
+    "ruleTitle": "Removed Deprecated Nodes",
+    "ruleDescription": "Several deprecated nodes have been removed",
+    "ruleImpact": "executionsFail",
+    "affectedWorkflows": [
+     {
+      "id": "wf-001",
+      "name": "Customer Onboarding",
+      "active": true,
+      "numberOfExecutions": 142,
+      "lastUpdatedAt": "2025-10-15T10:30:00.000Z",
+      "lastExecutedAt": "2025-10-16T14:22:00.000Z",
+      "issues": [
+       {
+        "title": "Node 'n8n-nodes-base.spontit' with name 'Spontit' has been removed",
+        "description": "The node type 'n8n-nodes-base.spontit' is no longer available",
+        "level": "error",
+        "nodeId": "node-123",
+        "nodeName": "Spontit"
+       }
+      ]
+     }
+    ],
+    "recommendations": [
+     {
+      "action": "Update affected workflows",
+      "description": "Replace removed nodes with their updated versions or alternatives"
+     }
+    ]
+   }
+  ]
+ },
+ "shouldCache": false
+}
+```
+
+### Set the Status of a Finding
+```
+PATCH /breaking-changes/report/:ruleId/workflows/:workflowId
+```
+
+Body:
+```json
+{ "status": "wont_fix" }
+```
+
+Sets the status of the finding of one workflow rule on one workflow. A user can set `open` or `wont_fix`. The rule's metadata gives the target version. The route needs the `breakingChanges:list` scope and edit access to the workflow (`workflow:update`), and returns no data. The bulk status, owner and migrate routes use the same check. The bulk route changes only the listed workflows that the user can edit.
+
+- A `wont_fix` finding counts as resolved. A `notified` finding does not: the owner was emailed, but nothing is fixed. A `fixed_unpublished` finding does not either: the published version still has the issue. The overview gives each rule its `open`, `notified` and `fixed_unpublished` count in `nbAffectedWorkflows` and its `wont_fix` count in `nbWontFixWorkflows`.
+- The overview keeps a rule with only `wont_fix` findings, with a count of zero. Its detail page is the only place to set them back to `open`.
+- The rule detail lists `open`, `notified`, `fixed_unpublished` and `wont_fix` findings, each with its `status` and, once notified, its `notifiedAt`. A finding whose latest version has no issues takes the issues of the published version, when an older version is published.
+- A user can set a `fixed_unpublished` finding to `open` or `wont_fix`. A notification leaves it `fixed_unpublished`.
+- Setting a `notified` finding to `open` clears its `notifiedAt`, so the next notification is not a reminder.
+- When a scan no longer detects a finding in the latest version of the workflow, the sync marks it `fixed_unpublished` if the published version still has the issue, and `fixed` otherwise. A workflow with nothing published counts as fixed. A `wont_fix` finding stays `wont_fix` while the published version has the issue. A new detection in the latest version reopens a `fixed` or `fixed_unpublished` finding.
+- Batch rules check the latest version only.
+- The route returns 404 when the user cannot edit the workflow, as for a workflow that does not exist.
+- The route returns 404 when the rule is unknown or is not a workflow rule.
+- The route returns 404 when the finding does not exist or is in a status that only the scan sets, for example `fixed`. This is also true when a sync marks the finding `fixed` during the request.
+
+### Notify the Owners of Findings
+```
+POST /breaking-changes/report/:ruleId/workflows/notify
+```
+
+Body:
+```json
+{ "workflowIds": ["wf-1", "wf-2"] }
+```
+
+Emails the owner of each listed workflow about the rule's finding on it. One email per owner lists all of their workflows. A finding is marked `notified` and gets a `notifiedAt` only when the email went out, so a repeated call is a reminder that bumps `notifiedAt`. A `fixed_unpublished` finding is included in the email, but it keeps its status and gets no `notifiedAt`. The route needs the `breakingChanges:migrate` scope.
+
+Response:
+```json
+{
+ "notifiedWorkflowIds": ["wf-1"],
+ "skipped": [{ "workflowId": "wf-2", "reason": "no_owner" }]
+}
+```
+
+- `no_finding`: the workflow has no `open`, `notified` or `fixed_unpublished` finding for the rule.
+- `no_owner`: the workflow has no owner, or the owner has no email.
+- `send_failed`: the email could not be sent. The finding stays as it is.
+- `recently_notified`: the owner was notified about the finding less than 60 seconds ago. The finding stays as it is.
+- The route returns 400 when SMTP is not set up on the instance, and 404 when the rule is unknown or is not a workflow rule.
+
+## Rule Impact
+
+Each rule states what happens if the user does not fix it before the update. Set `impact` in `getMetadata()` to one of these values:
+
+| Impact | Meaning | Example |
+| --- | --- | --- |
+| `upgradeBlocked` | The instance does not start, or the update cannot proceed. | A removed storage or deployment mode that the new version refuses to boot with. |
+| `executionsFail` | Affected executions error. | A removed node or expression helper. |
+| `executionsMightFail` | A default changes. Affected executions can error, depending on the workload, and the admin can keep the current value through configuration. | A lowered default limit or timeout. |
+| `behaviorChanges` | Executions keep running, but the result changes. | A changed default that gives a different result, or fixed semantics. |
+| `capabilityRemoved` | No runtime impact. A removed capability is no longer available. | A removed UI option or CLI flag. |
+
+A changed default whose runs keep going with a different result is `behaviorChanges`. A changed default that can make runs error is `executionsMightFail`.
+
+Pick the impact from the effect on the user, not from how many workflows a rule touches. The migration report sorts rules by impact, from `upgradeBlocked` down to `capabilityRemoved`.
+
+## Assistant Action
+
+A workflow rule can offer n8n Assistant on its findings. Set `assistant` in `getMetadata()`. A rule that does not set it offers no Assistant. The report uses it to label the Assistant button on a finding, or to hide it:
+
+| Action | Meaning | Example |
+| --- | --- | --- |
+| `fix` | The Assistant changes the workflow so the finding no longer applies. | A removed node with a documented replacement. |
+| `review` | The right change depends on what the user wants. The Assistant explains it and lets the user decide. | A behavior fix that most workflows do not notice. |
+| `none` (default) | The report offers no Assistant. | A credential secret, a client outside n8n, or a fix the Assistant cannot do reliably yet. |
+
+Opt a rule in only when the change stays inside the workflow, the `v3-migration` skill in `@n8n/instance-ai` explains how to make it, and the Assistant does not need anything it cannot reach, such as a secret, a file on disk or a community node that is not installed.
+
+A rule with an automated migration offers the Assistant only after the migration refuses or leaves notes.
+
+## Rule Types
+
+The system supports three types of rules:
+
+### Workflow Rules (`IBreakingChangeWorkflowRule`)
+
+- **Purpose**: Check individual workflows for breaking changes
+- **Methods**:
+  - `getMetadata()`: Returns rule metadata (version, title, description, impact, etc.)
+  - `detectWorkflow(workflow, nodesGroupedByType)`: Checks a single workflow and returns issues
+  - `getRecommendations(workflowResults)`: Returns recommendations based on detected issues
+- **Returns**: `WorkflowDetectionReport` with workflow-specific issues
+- **Example Use Cases**: Removed nodes, deprecated node features, changed node behavior
+
+### Instance Rules (`IBreakingChangeInstanceRule`)
+
+- **Purpose**: Check instance-level configuration and environment
+- **Methods**:
+  - `getMetadata()`: Returns rule metadata (version, title, description, impact, etc.)
+  - `detect()`: Checks the entire instance and returns issues
+- **Returns**: `InstanceDetectionReport` with instance-level issues and recommendations
+- **Example Use Cases**: Environment variable requirements, database version checks, configuration changes
+
+### Batch Workflow Rules (`IBreakingChangeBatchWorkflowRule`)
+
+- **Purpose**: Correlate data across multiple workflows (e.g., detecting parent workflows that call sub-workflows with specific characteristics)
+- **Methods**:
+  - `getMetadata()`: Returns rule metadata
+  - `collectWorkflowData(workflow, nodesGroupedByType)`: Called per workflow during scanning
+  - `produceReport()`: Called after all workflows scanned to produce final report
+  - `reset()`: Resets internal state before a new detection run
+  - `getRecommendations(workflowResults)`: Returns recommendations
+- **Returns**: `BatchWorkflowDetectionReport`
+
+## Adding Rules
+
+### Adding a Rule to an Existing Version
+
+1. Create a new `.rule.ts` file in the appropriate version directory.
+2. Add a side-effect import for it in `rules/index.ts`.
+
+The `@BreakingChangeRule` decorator handles registration automatically on import.
+
+#### Workflow Rule Example
+
+Create `rules/v2/my-workflow-rule.rule.ts`:
+
+```typescript
+import type { BreakingChangeAffectedWorkflow, BreakingChangeRecommendation } from '@n8n/api-types';
+import type { WorkflowEntity } from '@n8n/db';
+import type { INode } from 'n8n-workflow';
+
+import { BreakingChangeRule } from '@n8n/decorators';
+import type {
+  BreakingChangeRuleMetadata,
+  IBreakingChangeWorkflowRule,
+  WorkflowDetectionReport,
+} from '../../types';
+import { BreakingChangeCategory } from '../../types';
+
+@BreakingChangeRule({ version: 'v2' })
+export class MyWorkflowRule implements IBreakingChangeWorkflowRule {
+  id: string = 'my-workflow-rule-v2';
+
+  getMetadata(): BreakingChangeRuleMetadata {
+    return {
+      version: 'v2',
+      title: 'My Workflow Breaking Change',
+      description: 'Description of what changed in workflows',
+      category: BreakingChangeCategory.workflow,
+      impact: 'executionsFail',
+      documentationUrl: 'https://docs.n8n.io/migration/v2/...',
+    };
+  }
+
+  async getRecommendations(
+    _workflowResults: BreakingChangeAffectedWorkflow[],
+  ): Promise<BreakingChangeRecommendation[]> {
+    return [
+      {
+        action: 'Update affected workflows',
+        description: 'Replace or update the affected nodes',
+      },
+    ];
+  }
+
+  async detectWorkflow(
+    _workflow: WorkflowEntity,
+    nodesGroupedByType: Map<string, INode[]>,
+  ): Promise<WorkflowDetectionReport> {
+    const affectedNodes = nodesGroupedByType.get('n8n-nodes-base.someNode') ?? [];
+
+    if (affectedNodes.length === 0) {
+      return { isAffected: false, issues: [] };
+    }
+
+    return {
+      isAffected: true,
+      issues: affectedNodes.map((node) => ({
+        title: `Node '${node.type}' with name '${node.name}' is affected`,
+        description: 'This node requires updates for v2 compatibility',
+        level: 'warning',
+        nodeId: node.id,
+        nodeName: node.name,
+      })),
+    };
+  }
+}
+```
+
+#### Instance Rule Example
+
+Create `rules/v2/my-instance-rule.rule.ts`:
+
+```typescript
+import { BreakingChangeRule } from '@n8n/decorators';
+import type {
+  BreakingChangeRuleMetadata,
+  IBreakingChangeInstanceRule,
+  InstanceDetectionReport,
+} from '../../types';
+import { BreakingChangeCategory } from '../../types';
+
+@BreakingChangeRule({ version: 'v2' })
+export class MyInstanceRule implements IBreakingChangeInstanceRule {
+  id: string = 'my-instance-rule-v2';
+
+  getMetadata(): BreakingChangeRuleMetadata {
+    return {
+      version: 'v2',
+      title: 'My Instance Breaking Change',
+      description: 'Description of what changed at instance level',
+      category: BreakingChangeCategory.instance,
+      impact: 'behaviorChanges',
+      documentationUrl: 'https://docs.n8n.io/migration/v2/...',
+    };
+  }
+
+  async detect(): Promise<InstanceDetectionReport> {
+    const hasIssue = false; // Your detection logic here
+
+    if (!hasIssue) {
+      return { isAffected: false, instanceIssues: [], recommendations: [] };
+    }
+
+    return {
+      isAffected: true,
+      instanceIssues: [
+        {
+          title: 'Configuration issue detected',
+          description: 'Description of the issue',
+          level: 'warning',
+        },
+      ],
+      recommendations: [
+        {
+          action: 'Fix the configuration',
+          description: 'Steps to resolve the issue',
+        },
+      ],
+    };
+  }
+}
+```
+
+The rule will be automatically:
+- Registered in `BreakingChangeRuleMetadata` by the `@BreakingChangeRule` decorator
+- Instantiated via DI and added to `RuleRegistry` when the service starts
+- Available for detection when calling the API with the matching version
+
+### Adding a New Version
+
+To add breaking changes for a new version (e.g., v3):
+
+1. Create the version directory:
+   ```bash
+   mkdir -p packages/cli/src/modules/breaking-changes/rules/v3
+   ```
+
+2. Add rule files with `@BreakingChangeRule({ version: 'v3' })`.
+
+3. Add side-effect imports for the new rule files in `rules/index.ts`.

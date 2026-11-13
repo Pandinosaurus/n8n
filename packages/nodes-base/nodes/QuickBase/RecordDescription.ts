@@ -98,7 +98,7 @@ export const recordFields: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		displayOptions: {
 			show: {
@@ -117,7 +117,7 @@ export const recordFields: INodeProperties[] = [
 				},
 				default: [],
 				description:
-					'Specify an array of field IDs that will return data for any updates or added record. Record ID (FID 3) is always returned if any field ID is requested. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Specify an array of field IDs that will return data for any updates or added record. Record ID (FID 3) is always returned if any field ID is requested. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Use Field IDs',
@@ -159,6 +159,39 @@ export const recordFields: INodeProperties[] = [
 		},
 		description:
 			'The filter to delete records. To delete all records specify a filter that will include all records, for example {3.GT.0} where 3 is the ID of the Record ID field.',
+		hint: 'Use $1, $2, etc. and Where Parameters to reference dynamic values, rather than building this filter with an expression',
+	},
+	{
+		displayName: 'Where Parameters',
+		name: 'whereParameters',
+		type: 'fixedCollection',
+		typeOptions: {
+			multipleValues: true,
+		},
+		displayOptions: {
+			show: {
+				resource: ['record'],
+				operation: ['delete'],
+			},
+		},
+		default: {},
+		placeholder: 'Add Parameter',
+		description:
+			"Values to insert for $1, $2, etc. in 'Where'. When you add a parameter, every $ followed by a number in 'Where' refers to a parameter. A value cannot contain ', \", { or }.",
+		options: [
+			{
+				displayName: 'Parameter',
+				name: 'values',
+				values: [
+					{
+						displayName: 'Value',
+						name: 'value',
+						type: 'string',
+						default: '',
+					},
+				],
+			},
+		],
 	},
 	/* -------------------------------------------------------------------------- */
 	/*                                record:getAll                               */
@@ -231,7 +264,7 @@ export const recordFields: INodeProperties[] = [
 				},
 				default: [],
 				description:
-					'An array of field IDs for the fields that should be returned in the response. If empty, the default columns on the table will be returned. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'An array of field IDs for the fields that should be returned in the response. If empty, the default columns on the table will be returned. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Sort By',
@@ -256,7 +289,7 @@ export const recordFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The unique identifier of a field in a table. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The unique identifier of a field in a table. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Order',
@@ -287,6 +320,33 @@ export const recordFields: INodeProperties[] = [
 				default: '',
 				description:
 					'The filter, using the <a href="https://help.quickbase.com/api-guide/componentsquery.html">Quick Base query language</a>, which determines the records to return',
+				hint: 'Use $1, $2, etc. and Where Parameters to reference dynamic values, rather than building this filter with an expression',
+			},
+			{
+				displayName: 'Where Parameters',
+				name: 'whereParameters',
+				type: 'fixedCollection',
+				typeOptions: {
+					multipleValues: true,
+				},
+				default: {},
+				placeholder: 'Add Parameter',
+				description:
+					"Values to insert for $1, $2, etc. in 'Where'. When you add a parameter, every $ followed by a number in 'Where' refers to a parameter. A value cannot contain ', \", { or }.",
+				options: [
+					{
+						displayName: 'Parameter',
+						name: 'values',
+						values: [
+							{
+								displayName: 'Value',
+								name: 'value',
+								type: 'string',
+								default: '',
+							},
+						],
+					},
+				],
 			},
 		],
 	},
@@ -353,7 +413,7 @@ export const recordFields: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		displayOptions: {
 			show: {
@@ -372,7 +432,7 @@ export const recordFields: INodeProperties[] = [
 				},
 				default: [],
 				description:
-					'Specify an array of field IDs that will return data for any updates or added record. Record ID (FID 3) is always returned if any field ID is requested. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Specify an array of field IDs that will return data for any updates or added record. Record ID (FID 3) is always returned if any field ID is requested. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Use Field IDs',
@@ -456,7 +516,7 @@ export const recordFields: INodeProperties[] = [
 		},
 		default: '',
 		description:
-			'<p>You\'re updating records in a Quick Base table with data from an external file. In order for a merge like this to work, Quick Base needs a way to match records in the source data with corresponding records in the destination table.</p><p>You make this possible by choosing the field in the app table that holds unique matching values. This is called a merge field.</p>. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'<p>You\'re updating records in a Quick Base table with data from an external file. In order for a merge like this to work, Quick Base needs a way to match records in the source data with corresponding records in the destination table.</p><p>You make this possible by choosing the field in the app table that holds unique matching values. This is called a merge field.</p>. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 	},
 	{
 		displayName: 'Simplify',
@@ -475,7 +535,7 @@ export const recordFields: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		displayOptions: {
 			show: {
@@ -494,7 +554,7 @@ export const recordFields: INodeProperties[] = [
 				},
 				default: [],
 				description:
-					'Specify an array of field IDs that will return data for any updates or added record. Record ID (FID 3) is always returned if any field ID is requested. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Specify an array of field IDs that will return data for any updates or added record. Record ID (FID 3) is always returned if any field ID is requested. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Use Field IDs',

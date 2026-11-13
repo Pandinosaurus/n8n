@@ -1,60 +1,185 @@
-/* eslint-disable n8n-nodes-base/node-dirname-against-convention */
+import type { Tool } from '@langchain/core/tools';
+
+import { logWrapper } from '@n8n/ai-utilities';
+import { JavaScriptSandbox } from 'n8n-nodes-base/dist/nodes/Code/JavaScriptSandbox';
+import { getSandboxContext } from 'n8n-nodes-base/dist/nodes/Code/Sandbox';
+import { standardizeOutput } from 'n8n-nodes-base/dist/nodes/Code/utils';
 import {
 	NodeOperationError,
-	type IExecuteFunctions,
-	type INodeExecutionData,
-	type INodeType,
-	type INodeTypeDescription,
-	type INodeOutputConfiguration,
-	type SupplyData,
-	NodeConnectionType,
+	NodeConnectionTypes,
+	LOG_LEVELS,
+	CONSOLE_OUTPUT_REDACTED_MESSAGE,
+} from 'n8n-workflow';
+import { makeResolverFromLegacyOptions } from 'vm2';
+import type {
+	IExecuteFunctions,
+	INodeExecutionData,
+	INodeType,
+	INodeTypeDescription,
+	INodeOutputConfiguration,
+	SupplyData,
+	ISupplyDataFunctions,
+	Logger,
 } from 'n8n-workflow';
 
 // TODO: Add support for execute function. Got already started but got commented out
-
-import { getSandboxContext } from 'n8n-nodes-base/dist/nodes/Code/Sandbox';
-import { JavaScriptSandbox } from 'n8n-nodes-base/dist/nodes/Code/JavaScriptSandbox';
-import { standardizeOutput } from 'n8n-nodes-base/dist/nodes/Code/utils';
-import type { Tool } from '@langchain/core/tools';
-import { makeResolverFromLegacyOptions } from '@n8n/vm2';
-import { logWrapper } from '../../utils/logWrapper';
 
 const { NODE_FUNCTION_ALLOW_BUILTIN: builtIn, NODE_FUNCTION_ALLOW_EXTERNAL: external } =
 	process.env;
 
 // TODO: Replace
 const connectorTypes = {
-	[NodeConnectionType.AiChain]: 'Chain',
-	[NodeConnectionType.AiDocument]: 'Document',
-	[NodeConnectionType.AiEmbedding]: 'Embedding',
-	[NodeConnectionType.AiLanguageModel]: 'Language Model',
-	[NodeConnectionType.AiMemory]: 'Memory',
-	[NodeConnectionType.AiOutputParser]: 'Output Parser',
-	[NodeConnectionType.AiTextSplitter]: 'Text Splitter',
-	[NodeConnectionType.AiTool]: 'Tool',
-	[NodeConnectionType.AiVectorStore]: 'Vector Store',
-	[NodeConnectionType.Main]: 'Main',
+	[NodeConnectionTypes.AiChain]: 'Chain',
+	[NodeConnectionTypes.AiDocument]: 'Document',
+	[NodeConnectionTypes.AiEmbedding]: 'Embedding',
+	[NodeConnectionTypes.AiLanguageModel]: 'Language Model',
+	[NodeConnectionTypes.AiMemory]: 'Memory',
+	[NodeConnectionTypes.AiOutputParser]: 'Output Parser',
+	[NodeConnectionTypes.AiTextSplitter]: 'Text Splitter',
+	[NodeConnectionTypes.AiTool]: 'Tool',
+	[NodeConnectionTypes.AiVectorStore]: 'Vector Store',
+	[NodeConnectionTypes.Main]: 'Main',
 };
 
 const defaultCodeExecute = `const { PromptTemplate } = require('@langchain/core/prompts');
 
 const query = 'Tell me a joke';
 const prompt = PromptTemplate.fromTemplate(query);
+
+// If you are allowing more than one language model input connection (-1 or
+// anything greater than 1), getInputConnectionData returns an array, so you
+// will have to change the code below it to deal with that. For example, use
+// llm[0] in the chain definition
+
 const llm = await this.getInputConnectionData('ai_languageModel', 0);
 let chain = prompt.pipe(llm);
 const output = await chain.invoke();
-return [ {json: { output } } ];`;
+return [ {json: { output } } ];
 
-const defaultCodeSupplyData = `const { WikipediaQueryRun } = require('langchain/tools');
+// NOTE: Old langchain imports (e.g., 'langchain/chains') are automatically
+// converted to '@langchain/classic' imports for backwards compatibility.`;
+
+const defaultCodeSupplyData = `const { WikipediaQueryRun } = require( '@langchain/community/tools/wikipedia_query_run');
 return new WikipediaQueryRun();`;
 
+/**
+ * Transforms old langchain import paths to @langchain/classic for backwards compatibility.
+ * Only transforms paths that actually moved to the classic package.
+ *
+ * @param moduleName - The original module name from the import statement
+ * @returns The transformed module name, or the original if no transformation is needed
+ */
+export function transformLegacyLangchainImport(moduleName: string): string {
+	// List of langchain submodules that moved to @langchain/classic
+	// Based on https://www.npmjs.com/package/@langchain/classic exports
+	const classicModules = [
+		'agents',
+		'callbacks',
+		'chains',
+		'chat_models/universal',
+		'document',
+		'document_loaders',
+		'document_transformers',
+		'embeddings/cache_backed',
+		'embeddings/fake',
+		'evaluation',
+		'experimental',
+		'hub',
+		'indexes',
+		'load',
+		'memory',
+		'output_parsers',
+		'retrievers',
+		'schema',
+		'smith',
+		'sql_db',
+		'storage',
+		'stores',
+		'text_splitter',
+		'tools',
+		'util',
+		'vectorstores',
+	];
+
+	// Check if this is a langchain/ import (old style)
+	if (moduleName.startsWith('langchain/')) {
+		const subpath = moduleName.substring('langchain/'.length);
+
+		// Check if this subpath or any parent path is in the classic modules list
+		for (const classicModule of classicModules) {
+			if (subpath === classicModule || subpath.startsWith(classicModule + '/')) {
+				// Transform to @langchain/classic
+				return `@langchain/classic/${subpath}`;
+			}
+		}
+	}
+
+	return moduleName;
+}
+
+/**
+ * Transforms user code to replace old langchain require/import statements
+ * with @langchain/classic equivalents.
+ *
+ * @param code - The user's code string
+ * @returns The transformed code with updated import paths
+ */
+function transformLegacyLangchainCode(code: string): string {
+	// Transform require statements: require('langchain/...')
+	let transformedCode = code.replace(
+		/require\s*\(\s*['"]langchain\/([\w/_]+)['"]\s*\)/g,
+		(match, subpath) => {
+			const oldPath = `langchain/${subpath}`;
+			const newPath = transformLegacyLangchainImport(oldPath);
+			return newPath === oldPath ? match : `require('${newPath}')`;
+		},
+	);
+
+	// Transform import statements: from 'langchain/...'
+	transformedCode = transformedCode.replace(
+		/from\s+['"]langchain\/([\w/_]+)['"]/g,
+		(match, subpath) => {
+			const oldPath = `langchain/${subpath}`;
+			const newPath = transformLegacyLangchainImport(oldPath);
+			return newPath === oldPath ? match : `from '${newPath}'`;
+		},
+	);
+
+	return transformedCode;
+}
+
+function isLoggerKey(level: string): level is keyof Logger {
+	return level !== 'silent';
+}
+
+export function createSandboxLogger(logger: Logger): Logger {
+	return LOG_LEVELS.filter(isLoggerKey).reduce((result, level) => {
+		result[level] = (...args: Parameters<Logger[keyof Logger]>) =>
+			logger[level].apply(logger, args);
+		return result;
+	}, {} as Logger);
+}
+
+export function createProductionConsoleLog(
+	workflowId: string | undefined,
+	nodeName: string,
+	redactConsole: boolean,
+): (...args: unknown[]) => void {
+	return (...args: unknown[]) =>
+		console.log(
+			`[Workflow "${workflowId}"][Node "${nodeName}"]`,
+			...(redactConsole ? [CONSOLE_OUTPUT_REDACTED_MESSAGE] : args),
+		);
+}
+
+const langchainModules = ['langchain', '@langchain/*'];
 export const vmResolver = makeResolverFromLegacyOptions({
 	external: {
-		modules: external ? ['langchain', ...external.split(',')] : ['langchain'],
+		modules: external ? [...langchainModules, ...external.split(',')] : [...langchainModules],
 		transitive: false,
 	},
 	resolve(moduleName, parentDirname) {
-		if (moduleName.match(/^langchain\//)) {
+		if (moduleName.match(/^langchain\//) ?? moduleName.match(/^@langchain\//)) {
 			return require.resolve(`@n8n/n8n-nodes-langchain/node_modules/${moduleName}.cjs`, {
 				paths: [parentDirname],
 			});
@@ -65,7 +190,7 @@ export const vmResolver = makeResolverFromLegacyOptions({
 });
 
 function getSandbox(
-	this: IExecuteFunctions,
+	this: IExecuteFunctions | ISupplyDataFunctions,
 	code: string,
 	options?: { addItems?: boolean; itemIndex?: number },
 ) {
@@ -73,30 +198,26 @@ function getSandbox(
 	const node = this.getNode();
 	const workflowMode = this.getMode();
 
+	// Transform legacy langchain imports to @langchain/classic
+	const transformedCode = transformLegacyLangchainCode(code);
+
 	const context = getSandboxContext.call(this, itemIndex);
-	// eslint-disable-next-line @typescript-eslint/unbound-method
-	context.addInputData = this.addInputData;
-	// eslint-disable-next-line @typescript-eslint/unbound-method
-	context.addOutputData = this.addOutputData;
-	// eslint-disable-next-line @typescript-eslint/unbound-method
-	context.getInputConnectionData = this.getInputConnectionData;
-	// eslint-disable-next-line @typescript-eslint/unbound-method
-	context.getInputData = this.getInputData;
-	// eslint-disable-next-line @typescript-eslint/unbound-method
-	context.getNode = this.getNode;
-	// eslint-disable-next-line @typescript-eslint/unbound-method
-	context.getExecutionCancelSignal = this.getExecutionCancelSignal;
-	// eslint-disable-next-line @typescript-eslint/unbound-method
-	context.getNodeOutputs = this.getNodeOutputs;
-	// eslint-disable-next-line @typescript-eslint/unbound-method
-	context.logger = this.logger;
+	context.addInputData = this.addInputData.bind(this);
+	context.addOutputData = this.addOutputData.bind(this);
+	context.getInputConnectionData = this.getInputConnectionData.bind(this);
+	context.getInputData = this.getInputData.bind(this);
+	context.getNode = this.getNode.bind(this);
+	context.getExecutionCancelSignal = this.getExecutionCancelSignal.bind(this);
+	context.getNodeOutputs = this.getNodeOutputs.bind(this);
+	context.executeWorkflow = this.executeWorkflow.bind(this);
+	context.getWorkflowDataProxy = this.getWorkflowDataProxy.bind(this);
+	context.logger = createSandboxLogger(this.logger);
 
 	if (options?.addItems) {
 		context.items = context.$input.all();
 	}
-	// eslint-disable-next-line @typescript-eslint/unbound-method
 
-	const sandbox = new JavaScriptSandbox(context, code, itemIndex, this.helpers, {
+	const sandbox = new JavaScriptSandbox(context, transformedCode, this.helpers, {
 		resolver: vmResolver,
 	});
 
@@ -104,8 +225,11 @@ function getSandbox(
 		'output',
 		workflowMode === 'manual'
 			? this.sendMessageToUI.bind(this)
-			: (...args: unknown[]) =>
-					console.log(`[Workflow "${this.getWorkflow().id}"][Node "${node.name}"]`, ...args),
+			: createProductionConsoleLog(
+					this.getWorkflow().id,
+					node.name,
+					this.isConsoleOutputRedacted(),
+				),
 	);
 	return sandbox;
 }
@@ -114,10 +238,13 @@ export class Code implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'LangChain Code',
 		name: 'code',
+		deprecated: true,
 		icon: 'fa:code',
+		iconColor: 'black',
 		group: ['transform'],
 		version: 1,
 		description: 'LangChain Code Node',
+		hidden: true,
 		defaults: {
 			name: 'LangChain Code',
 		},
@@ -303,7 +430,7 @@ export class Code implements INodeType {
 
 		const outputs = this.getNodeOutputs();
 		const mainOutputs: INodeOutputConfiguration[] = outputs.filter(
-			(output) => output.type === NodeConnectionType.Main,
+			(output) => output.type === NodeConnectionTypes.Main,
 		);
 
 		const options = { multiOutput: mainOutputs.length !== 1 };
@@ -342,7 +469,7 @@ export class Code implements INodeType {
 		}
 	}
 
-	async supplyData(this: IExecuteFunctions, itemIndex: number): Promise<SupplyData> {
+	async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData> {
 		const code = this.getNodeParameter('code', itemIndex) as { supplyData?: { code: string } };
 
 		if (!code.supplyData?.code) {
@@ -356,7 +483,7 @@ export class Code implements INodeType {
 		}
 
 		const sandbox = getSandbox.call(this, code.supplyData.code, { itemIndex });
-		const response = (await sandbox.runCode()) as Tool;
+		const response = await sandbox.runCode<Tool>();
 
 		return {
 			response: logWrapper(response, this),

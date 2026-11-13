@@ -1,39 +1,59 @@
-import { Container } from 'typedi';
-import { Flags } from '@oclif/core';
-import { ApplicationError } from 'n8n-workflow';
+import { SecurityConfig } from '@n8n/config';
+import { Command } from '@n8n/decorators';
+import { Container } from '@n8n/di';
+import { ensureError } from '@n8n/utils/errors/ensure-error';
+import { UserError } from '@n8n/errors';
+import z from 'zod';
 
-import { SecurityAuditService } from '@/security-audit/SecurityAudit.service';
 import { RISK_CATEGORIES } from '@/security-audit/constants';
-import config from '@/config';
 import type { Risk } from '@/security-audit/types';
-import { BaseCommand } from './BaseCommand';
-import { InternalHooks } from '@/InternalHooks';
 
-export class SecurityAudit extends BaseCommand {
-	static description = 'Generate a security audit report for this n8n instance';
+import { BaseCommand } from './base-command';
 
-	static examples = [
-		'$ n8n audit',
-		'$ n8n audit --categories=database,credentials',
-		'$ n8n audit --days-abandoned-workflow=10',
-	];
+const flagsSchema = z.object({
+	categories: z
+		.string()
+		.default(RISK_CATEGORIES.join(','))
+		.describe('Comma-separated list of categories to include in the audit'),
+	'days-abandoned-workflow': z
+		.number()
+		.int()
+		.default(Container.get(SecurityConfig).daysAbandonedWorkflow)
+		.describe('Days for a workflow to be considered abandoned if not executed'),
+});
 
-	static flags = {
-		help: Flags.help({ char: 'h' }),
-		categories: Flags.string({
-			default: RISK_CATEGORIES.join(','),
-			description: 'Comma-separated list of categories to include in the audit',
-		}),
-		// eslint-disable-next-line @typescript-eslint/naming-convention
-		'days-abandoned-workflow': Flags.integer({
-			default: config.getEnv('security.audit.daysAbandonedWorkflow'),
-			description: 'Days for a workflow to be considered abandoned if not executed',
-		}),
-	};
+@Command({
+	name: 'audit',
+	description: 'Generate a security audit report for this n8n instance',
+	examples: ['', '--categories=database,credentials', '--days-abandoned-workflow=10'],
+	flagsSchema,
+})
+export class SecurityAudit extends BaseCommand<z.infer<typeof flagsSchema>> {
+	async init() {
+		await super.init();
+
+		// risk reporters read execution data, which may be stored on S3 or Azure Blob
+		try {
+			await this.initObjectStoreIfConfigured();
+		} catch (error) {
+			this.logger.warn(
+				'Failed to initialize object store. The audit will fail if any executions have data stored in S3.',
+				{ error: ensureError(error).message },
+			);
+		}
+
+		try {
+			await this.initAzureStoreIfConfigured();
+		} catch (error) {
+			this.logger.warn(
+				'Failed to initialize Azure Blob storage. The audit will fail if any executions have data stored on Azure Blob.',
+				{ error: ensureError(error).message },
+			);
+		}
+	}
 
 	async run() {
-		const { flags: auditFlags } = await this.parse(SecurityAudit);
-
+		const { flags: auditFlags } = this;
 		const categories =
 			auditFlags.categories?.split(',').filter((c): c is Risk.Category => c !== '') ??
 			RISK_CATEGORIES;
@@ -48,8 +68,10 @@ export class SecurityAudit extends BaseCommand {
 
 			const hint = `Valid categories are: ${RISK_CATEGORIES.join(', ')}`;
 
-			throw new ApplicationError([message, hint].join('. '));
+			throw new UserError([message, hint].join('. '));
 		}
+
+		const { SecurityAuditService } = await import('@/security-audit/security-audit.service.js');
 
 		const result = await Container.get(SecurityAuditService).run(
 			categories,
@@ -61,8 +83,6 @@ export class SecurityAudit extends BaseCommand {
 		} else {
 			process.stdout.write(JSON.stringify(result, null, 2));
 		}
-
-		void Container.get(InternalHooks).onAuditGeneratedViaCli();
 	}
 
 	async catch(error: Error) {

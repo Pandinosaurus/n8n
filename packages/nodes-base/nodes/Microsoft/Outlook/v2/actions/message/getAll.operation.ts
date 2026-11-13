@@ -4,14 +4,18 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { assertNoQueryDelimiters } from '@utils/query-escaping';
+import { updateDisplayOptions } from '@utils/utilities';
+
+import { returnAllOrLimit } from '../../descriptions';
 import { messageFields, prepareFilterString, simplifyOutputMessages } from '../../helpers/utils';
 import {
 	downloadAttachments,
 	microsoftApiRequest,
 	microsoftApiRequestAllItems,
 } from '../../transport';
-import { returnAllOrLimit } from '../../descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 export const properties: INodeProperties[] = [
 	...returnAllOrLimit,
@@ -94,7 +98,7 @@ export const properties: INodeProperties[] = [
 						default: '',
 						placeholder: 'e.g. automation',
 						description:
-							'Only return messages that contains search term. Without specific message properties, the search is carried out on the default search properties of from, subject, and body. <a href="https://docs.microsoft.com/en-us/graph/query-parameters#search-parameter target="_blank">More info</a>.',
+							'Only return messages that contain the search term. Without a message property prefix such as <code>subject:</code>, the search covers from, subject and body. A double quote is not supported in this field. <a href="https://docs.microsoft.com/en-us/graph/query-parameters#search-parameter target="_blank">More info</a>.',
 						displayOptions: {
 							show: {
 								filterBy: ['search'],
@@ -136,7 +140,7 @@ export const properties: INodeProperties[] = [
 								},
 								default: [],
 								description:
-									'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+									'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 							},
 							{
 								displayName: 'Folders to Include',
@@ -147,7 +151,7 @@ export const properties: INodeProperties[] = [
 								},
 								default: [],
 								description:
-									'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+									'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 							},
 							{
 								displayName: 'Read Status',
@@ -206,7 +210,7 @@ export const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -263,6 +267,11 @@ export async function execute(this: IExecuteFunctions, index: number) {
 	}
 
 	if (filters.filterBy === 'search' && filters.search !== '') {
+		assertNoQueryDelimiters.call(this, 'Search', filters.search, ['"'], index);
+		// Safe by the assertion above. Escaping is not an option here: this is
+		// Exchange KQL, which documents no escape for the delimiter — unlike the
+		// directory-object $search dialect the Entra node uses.
+		// eslint-disable-next-line n8n-local-rules/require-escaped-query-values
 		qs.$search = `"${filters.search}"`;
 	}
 
@@ -274,7 +283,7 @@ export async function execute(this: IExecuteFunctions, index: number) {
 		}
 	}
 
-	const endpoint = '/messages';
+	const endpoint = requestPath`/messages`;
 
 	if (returnAll) {
 		responseData = await microsoftApiRequestAllItems.call(
@@ -282,12 +291,13 @@ export async function execute(this: IExecuteFunctions, index: number) {
 			'value',
 			'GET',
 			endpoint,
+			index,
 			undefined,
 			qs,
 		);
 	} else {
 		qs.$top = this.getNodeParameter('limit', index);
-		responseData = await microsoftApiRequest.call(this, 'GET', endpoint, undefined, qs);
+		responseData = await microsoftApiRequest.call(this, 'GET', endpoint, index, undefined, qs);
 		responseData = responseData.value;
 	}
 
@@ -299,7 +309,12 @@ export async function execute(this: IExecuteFunctions, index: number) {
 
 	if (options.downloadAttachments) {
 		const prefix = (options.attachmentsPrefix as string) || 'attachment_';
-		executionData = await downloadAttachments.call(this, responseData as IDataObject, prefix);
+		executionData = await downloadAttachments.call(
+			this,
+			responseData as IDataObject,
+			prefix,
+			index,
+		);
 	} else {
 		executionData = this.helpers.constructExecutionMetaData(
 			this.helpers.returnJsonArray(responseData as IDataObject[]),

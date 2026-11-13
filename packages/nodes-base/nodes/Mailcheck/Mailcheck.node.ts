@@ -5,6 +5,7 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { mailCheckApiRequest } from './GenericFunctions';
 
@@ -20,8 +21,9 @@ export class Mailcheck implements INodeType {
 		defaults: {
 			name: 'Mailcheck',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'mailcheckApi',
@@ -91,9 +93,14 @@ export class Mailcheck implements INodeType {
 				if (resource === 'email') {
 					if (operation === 'check') {
 						const email = this.getNodeParameter('email', i) as string;
-						responseData = await mailCheckApiRequest.call(this, 'POST', '/singleEmail:check', {
-							email,
-						});
+						responseData = await mailCheckApiRequest.call(
+							this,
+							'POST',
+							requestPath`/singleEmail:check`,
+							{
+								email,
+							},
+						);
 					}
 				}
 			} catch (error) {

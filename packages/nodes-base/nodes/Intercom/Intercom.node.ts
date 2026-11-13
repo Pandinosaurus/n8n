@@ -8,21 +8,22 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
-import { leadFields, leadOperations } from './LeadDescription';
+import { NodeConnectionTypes, NodeApiError, NodeOperationError, requestPath } from 'n8n-workflow';
+
+import { companyFields, companyOperations } from './CompanyDescription';
+import type { ICompany } from './CompanyInteface';
 import { intercomApiRequest, intercomApiRequestAllItems, validateJSON } from './GenericFunctions';
+import { leadFields, leadOperations } from './LeadDescription';
 import type { IAvatar, ILead, ILeadCompany } from './LeadInterface';
 import { userFields, userOperations } from './UserDescription';
 import type { IUser, IUserCompany } from './UserInterface';
-import { companyFields, companyOperations } from './CompanyDescription';
-import type { ICompany } from './CompanyInteface';
 
 export class Intercom implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Intercom',
 		name: 'intercom',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
-		icon: 'file:intercom.png',
+
+		icon: 'file:intercom.svg',
 		group: ['output'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -30,8 +31,9 @@ export class Intercom implements INodeType {
 		defaults: {
 			name: 'Intercom',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'intercomApi',
@@ -81,7 +83,7 @@ export class Intercom implements INodeType {
 				const returnData: INodePropertyOptions[] = [];
 				let response;
 				try {
-					response = await intercomApiRequest.call(this, '/companies', 'GET');
+					response = await intercomApiRequest.call(this, requestPath`/companies`, 'GET');
 				} catch (error) {
 					throw new NodeApiError(this.getNode(), error as JsonObject);
 				}
@@ -200,7 +202,12 @@ export class Intercom implements INodeType {
 						}
 
 						try {
-							responseData = await intercomApiRequest.call(this, '/contacts', 'POST', body);
+							responseData = await intercomApiRequest.call(
+								this,
+								requestPath`/contacts`,
+								'POST',
+								body,
+							);
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
 						}
@@ -219,9 +226,19 @@ export class Intercom implements INodeType {
 						}
 						try {
 							if (selectBy === 'id') {
-								responseData = await intercomApiRequest.call(this, `/contacts/${value}`, 'GET');
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/contacts/${value}`,
+									'GET',
+								);
 							} else {
-								responseData = await intercomApiRequest.call(this, '/contacts', 'GET', {}, qs);
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/contacts`,
+									'GET',
+									{},
+									qs,
+								);
 								responseData = responseData.contacts;
 							}
 						} catch (error) {
@@ -238,14 +255,20 @@ export class Intercom implements INodeType {
 								responseData = await intercomApiRequestAllItems.call(
 									this,
 									'contacts',
-									'/contacts',
+									requestPath`/contacts`,
 									'GET',
 									{},
 									qs,
 								);
 							} else {
 								qs.per_page = this.getNodeParameter('limit', i);
-								responseData = await intercomApiRequest.call(this, '/contacts', 'GET', {}, qs);
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/contacts`,
+									'GET',
+									{},
+									qs,
+								);
 								responseData = responseData.contacts;
 							}
 						} catch (error) {
@@ -257,10 +280,20 @@ export class Intercom implements INodeType {
 						const value = this.getNodeParameter('value', i) as string;
 						try {
 							if (deleteBy === 'id') {
-								responseData = await intercomApiRequest.call(this, `/contacts/${value}`, 'DELETE');
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/contacts/${value}`,
+									'DELETE',
+								);
 							} else {
 								qs.user_id = value;
-								responseData = await intercomApiRequest.call(this, '/contacts', 'DELETE', {}, qs);
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/contacts`,
+									'DELETE',
+									{},
+									qs,
+								);
 							}
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
@@ -376,7 +409,13 @@ export class Intercom implements INodeType {
 						}
 
 						try {
-							responseData = await intercomApiRequest.call(this, '/users', 'POST', body, qs);
+							responseData = await intercomApiRequest.call(
+								this,
+								requestPath`/users`,
+								'POST',
+								body,
+								qs,
+							);
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
 						}
@@ -391,13 +430,19 @@ export class Intercom implements INodeType {
 							if (selectBy === 'id') {
 								responseData = await intercomApiRequest.call(
 									this,
-									`/users/${value}`,
+									requestPath`/users/${value}`,
 									'GET',
 									{},
 									qs,
 								);
 							} else {
-								responseData = await intercomApiRequest.call(this, '/users', 'GET', {}, qs);
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/users`,
+									'GET',
+									{},
+									qs,
+								);
 							}
 						} catch (error) {
 							throw new NodeApiError(this.getNode(), error as JsonObject);
@@ -413,14 +458,20 @@ export class Intercom implements INodeType {
 								responseData = await intercomApiRequestAllItems.call(
 									this,
 									'users',
-									'/users',
+									requestPath`/users`,
 									'GET',
 									{},
 									qs,
 								);
 							} else {
 								qs.per_page = this.getNodeParameter('limit', i);
-								responseData = await intercomApiRequest.call(this, '/users', 'GET', {}, qs);
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/users`,
+									'GET',
+									{},
+									qs,
+								);
 								responseData = responseData.users;
 							}
 						} catch (error) {
@@ -430,7 +481,11 @@ export class Intercom implements INodeType {
 					if (operation === 'delete') {
 						const id = this.getNodeParameter('id', i) as string;
 						try {
-							responseData = await intercomApiRequest.call(this, `/users/${id}`, 'DELETE');
+							responseData = await intercomApiRequest.call(
+								this,
+								requestPath`/users/${id}`,
+								'DELETE',
+							);
 						} catch (error) {
 							throw new NodeOperationError(
 								this.getNode(),
@@ -489,7 +544,13 @@ export class Intercom implements INodeType {
 							}
 						}
 						try {
-							responseData = await intercomApiRequest.call(this, '/companies', 'POST', body, qs);
+							responseData = await intercomApiRequest.call(
+								this,
+								requestPath`/companies`,
+								'POST',
+								body,
+								qs,
+							);
 						} catch (error) {
 							throw new NodeOperationError(
 								this.getNode(),
@@ -511,13 +572,19 @@ export class Intercom implements INodeType {
 							if (selectBy === 'id') {
 								responseData = await intercomApiRequest.call(
 									this,
-									`/companies/${value}`,
+									requestPath`/companies/${value}`,
 									'GET',
 									{},
 									qs,
 								);
 							} else {
-								responseData = await intercomApiRequest.call(this, '/companies', 'GET', {}, qs);
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/companies`,
+									'GET',
+									{},
+									qs,
+								);
 							}
 						} catch (error) {
 							throw new NodeOperationError(
@@ -537,14 +604,20 @@ export class Intercom implements INodeType {
 								responseData = await intercomApiRequestAllItems.call(
 									this,
 									'companies',
-									'/companies',
+									requestPath`/companies`,
 									'GET',
 									{},
 									qs,
 								);
 							} else {
 								qs.per_page = this.getNodeParameter('limit', i);
-								responseData = await intercomApiRequest.call(this, '/companies', 'GET', {}, qs);
+								responseData = await intercomApiRequest.call(
+									this,
+									requestPath`/companies`,
+									'GET',
+									{},
+									qs,
+								);
 								responseData = responseData.companies;
 							}
 						} catch (error) {
@@ -570,7 +643,7 @@ export class Intercom implements INodeType {
 									responseData = await intercomApiRequestAllItems.call(
 										this,
 										'users',
-										`/companies/${value}/users`,
+										requestPath`/companies/${value}/users`,
 										'GET',
 										{},
 										qs,
@@ -579,7 +652,7 @@ export class Intercom implements INodeType {
 									qs.per_page = this.getNodeParameter('limit', i);
 									responseData = await intercomApiRequest.call(
 										this,
-										`/companies/${value}/users`,
+										requestPath`/companies/${value}/users`,
 										'GET',
 										{},
 										qs,
@@ -593,14 +666,20 @@ export class Intercom implements INodeType {
 									responseData = await intercomApiRequestAllItems.call(
 										this,
 										'users',
-										'/companies',
+										requestPath`/companies`,
 										'GET',
 										{},
 										qs,
 									);
 								} else {
 									qs.per_page = this.getNodeParameter('limit', i);
-									responseData = await intercomApiRequest.call(this, '/companies', 'GET', {}, qs);
+									responseData = await intercomApiRequest.call(
+										this,
+										requestPath`/companies`,
+										'GET',
+										{},
+										qs,
+									);
 									responseData = responseData.users;
 								}
 							}

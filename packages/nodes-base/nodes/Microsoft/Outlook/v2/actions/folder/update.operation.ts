@@ -1,8 +1,11 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
-import { microsoftApiRequest } from '../../transport';
+import { requestPath } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
+
 import { folderRLC } from '../../descriptions';
 import { decodeOutlookId } from '../../helpers/utils';
-import { updateDisplayOptions } from '@utils/utilities';
+import { microsoftApiRequest } from '../../transport';
 
 export const properties: INodeProperties[] = [
 	folderRLC,
@@ -33,9 +36,13 @@ export async function execute(this: IExecuteFunctions, index: number) {
 	);
 	const displayName = this.getNodeParameter('displayName', index, undefined) as string;
 
-	const responseData = await microsoftApiRequest.call(this, 'PATCH', `/mailFolders/${folderId}`, {
-		displayName,
-	});
+	const responseData = await microsoftApiRequest.call(
+		this,
+		'PATCH',
+		requestPath`/mailFolders/${folderId}`,
+		index,
+		{ displayName },
+	);
 
 	const executionData = this.helpers.constructExecutionMetaData(
 		this.helpers.returnJsonArray(responseData as IDataObject),

@@ -1,9 +1,11 @@
 import type { IExecuteFunctions, IDataObject, INodeExecutionData } from 'n8n-workflow';
-import type { SheetProperties } from '../../helpers/GoogleSheets.types';
-import { apiRequest } from '../../transport';
-import type { GoogleSheet } from '../../helpers/GoogleSheet';
-import { getExistingSheetNames, hexToRgb } from '../../helpers/GoogleSheets.utils';
+import { requestPath } from 'n8n-workflow';
+
 import { wrapData } from '../../../../../../utils/utilities';
+import type { GoogleSheet } from '../../helpers/GoogleSheet';
+import type { SheetProperties } from '../../helpers/GoogleSheets.types';
+import { getExistingSheetNames, hexToRgb } from '../../helpers/GoogleSheets.utils';
+import { apiRequest } from '../../transport';
 
 export const description: SheetProperties = [
 	{
@@ -24,7 +26,7 @@ export const description: SheetProperties = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		displayOptions: {
 			show: {
@@ -111,7 +113,7 @@ export async function execute(
 		responseData = await apiRequest.call(
 			this,
 			'POST',
-			`/v4/spreadsheets/${sheetName}:batchUpdate`,
+			requestPath`/v4/spreadsheets/${sheetName}:batchUpdate`,
 			{ requests },
 		);
 

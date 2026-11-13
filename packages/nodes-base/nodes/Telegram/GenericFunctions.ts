@@ -7,8 +7,13 @@ import type {
 	IRequestOptions,
 	IWebhookFunctions,
 	JsonObject,
+	RequestUrl,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestPath, requestUrl } from 'n8n-workflow';
+
+import { getSendAndWaitConfig } from '../../utils/sendAndWait/utils';
+import { createUtmCampaignLink } from '../../utils/utilities';
 
 // Interface in n8n
 export interface IMarkupKeyboard {
@@ -39,6 +44,18 @@ export interface ITelegramKeyboardButton {
 
 export interface ITelegramReplyKeyboard extends IMarkupReplyKeyboardOptions {
 	keyboard: ITelegramKeyboardButton[][];
+}
+
+/**
+ * Response of the `getWebhookInfo` endpoint. Every field is optional: the
+ * credential's Base URL can point at any host, so a 2xx response does not
+ * guarantee the payload Telegram sends.
+ */
+export interface TelegramWebhookInfo {
+	result?: {
+		url?: string;
+		allowed_updates?: string[];
+	};
 }
 
 // Shared interfaces
@@ -78,9 +95,7 @@ export function addAdditionalFields(
 
 	if (operation === 'sendMessage') {
 		const attributionText = 'This message was sent automatically with ';
-		const link = `https://n8n.io/?utm_source=n8n-internal&utm_medium=powered_by&utm_campaign=${encodeURIComponent(
-			'n8n-nodes-base.telegram',
-		)}${instanceId ? '_' + instanceId : ''}`;
+		const link = createUtmCampaignLink('n8n-nodes-base.telegram', instanceId);
 
 		if (nodeVersion && nodeVersion >= 1.1 && additionalFields.appendAttribution === undefined) {
 			additionalFields.appendAttribution = true;
@@ -105,12 +120,32 @@ export function addAdditionalFields(
 			}
 		}
 
+		if (
+			nodeVersion &&
+			nodeVersion >= 1.2 &&
+			additionalFields.disable_web_page_preview === undefined
+		) {
+			body.disable_web_page_preview = true;
+		}
+
 		delete additionalFields.appendAttribution;
 	}
 
 	Object.assign(body, additionalFields);
 
 	// Add the reply markup
+	addReplyMarkup.call(this, body, index);
+}
+
+/**
+ * Build the `reply_markup` field from the node's reply markup parameters
+ *
+ * @param {IDataObject} body The body object to add the reply markup to
+ * @param {number} index The index of the item
+ */
+export function addReplyMarkup(this: IExecuteFunctions, body: IDataObject, index: number) {
+	const operation = this.getNodeParameter('operation', index);
+
 	let replyMarkupOption = '';
 	if (operation !== 'sendMediaGroup') {
 		replyMarkupOption = this.getNodeParameter('replyMarkup', index) as string;
@@ -150,9 +185,12 @@ export function addAdditionalFields(
 					}
 					sendRows.push(sendButtonData);
 				}
+
 				// @ts-ignore
-				// prettier-ignore
-				((body.reply_markup as ITelegramInlineReply | ITelegramReplyKeyboard)[setParameterName] as ITelegramKeyboardButton[][]).push(sendRows);
+				const array = (body.reply_markup as ITelegramInlineReply | ITelegramReplyKeyboard)[
+					setParameterName
+				] as ITelegramKeyboardButton[][];
+				array.push(sendRows);
 			}
 		}
 	} else if (replyMarkupOption === 'forceReply') {
@@ -175,6 +213,16 @@ export function addAdditionalFields(
 	}
 }
 
+export function fileUrl(baseUrl: unknown, token: unknown, filePath: string): RequestUrl {
+	const path = filePath
+		.split('/')
+		.reduce(
+			(result, part) => (part ? requestPath`${result}/${part}` : requestPath`${result}/`),
+			requestPath``,
+		);
+	return requestUrl`${baseUrl}/file/bot${token}${path}`;
+}
+
 /**
  * Make an API request to Telegram
  *
@@ -185,16 +233,20 @@ export async function apiRequest(
 	endpoint: string,
 	body: IDataObject,
 	query?: IDataObject,
-	option: IDataObject = {},
+	option: Pick<
+		IRequestOptions,
+		'encoding' | 'formData' | 'json' | 'resolveWithFullResponse' | 'useStream'
+	> & { uri?: never; url?: never; baseURL?: never } = {},
+	uri?: RequestUrl,
 ): Promise<any> {
 	const credentials = await this.getCredentials('telegramApi');
 
 	query = query || {};
 
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		headers: {},
 		method,
-		uri: `https://api.telegram.org/bot${credentials.accessToken}/${endpoint}`,
+		uri: uri ?? requestUrl`${credentials.baseUrl}/bot${credentials.accessToken}/${endpoint}`,
 		body,
 		qs: query,
 		json: true,
@@ -240,4 +292,46 @@ export function getSecretToken(this: IHookFunctions | IWebhookFunctions) {
 	// Only characters A-Z, a-z, 0-9, _ and - are allowed.
 	const secret_token = `${this.getWorkflow().id}_${this.getNode().id}`;
 	return secret_token.replace(/[^a-zA-Z0-9\_\-]+/g, '');
+}
+
+export function createSendAndWaitMessageBody(context: IExecuteFunctions, chatApproval = false) {
+	const chat_id = context.getNodeParameter('chatId', 0) as string;
+
+	const config = getSendAndWaitConfig(context);
+	let text = config.message;
+
+	if (config.appendAttribution !== false) {
+		const instanceId = context.getInstanceId();
+		const attributionText = 'This message was sent automatically with ';
+		const link = createUtmCampaignLink('n8n-nodes-base.telegram', instanceId);
+		text = `${text}\n\n_${attributionText}_[n8n](${link})`;
+	}
+
+	const body = {
+		chat_id,
+		text,
+
+		disable_web_page_preview: true,
+		parse_mode: 'Markdown',
+		reply_markup: {
+			inline_keyboard: [
+				config.options.map((option) => {
+					if (chatApproval) {
+						return {
+							text: option.label,
+							callback_data: context.getApprovalCallbackReference(
+								option.approved ? 'approve' : 'decline',
+							),
+						};
+					}
+					return {
+						text: option.label,
+						url: option.url,
+					};
+				}),
+			],
+		},
+	};
+
+	return body;
 }

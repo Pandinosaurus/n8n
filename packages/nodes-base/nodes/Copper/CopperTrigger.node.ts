@@ -6,6 +6,7 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { copperApiRequest, getAutomaticSecret } from './GenericFunctions';
 
@@ -21,7 +22,7 @@ export class CopperTrigger implements INodeType {
 			name: 'Copper Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'copperApi',
@@ -107,7 +108,7 @@ export class CopperTrigger implements INodeType {
 				if (webhookData.webhookId === undefined) {
 					return false;
 				}
-				const endpoint = `/webhooks/${webhookData.webhookId}`;
+				const endpoint = requestPath`/webhooks/${webhookData.webhookId}`;
 				try {
 					await copperApiRequest.call(this, 'GET', endpoint);
 				} catch (error) {
@@ -120,7 +121,7 @@ export class CopperTrigger implements INodeType {
 				const webhookData = this.getWorkflowStaticData('node');
 				const resource = this.getNodeParameter('resource') as string;
 				const event = this.getNodeParameter('event') as string;
-				const endpoint = '/webhooks';
+				const endpoint = requestPath`/webhooks`;
 				const body: IDataObject = {
 					target: webhookUrl,
 					type: resource,
@@ -138,7 +139,7 @@ export class CopperTrigger implements INodeType {
 			},
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
-				const endpoint = `/webhooks/${webhookData.webhookId}`;
+				const endpoint = requestPath`/webhooks/${webhookData.webhookId}`;
 				try {
 					await copperApiRequest.call(this, 'DELETE', endpoint);
 				} catch (error) {

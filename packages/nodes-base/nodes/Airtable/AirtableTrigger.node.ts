@@ -1,3 +1,4 @@
+import moment from 'moment-timezone';
 import type {
 	IPollFunctions,
 	IDataObject,
@@ -5,9 +6,8 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
 import type { IRecord } from './v1/GenericFunctions';
 import { apiRequestAllItems, downloadRecordAttachments } from './v1/GenericFunctions';
 
@@ -54,7 +54,7 @@ export class AirtableTrigger implements INodeType {
 		],
 		polling: true,
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
 			{
 				displayName: 'Authentication',
@@ -217,7 +217,7 @@ export class AirtableTrigger implements INodeType {
 						type: 'string',
 						default: '',
 						description:
-							'Formulas may involve functions, numeric operations, logical operations, and text operations that operate on fields. More info <a href="https://support.airtable.com/hc/en-us/articles/203255215-Formula-Field-Reference">here</a>.',
+							'Formulas may involve functions, numeric operations, logical operations, and text operations that operate on fields. More info <a href="https://support.airtable.com/articles/7330071120-airtable-formula-field-functions-reference">here</a>.',
 					},
 					{
 						displayName: 'View ID',
@@ -242,7 +242,7 @@ export class AirtableTrigger implements INodeType {
 
 		const qs: IDataObject = {};
 
-		const endpoint = `${base}/${table}`;
+		const endpoint = requestPath`${base}/${table}`;
 
 		const now = moment().utc().format();
 

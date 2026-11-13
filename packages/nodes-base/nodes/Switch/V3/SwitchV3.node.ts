@@ -1,3 +1,4 @@
+import set from 'lodash/set';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -9,30 +10,35 @@ import type {
 	INodeTypeBaseDescription,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeConnectionType, NodeOperationError } from 'n8n-workflow';
-import set from 'lodash/set';
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+import { BaseError } from '@n8n/errors';
+
 import { capitalize } from '@utils/utilities';
+
+import { ENABLE_LESS_STRICT_TYPE_VALIDATION } from '../../../utils/constants';
+import { looseTypeValidationProperty } from '../../../utils/descriptions';
+import { getTypeValidationParameter, getTypeValidationStrictness } from '../../If/V2/utils';
 
 const configuredOutputs = (parameters: INodeParameters) => {
 	const mode = parameters.mode as string;
 
 	if (mode === 'expression') {
 		return Array.from({ length: parameters.numberOutputs as number }, (_, i) => ({
-			type: `${NodeConnectionType.Main}`,
+			type: 'main',
 			displayName: i.toString(),
 		}));
 	} else {
 		const rules = ((parameters.rules as IDataObject)?.values as IDataObject[]) ?? [];
 		const ruleOutputs = rules.map((rule, index) => {
 			return {
-				type: `${NodeConnectionType.Main}`,
+				type: 'main',
 				displayName: rule.outputKey || index.toString(),
 			};
 		});
 		if ((parameters.options as IDataObject)?.fallbackOutput === 'extra') {
 			const renameFallbackOutput = (parameters.options as IDataObject)?.renameFallbackOutput;
 			ruleOutputs.push({
-				type: `${NodeConnectionType.Main}`,
+				type: 'main',
 				displayName: renameFallbackOutput || 'Fallback',
 			});
 		}
@@ -47,13 +53,63 @@ export class SwitchV3 implements INodeType {
 		this.description = {
 			...baseDescription,
 			subtitle: `=mode: {{(${capitalize})($parameter["mode"])}}`,
-			version: [3],
+			version: [3, 3.1, 3.2, 3.3, 3.4, 3.5],
 			defaults: {
 				name: 'Switch',
 				color: '#506000',
 			},
-			inputs: ['main'],
+			inputs: [NodeConnectionTypes.Main],
 			outputs: `={{(${configuredOutputs})($parameter)}}`,
+			builderHint: {
+				extraTypeDefContent: [
+					{
+						displayOptions: { show: { mode: ['rules'] } },
+						content: `<patterns>
+<pattern title="Switch with two cases plus a default branch">
+const routeByPriority = switchCase({
+  version: 3.2,
+  config: {
+    name: 'Route by Priority',
+    parameters: {
+      rules: {
+        values: [
+          {
+            outputKey: 'urgent',
+            conditions: {
+              options: { caseSensitive: false, leftValue: '', typeValidation: 'strict' },
+              conditions: [{ leftValue: expr('{{ $json.priority }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'urgent' }],
+              combinator: 'and'
+            }
+          },
+          {
+            outputKey: 'normal',
+            conditions: {
+              options: { caseSensitive: false, leftValue: '', typeValidation: 'strict' },
+              conditions: [{ leftValue: expr('{{ $json.priority }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'normal' }],
+              combinator: 'and'
+            }
+          }
+        ]
+      },
+      options: {
+        fallbackOutput: 'extra',
+        renameFallbackOutput: 'Fallback'
+      }
+    }
+  }
+});
+
+export default workflow('id', 'name')
+  .add(startTrigger)
+  .to(routeByPriority
+    .onCase(0, processUrgent.to(notifyTeam))
+    .onCase(1, processNormal)
+    .onCase(2, archive));
+</pattern>
+</patterns>`,
+					},
+				],
+			},
 			properties: [
 				{
 					displayName: 'Mode',
@@ -79,9 +135,24 @@ export class SwitchV3 implements INodeType {
 					displayName: 'Number of Outputs',
 					name: 'numberOutputs',
 					type: 'number',
+					noDataExpression: true,
 					displayOptions: {
 						show: {
 							mode: ['expression'],
+							'@version': [{ _cnd: { gte: 3.3 } }],
+						},
+					},
+					default: 4,
+					description: 'How many outputs to create',
+				},
+				{
+					displayName: 'Number of Outputs',
+					name: 'numberOutputs',
+					type: 'number',
+					displayOptions: {
+						show: {
+							mode: ['expression'],
+							'@version': [{ _cnd: { lt: 3.3 } }],
 						},
 					},
 					default: 4,
@@ -108,6 +179,10 @@ export class SwitchV3 implements INodeType {
 					name: 'rules',
 					placeholder: 'Add Routing Rule',
 					type: 'fixedCollection',
+					builderHint: {
+						propertyHint:
+							"Use `rules.values` (NOT `rules.rules`). Each rule needs `outputKey` and a complete `conditions` object with these three sibling keys: `combinator` ('and' | 'or'), `conditions` (array of condition objects), `options` (`{ caseSensitive, leftValue, typeValidation }`). Same shape as IF. Wire rule outputs by zero-based index with `.onCase(index, target)`; `outputKey` is the visible output label, not the `.onCase()` argument. Unwired cases silently drop their items. Default `caseSensitive: false` for string equality, only set `true` when specifically requested or confirmed by the user.",
+					},
 					typeOptions: {
 						multipleValues: true,
 						sortable: true,
@@ -144,7 +219,7 @@ export class SwitchV3 implements INodeType {
 					options: [
 						{
 							name: 'values',
-							displayName: 'Values',
+							displayName: 'Routing Rule',
 							values: [
 								{
 									displayName: 'Conditions',
@@ -156,8 +231,9 @@ export class SwitchV3 implements INodeType {
 										multipleValues: false,
 										filter: {
 											caseSensitive: '={{!$parameter.options.ignoreCase}}',
-											typeValidation:
-												'={{$parameter.options.looseTypeValidation ? "loose" : "strict"}}',
+											typeValidation: getTypeValidationStrictness(3.1),
+											version:
+												'={{ $nodeVersion >= 3.5 ? 4 : $nodeVersion >= 3.4 ? 3 : $nodeVersion >= 3.2 ? 2 : 1 }}',
 										},
 									},
 								},
@@ -184,10 +260,19 @@ export class SwitchV3 implements INodeType {
 					],
 				},
 				{
+					...looseTypeValidationProperty,
+					default: false,
+					displayOptions: {
+						show: {
+							'@version': [{ _cnd: { gte: 3.1 } }],
+						},
+					},
+				},
+				{
 					displayName: 'Options',
 					name: 'options',
 					type: 'collection',
-					placeholder: 'Add Option',
+					placeholder: 'Add option',
 					default: {},
 					displayOptions: {
 						show: {
@@ -204,6 +289,10 @@ export class SwitchV3 implements INodeType {
 								loadOptionsDependsOn: ['rules.values', '/rules', '/rules.values'],
 								loadOptionsMethod: 'getFallbackOutputOptions',
 							},
+							builderHint: {
+								propertyHint:
+									"Set this to `'extra'` before wiring a catch-all/default branch. In rules mode, `'extra'` creates a fallback output at index `rules.values.length`; default `'none'` creates no fallback output and drops unmatched items. Numeric values route unmatched items to an existing rule output and do not create a new port.",
+							},
 							default: 'none',
 							// eslint-disable-next-line n8n-nodes-base/node-param-description-wrong-for-dynamic-options
 							description:
@@ -217,11 +306,12 @@ export class SwitchV3 implements INodeType {
 							default: true,
 						},
 						{
-							displayName: 'Less Strict Type Validation',
-							description: 'Whether to try casting value types based on the selected operator',
-							name: 'looseTypeValidation',
-							type: 'boolean',
-							default: true,
+							...looseTypeValidationProperty,
+							displayOptions: {
+								show: {
+									'@version': [{ _cnd: { lt: 3.1 } }],
+								},
+							},
 						},
 						{
 							displayName: 'Rename Fallback Output',
@@ -229,6 +319,10 @@ export class SwitchV3 implements INodeType {
 							type: 'string',
 							placeholder: 'e.g. Fallback',
 							default: '',
+							builderHint: {
+								propertyHint:
+									"Only labels the extra fallback output. Use it together with `fallbackOutput: 'extra'`; it does not create a fallback output by itself.",
+							},
 							displayOptions: {
 								show: {
 									fallbackOutput: ['extra'],
@@ -348,9 +442,15 @@ export class SwitchV3 implements INodeType {
 								},
 							) as boolean;
 						} catch (error) {
-							if (!options.looseTypeValidation) {
-								error.description =
-									"Try changing the type of comparison. Alternatively you can enable 'Less Strict Type Validation' in the options.";
+							if (
+								!getTypeValidationParameter(3.1)(
+									this,
+									itemIndex,
+									options.looseTypeValidation as boolean,
+								) &&
+								!error.description
+							) {
+								error.description = ENABLE_LESS_STRICT_TYPE_VALIDATION;
 							}
 							set(error, 'context.itemIndex', itemIndex);
 							set(error, 'node', this.getNode());
@@ -382,7 +482,18 @@ export class SwitchV3 implements INodeType {
 					returnData[0].push({ json: { error: error.message } });
 					continue;
 				}
-				throw new NodeOperationError(this.getNode(), error);
+				if (error instanceof NodeOperationError) {
+					throw error;
+				}
+
+				if (error instanceof BaseError) {
+					set(error, 'context.itemIndex', itemIndex);
+					throw error;
+				}
+
+				throw new NodeOperationError(this.getNode(), error, {
+					itemIndex,
+				});
 			}
 		}
 

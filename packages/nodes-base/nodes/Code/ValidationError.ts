@@ -1,4 +1,6 @@
-export class ValidationError extends Error {
+import { UserError } from '@n8n/errors';
+
+export class ValidationError extends UserError {
 	description = '';
 
 	itemIndex: number | undefined = undefined;
@@ -18,7 +20,7 @@ export class ValidationError extends Error {
 		itemIndex?: number;
 		lineNumber?: number;
 	}) {
-		super();
+		super(message);
 
 		this.lineNumber = lineNumber;
 		this.itemIndex = itemIndex;

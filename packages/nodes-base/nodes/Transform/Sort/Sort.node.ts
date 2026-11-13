@@ -8,14 +8,19 @@ import {
 	type INodeExecutionData,
 	type INodeType,
 	type INodeTypeDescription,
+	NodeConnectionTypes,
 } from 'n8n-workflow';
-import { shuffleArray, sortByCode } from './utils';
+
+import { shuffleArray } from '@utils/utilities';
+
+import { sortByCode } from './utils';
 
 export class Sort implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Sort',
 		name: 'sort',
-		icon: 'file:sort.svg',
+		icon: 'node:sort',
+		iconColor: 'lavender',
 		group: ['transform'],
 		subtitle: '',
 		version: 1,
@@ -23,8 +28,8 @@ export class Sort implements INodeType {
 		defaults: {
 			name: 'Sort',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
 			{
 				displayName: 'Type',
@@ -45,7 +50,7 @@ export class Sort implements INodeType {
 					},
 				],
 				default: 'simple',
-				description: 'The fields of the input items to compare to see if they are the same',
+				description: 'The type of sorting to perform',
 			},
 			{
 				displayName: 'Fields To Sort By',
@@ -93,7 +98,7 @@ export class Sort implements INodeType {
 					},
 				],
 				default: {},
-				description: 'The fields of the input items to compare to see if they are the same',
+				description: 'The fields of the input items to sort by',
 				displayOptions: {
 					show: {
 						type: ['simple'],
@@ -278,7 +283,7 @@ export class Sort implements INodeType {
 				return result;
 			});
 		} else {
-			returnData = sortByCode.call(this, returnData);
+			returnData = await sortByCode.call(this);
 		}
 		return [returnData];
 	}

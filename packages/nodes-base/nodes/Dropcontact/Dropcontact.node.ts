@@ -5,7 +5,7 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeApiError, requestPath } from 'n8n-workflow';
 
 import { dropcontactApiRequest, mapPairedItemsFrom } from './GenericFunction';
 
@@ -21,8 +21,9 @@ export class Dropcontact implements INodeType {
 		defaults: {
 			name: 'Dropcontact',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'dropcontactApi',
@@ -190,7 +191,7 @@ export class Dropcontact implements INodeType {
 						operation: ['enrich'],
 					},
 				},
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				default: {},
 				options: [
 					{
@@ -270,7 +271,7 @@ export class Dropcontact implements INodeType {
 				responseData = (await dropcontactApiRequest.call(
 					this,
 					'POST',
-					'/batch',
+					requestPath`/batch`,
 					{ data, siren, language },
 					{},
 				)) as { request_id: string; error: string; success: boolean };
@@ -299,7 +300,7 @@ export class Dropcontact implements INodeType {
 					responseData = await dropcontactApiRequest.call(
 						this,
 						'GET',
-						`/batch/${responseData.request_id}`,
+						requestPath`/batch/${responseData.request_id}`,
 						{},
 						{},
 					);
@@ -344,7 +345,7 @@ export class Dropcontact implements INodeType {
 					responseData = (await dropcontactApiRequest.call(
 						this,
 						'GET',
-						`/batch/${requestId}`,
+						requestPath`/batch/${requestId}`,
 						{},
 						{},
 					)) as { request_id: string; error: string; success: boolean };

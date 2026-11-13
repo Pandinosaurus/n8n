@@ -1,3 +1,4 @@
+import { snakeCase } from 'change-case';
 import { createHmac } from 'crypto';
 import type {
 	IDataObject,
@@ -10,14 +11,9 @@ import type {
 	IWebhookResponseData,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
-
-import { v4 as uuid } from 'uuid';
-
-import { snakeCase } from 'change-case';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { facebookApiRequest, getAllFields, getFields } from './GenericFunctions';
-
 import type { FacebookWebhookSubscription } from './types';
 
 export class FacebookTrigger implements INodeType {
@@ -33,11 +29,29 @@ export class FacebookTrigger implements INodeType {
 			name: 'Facebook Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
+		builderHint: {
+			searchHint:
+				'Webhook verification is automatic — there is NO user-settable "verify token". On activation n8n registers the Facebook webhook subscription and verifies Facebook\'s challenge against this node\'s own auto-generated id. Never tell the user to invent a verify-token string or look for a verify-token credential field; if Facebook\'s "Verify token" box must be filled in manually it has to be this node\'s id, not an arbitrary value.',
+		},
 		credentials: [
 			{
 				name: 'facebookGraphAppApi',
 				required: true,
+				displayOptions: {
+					show: {
+						authType: ['accessToken'],
+					},
+				},
+			},
+			{
+				name: 'facebookGraphAppOAuth2Api',
+				required: true,
+				displayOptions: {
+					show: {
+						authType: ['oAuth2'],
+					},
+				},
 			},
 		],
 		webhooks: [
@@ -56,12 +70,40 @@ export class FacebookTrigger implements INodeType {
 		],
 		properties: [
 			{
+				displayName: 'Authentication',
+				name: 'authType',
+				type: 'options',
+				options: [
+					{
+						name: 'Access Token',
+						value: 'accessToken',
+					},
+					{
+						name: 'OAuth2',
+						value: 'oAuth2',
+					},
+				],
+				default: 'accessToken',
+				description: 'The authentication method to use',
+			},
+			{
 				displayName: 'APP ID',
 				name: 'appId',
 				type: 'string',
 				required: true,
 				default: '',
 				description: 'Facebook APP ID',
+			},
+			{
+				displayName: 'To watch Whatsapp business account events use the Whatsapp trigger node',
+				name: 'whatsappBusinessAccountNotice',
+				type: 'notice',
+				default: '',
+				displayOptions: {
+					show: {
+						object: ['whatsappBusinessAccount'],
+					},
+				},
 			},
 			{
 				displayName: 'Object',
@@ -139,7 +181,7 @@ export class FacebookTrigger implements INodeType {
 				},
 				default: [],
 				description:
-					'The set of fields in this object that are subscribed to. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The set of fields in this object that are subscribed to. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Options',
@@ -181,7 +223,7 @@ export class FacebookTrigger implements INodeType {
 				const { data } = (await facebookApiRequest.call(
 					this,
 					'GET',
-					`/${appId}/subscriptions`,
+					requestPath`/${appId}/subscriptions`,
 					{},
 				)) as { data: FacebookWebhookSubscription[] };
 
@@ -202,7 +244,6 @@ export class FacebookTrigger implements INodeType {
 				return true;
 			},
 			async create(this: IHookFunctions): Promise<boolean> {
-				const webhookData = this.getWorkflowStaticData('node');
 				const webhookUrl = this.getNodeWebhookUrl('default') as string;
 				const object = this.getNodeParameter('object') as string;
 				const appId = this.getNodeParameter('appId') as string;
@@ -212,7 +253,7 @@ export class FacebookTrigger implements INodeType {
 				const body = {
 					object: snakeCase(object),
 					callback_url: webhookUrl,
-					verify_token: uuid(),
+					verify_token: this.getNode().id,
 					fields: fields.includes('*') ? getAllFields(object) : fields,
 				} as IDataObject;
 
@@ -223,11 +264,9 @@ export class FacebookTrigger implements INodeType {
 				const responseData = await facebookApiRequest.call(
 					this,
 					'POST',
-					`/${appId}/subscriptions`,
+					requestPath`/${appId}/subscriptions`,
 					body,
 				);
-
-				webhookData.verifyToken = body.verify_token;
 
 				if (responseData.success !== true) {
 					// Facebook did not return success, so something went wrong
@@ -242,7 +281,7 @@ export class FacebookTrigger implements INodeType {
 				const object = this.getNodeParameter('object') as string;
 
 				try {
-					await facebookApiRequest.call(this, 'DELETE', `/${appId}/subscriptions`, {
+					await facebookApiRequest.call(this, 'DELETE', requestPath`/${appId}/subscriptions`, {
 						object: snakeCase(object),
 					});
 				} catch (error) {
@@ -259,17 +298,18 @@ export class FacebookTrigger implements INodeType {
 		const res = this.getResponseObject();
 		const req = this.getRequestObject();
 		const headerData = this.getHeaderData() as IDataObject;
-		const credentials = await this.getCredentials('facebookGraphAppApi');
+		const authType = this.getNodeParameter('authType', 0) as string;
+		const credentials = await this.getCredentials(
+			authType === 'oAuth2' ? 'facebookGraphAppOAuth2Api' : 'facebookGraphAppApi',
+		);
 		// Check if we're getting facebook's challenge request (https://developers.facebook.com/docs/graph-api/webhooks/getting-started)
 		if (this.getWebhookName() === 'setup') {
 			if (query['hub.challenge']) {
-				//TODO
-				//compare hub.verify_token with the saved token
-				//const webhookData = this.getWorkflowStaticData('node');
-				// if (webhookData.verifyToken !== query['hub.verify_token']) {
-				// 	return {};
-				// }
-				res.status(200).send(query['hub.challenge']).end();
+				if (this.getNode().id !== query['hub.verify_token']) {
+					return {};
+				}
+
+				res.status(200).type('text/plain').send(query['hub.challenge']).end();
 				return {
 					noWebhookResponse: true,
 				};

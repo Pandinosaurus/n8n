@@ -7,22 +7,23 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, randomString, requestPath } from 'n8n-workflow';
 
 import { helpscoutApiRequest, helpscoutApiRequestAllItems } from './GenericFunctions';
 
 export class HelpScoutTrigger implements INodeType {
 	description: INodeTypeDescription = {
-		displayName: 'HelpScout Trigger',
+		displayName: 'Help Scout Trigger',
 		name: 'helpScoutTrigger',
 		icon: 'file:helpScout.svg',
 		group: ['trigger'],
 		version: 1,
-		description: 'Starts the workflow when HelpScout events occur',
+		description: 'Starts the workflow when Help Scout events occur',
 		defaults: {
-			name: 'HelpScout Trigger',
+			name: 'Help Scout Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'helpScoutOAuth2Api',
@@ -107,7 +108,7 @@ export class HelpScoutTrigger implements INodeType {
 
 				// Check all the webhooks which exist already if it is identical to the
 				// one that is supposed to get created.
-				const endpoint = '/v2/webhooks';
+				const endpoint = requestPath`/v2/webhooks`;
 				const data = await helpscoutApiRequestAllItems.call(
 					this,
 					'_embedded.webhooks',
@@ -135,12 +136,12 @@ export class HelpScoutTrigger implements INodeType {
 				const webhookUrl = this.getNodeWebhookUrl('default');
 				const events = this.getNodeParameter('events') as string;
 
-				const endpoint = '/v2/webhooks';
+				const endpoint = requestPath`/v2/webhooks`;
 
 				const body = {
 					url: webhookUrl,
 					events,
-					secret: Math.random().toString(36).substring(2, 15),
+					secret: randomString(10).toLowerCase(),
 				};
 
 				const responseData = await helpscoutApiRequest.call(
@@ -165,9 +166,12 @@ export class HelpScoutTrigger implements INodeType {
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				if (webhookData.webhookId !== undefined) {
-					const endpoint = `/v2/webhooks/${webhookData.webhookId}`;
 					try {
-						await helpscoutApiRequest.call(this, 'DELETE', endpoint);
+						await helpscoutApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/v2/webhooks/${webhookData.webhookId}`,
+						);
 					} catch (error) {
 						return false;
 					}

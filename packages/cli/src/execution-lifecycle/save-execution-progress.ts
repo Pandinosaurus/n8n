@@ -1,0 +1,60 @@
+import { Logger } from '@n8n/backend-common';
+import { Container } from '@n8n/di';
+import { ErrorReporter } from 'n8n-core';
+import type { IRunExecutionData, ITaskData } from 'n8n-workflow';
+
+import { ExecutionPersistence } from '@/executions/execution-persistence';
+
+export async function saveExecutionProgress(
+	workflowId: string,
+	executionId: string,
+	nodeName: string,
+	_data: ITaskData,
+	executionData: IRunExecutionData,
+	requireRunning = false,
+) {
+	const logger = Container.get(Logger);
+	const executionPersistence = Container.get(ExecutionPersistence);
+	const errorReporter = Container.get(ErrorReporter);
+
+	try {
+		logger.debug(`Save execution progress to database for execution ID ${executionId} `, {
+			executionId,
+			nodeName,
+		});
+
+		executionData.resultData.lastNodeExecuted = nodeName;
+
+		const updated = await executionPersistence.updateExistingExecution(
+			executionId,
+			{ data: executionData, status: 'running' },
+			// If the memory guard stops the execution while this save runs, n8n saves the
+			// execution as failed, with no run data. This save must not then write the run
+			// data back. `requireNotCanceled` cannot catch this, because the status is
+			// `error`, so require `running` instead.
+			requireRunning
+				? { requireNotFinished: true, requireStatus: 'running' }
+				: { requireNotFinished: true, requireNotCanceled: true },
+		);
+
+		if (!updated) {
+			logger.debug(
+				`Skipped saving execution progress to database for execution ID ${executionId} - execution already finished or canceled`,
+				{ executionId, nodeName },
+			);
+		}
+	} catch (e) {
+		const error = e instanceof Error ? e : new Error(`${e}`);
+
+		errorReporter.error(error);
+		// TODO: Improve in the future!
+		// Errors here might happen because of database access
+		// For busy machines, we may get "Database is locked" errors.
+
+		// We do this to prevent crashes and executions ending in `unknown` state.
+		logger.error(
+			`Failed saving execution progress to database for execution ID ${executionId} (hookFunctionsSaveProgress, nodeExecuteAfter)`,
+			{ error, executionId, workflowId },
+		);
+	}
+}

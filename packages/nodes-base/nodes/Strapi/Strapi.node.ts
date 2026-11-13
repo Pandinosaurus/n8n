@@ -9,17 +9,16 @@ import type {
 	INodeTypeDescription,
 	IRequestOptions,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
+import { entryFields, entryOperations } from './EntryDescription';
 import {
 	getToken,
-	removeTrailingSlash,
 	strapiApiRequest,
 	strapiApiRequestAllItems,
 	validateJSON,
 } from './GenericFunctions';
-
-import { entryFields, entryOperations } from './EntryDescription';
+import { removeTrailingSlash } from '../../utils/utilities';
 
 export class Strapi implements INodeType {
 	description: INodeTypeDescription = {
@@ -33,8 +32,9 @@ export class Strapi implements INodeType {
 		defaults: {
 			name: 'Strapi',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'strapiApi',
@@ -175,7 +175,7 @@ export class Strapi implements INodeType {
 						responseData = await strapiApiRequest.call(
 							this,
 							'POST',
-							`/${contentType}`,
+							requestPath`/${contentType}`,
 							body,
 							qs,
 							undefined,
@@ -198,7 +198,7 @@ export class Strapi implements INodeType {
 						responseData = await strapiApiRequest.call(
 							this,
 							'DELETE',
-							`/${contentType}/${entryId}`,
+							requestPath`/${contentType}/${entryId}`,
 							{},
 							qs,
 							undefined,
@@ -246,7 +246,7 @@ export class Strapi implements INodeType {
 								responseData = await strapiApiRequestAllItems.call(
 									this,
 									'GET',
-									`/${contentType}`,
+									requestPath`/${contentType}`,
 									{},
 									qs,
 									headers,
@@ -257,7 +257,7 @@ export class Strapi implements INodeType {
 								({ data: responseData } = await strapiApiRequest.call(
 									this,
 									'GET',
-									`/${contentType}`,
+									requestPath`/${contentType}`,
 									{},
 									qs,
 									undefined,
@@ -290,7 +290,7 @@ export class Strapi implements INodeType {
 								responseData = await strapiApiRequestAllItems.call(
 									this,
 									'GET',
-									`/${contentType}`,
+									requestPath`/${contentType}`,
 									{},
 									qs,
 									headers,
@@ -301,7 +301,7 @@ export class Strapi implements INodeType {
 								responseData = await strapiApiRequest.call(
 									this,
 									'GET',
-									`/${contentType}`,
+									requestPath`/${contentType}`,
 									{},
 									qs,
 									undefined,
@@ -326,7 +326,7 @@ export class Strapi implements INodeType {
 						responseData = await strapiApiRequest.call(
 							this,
 							'GET',
-							`/${contentType}/${entryId}`,
+							requestPath`/${contentType}/${entryId}`,
 							{},
 							qs,
 							undefined,
@@ -369,7 +369,7 @@ export class Strapi implements INodeType {
 						responseData = await strapiApiRequest.call(
 							this,
 							'PUT',
-							`/${contentType}/${entryId}`,
+							requestPath`/${contentType}/${entryId}`,
 							body,
 							qs,
 							undefined,

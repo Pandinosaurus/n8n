@@ -5,15 +5,26 @@ export class OAuth2Api implements ICredentialType {
 
 	displayName = 'OAuth2 API';
 
-	documentationUrl = 'httpRequest';
+	documentationUrl = 'httprequest';
 
 	genericAuth = true;
 
 	properties: INodeProperties[] = [
 		{
+			displayName: 'Use Dynamic Client Registration',
+			name: 'useDynamicClientRegistration',
+			type: 'hidden',
+			default: false,
+		},
+		{
 			displayName: 'Grant Type',
 			name: 'grantType',
 			type: 'options',
+			displayOptions: {
+				show: {
+					useDynamicClientRegistration: [false],
+				},
+			},
 			options: [
 				{
 					name: 'Authorization Code',
@@ -31,12 +42,25 @@ export class OAuth2Api implements ICredentialType {
 			default: 'authorizationCode',
 		},
 		{
+			displayName: 'Server URL',
+			name: 'serverUrl',
+			type: 'string',
+			displayOptions: {
+				show: {
+					useDynamicClientRegistration: [true],
+				},
+			},
+			default: '',
+			required: true,
+		},
+		{
 			displayName: 'Authorization URL',
 			name: 'authUrl',
 			type: 'string',
 			displayOptions: {
 				show: {
 					grantType: ['authorizationCode', 'pkce'],
+					useDynamicClientRegistration: [false],
 				},
 			},
 			default: '',
@@ -46,6 +70,11 @@ export class OAuth2Api implements ICredentialType {
 			displayName: 'Access Token URL',
 			name: 'accessTokenUrl',
 			type: 'string',
+			displayOptions: {
+				show: {
+					useDynamicClientRegistration: [false],
+				},
+			},
 			default: '',
 			required: true,
 		},
@@ -53,13 +82,31 @@ export class OAuth2Api implements ICredentialType {
 			displayName: 'Client ID',
 			name: 'clientId',
 			type: 'string',
+			displayOptions: {
+				show: {
+					useDynamicClientRegistration: [false],
+				},
+			},
 			default: '',
 			required: true,
+		},
+		{
+			// Hidden ordering anchor: lets extending credentials (e.g. microsoftOAuth2Api) render a
+			// secret/certificate selector right after Client ID by overriding this field. Inert here.
+			displayName: 'Authentication',
+			name: 'clientCredentialType',
+			type: 'hidden',
+			default: 'clientSecret',
 		},
 		{
 			displayName: 'Client Secret',
 			name: 'clientSecret',
 			type: 'string',
+			displayOptions: {
+				show: {
+					useDynamicClientRegistration: [false],
+				},
+			},
 			typeOptions: {
 				password: true,
 			},
@@ -67,9 +114,37 @@ export class OAuth2Api implements ICredentialType {
 			required: true,
 		},
 		{
+			// Hidden ordering anchors (see `clientCredentialType` above): let extending credentials
+			// render the certificate fields right after Client Secret instead of appended at the end.
+			displayName: 'Private Key',
+			name: 'privateKey',
+			type: 'hidden',
+			typeOptions: {
+				password: true,
+			},
+			default: '',
+		},
+		{
+			displayName: 'Certificate',
+			name: 'certificate',
+			type: 'hidden',
+			typeOptions: {
+				password: true,
+			},
+			default: '',
+		},
+		// WARNING: if you are extending from this credentials and allow user to set their own scopes
+		// you HAVE TO add it to GENERIC_OAUTH2_CREDENTIALS_WITH_EDITABLE_SCOPE in packages/cli/src/constants.ts
+		// track any updates to this behavior in N8N-7424
+		{
 			displayName: 'Scope',
 			name: 'scope',
 			type: 'string',
+			displayOptions: {
+				show: {
+					useDynamicClientRegistration: [false],
+				},
+			},
 			default: '',
 		},
 		{
@@ -79,6 +154,7 @@ export class OAuth2Api implements ICredentialType {
 			displayOptions: {
 				show: {
 					grantType: ['authorizationCode', 'pkce'],
+					useDynamicClientRegistration: [false],
 				},
 			},
 			default: '',
@@ -90,6 +166,11 @@ export class OAuth2Api implements ICredentialType {
 			displayName: 'Authentication',
 			name: 'authentication',
 			type: 'options',
+			displayOptions: {
+				show: {
+					useDynamicClientRegistration: [false],
+				},
+			},
 			options: [
 				{
 					name: 'Body',
@@ -105,10 +186,95 @@ export class OAuth2Api implements ICredentialType {
 			default: 'header',
 		},
 		{
-			displayName: 'Ignore SSL Issues',
+			displayName: 'Send Additional Body Properties',
+			name: 'sendAdditionalBodyProperties',
+			type: 'boolean',
+			default: false,
+			displayOptions: {
+				show: {
+					grantType: ['clientCredentials'],
+					authentication: ['body'],
+					useDynamicClientRegistration: [false],
+				},
+			},
+		},
+		{
+			displayName: 'Additional Body Properties',
+			name: 'additionalBodyProperties',
+			type: 'json',
+			typeOptions: {
+				rows: 5,
+			},
+			displayOptions: {
+				show: {
+					grantType: ['clientCredentials'],
+					authentication: ['body'],
+					sendAdditionalBodyProperties: [true],
+					useDynamicClientRegistration: [false],
+				},
+			},
+			default: '',
+		},
+		{
+			displayName: 'Ignore SSL Issues (Insecure)',
 			name: 'ignoreSSLIssues',
 			type: 'boolean',
 			default: false,
+			doNotInherit: true,
+		},
+		{
+			displayName: 'Token Expired Status Code',
+			name: 'tokenExpiredStatusCode',
+			type: 'number',
+			default: 401,
+			description:
+				'HTTP status code that indicates the token has expired. Some APIs return 403 instead of 401.',
+			doNotInherit: true,
+		},
+		{
+			displayName: 'Encrypted Tokens (JWE)',
+			name: 'jweEnabled',
+			type: 'boolean',
+			default: false,
+			description:
+				'Whether the IdP returns tokens encrypted as JWE to the public key at this instance’s JWKS endpoint. The response must contain at least one JWE-encrypted token (access or ID token); fully plaintext responses are rejected.',
+			doNotInherit: true,
+		},
+		{
+			// `doNotInherit` matches `jweEnabled` above. Inheriting just `jwksUri`
+			// without `jweEnabled` breaks `getParameterResolveOrder` on every
+			// extending credential because `jwksUri.displayOptions` references a
+			// field the child doesn't have, leaving the dependency unresolved.
+			// Future JWE-aware OAuth2 extensions can re-declare both fields.
+			displayName: 'JWKS URI',
+			name: 'jwksUri',
+			type: 'string',
+			typeOptions: {
+				copyButton: true,
+			},
+			default: '',
+			description:
+				'Provide this URL to your IdP so it can fetch the public key used to encrypt access and ID tokens for this instance.',
+			displayOptions: {
+				show: {
+					jweEnabled: [true],
+				},
+			},
+			doNotInherit: true,
+		},
+		{
+			displayName: 'Inline JWKS in Client Registration',
+			name: 'inlineJwks',
+			type: 'boolean',
+			default: false,
+			description:
+				'Whether to send the public keys directly in the dynamic client registration payload instead of advertising a JWKS URI. Enable this when the IdP cannot reach this instance (e.g. when self-hosted behind a firewall).',
+			displayOptions: {
+				show: {
+					jweEnabled: [true],
+					useDynamicClientRegistration: [true],
+				},
+			},
 			doNotInherit: true,
 		},
 	];

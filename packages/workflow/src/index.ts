@@ -1,32 +1,78 @@
-import * as LoggerProxy from './LoggerProxy';
-export * as ErrorReporterProxy from './ErrorReporterProxy';
-export * as ExpressionEvaluatorProxy from './ExpressionEvaluatorProxy';
-import * as NodeHelpers from './NodeHelpers';
-import * as ObservableObject from './ObservableObject';
-import * as TelemetryHelpers from './TelemetryHelpers';
+import * as LoggerProxy from './logger-proxy';
+import * as NodeHelpers from './node-helpers';
+import * as ObservableObject from './observable-object';
+import * as TelemetryHelpers from './telemetry-helpers';
 
 export * from './errors';
-export * from './Authentication';
-export * from './Constants';
-export * from './Cron';
-export * from './DeferredPromise';
-export * from './GlobalState';
-export * from './Interfaces';
-export * from './MessageEventBus';
-export * from './ExecutionStatus';
-export * from './Expression';
-export * from './NodeHelpers';
-export * from './RoutingNode';
-export * from './Workflow';
-export * from './WorkflowDataProxy';
-export * from './WorkflowHooks';
-export * from './VersionedNodeType';
-export * from './TypeValidation';
+export * from './constants';
+export * from './nodes-api-version';
+export * from './common';
+export * from './cron';
+export * from './data-table.types';
+export * from './execution-context';
+export * from './execution-context-establishment-hooks';
+export * from './execution-cancellation';
+export * from './redaction-channels';
+export * from './dynamic-credentials-helpers';
+export * from './safe-regex';
+export * from './global-state';
+export * from './interfaces';
+export {
+	fromExpression,
+	fromFunction,
+	fromParameter,
+	nodeParametersAreStatic,
+	resolveWebhookDescriptionField,
+	webhookDescriptionFields,
+	webhookDescriptionIsNativelyResolvable,
+	type NativeResolution,
+	type WebhookDescriptionField,
+} from './webhook-description-fields';
+export { isNativelyEvaluable } from './expressions/native-evaluation';
+export * from './sub-workflow-output';
+export * from './run-execution-data-factory';
+export * from './message-event-bus';
+export * from './execution-status';
+export * from './trimmed-task-data';
+export * from './expression';
+export * from './expressions/expression-helpers';
+export * from './from-ai-parse-utils';
+export * from './node-helpers';
+export * from './node-annotations';
+export * from './node-validation';
+export * from './node-grouping-validation';
+export * from './empty-group-anchor';
+export * from './mcp-helpers';
+export * from './tool-helpers';
+export * from './trigger-credential-gate';
+export * from './trigger-identity';
+export * from './url';
+export * from './n8n-oauth2-auth';
+export * from './n8n-browser-oauth2-flow';
+export * from './auth-redaction';
+export * from './node-reference-parser-utils';
+export * from './metadata-utils';
+export * from './highlighted-data';
+export * from './workflow';
+export * from './workflow-checksum';
+export * from './workflow-data-proxy';
+export * from './workflow-data-proxy-env-provider';
+export * from './workflow-validation';
+export * from './workflow-structure-validation';
+export * from './versioned-node-type';
+export * from './type-validation';
+export * from './credential-domain-restrictions';
+export * from './credential-only-nodes';
+export * from './schemas';
+export * from './generate-schema-from-example';
+export * from './run-execution-data/run-execution-data';
+export { WorkflowExpression } from './workflow-expression';
 export { LoggerProxy, NodeHelpers, ObservableObject, TelemetryHelpers };
 export {
 	isObjectEmpty,
 	deepCopy,
 	jsonParse,
+	base64DecodeUTF8,
 	jsonStringify,
 	replaceCircularReferences,
 	sleep,
@@ -34,6 +80,16 @@ export {
 	assert,
 	removeCircularRefs,
 	updateDisplayOptions,
+	randomInt,
+	randomString,
+	isSafeObjectProperty,
+	isUsableObjectKey,
+	setSafeObjectProperty,
+	isCommunityPackageName,
+	dedupe,
+	sanitizeFilename,
+	sanitizeXmlName,
+	generateSecureToken,
 } from './utils';
 export {
 	isINodeProperties,
@@ -43,15 +99,42 @@ export {
 	isINodePropertyCollectionList,
 	isINodePropertyOptionsList,
 	isResourceMapperValue,
+	isResourceLocatorValue,
 	isFilterValue,
+	isNodeConnectionType,
+	isBinaryValue,
 } from './type-guards';
 
-export { ExpressionExtensions } from './Extensions';
-export * as ExpressionParser from './Extensions/ExpressionParser';
-export { NativeMethods } from './NativeMethods';
-export * from './NodeParameters/FilterParameter';
+export {
+	parseExtractableSubgraphSelection,
+	buildAdjacencyList,
+	type ExtractableErrorResult,
+	type ExtractableSubgraphData,
+	type IConnectionAdjacencyList as AdjacencyList,
+} from './graph/graph-utils';
+export { ExpressionExtensions, type Alias, type AliasCompletion } from './extensions';
+export * as ExpressionParser from './extensions/expression-parser';
+export { NativeMethods } from './native-methods';
+export * from './node-parameters/filter-parameter';
+export * from './node-parameters/parameter-type-validation';
+export * from './node-parameters/node-parameter-value-type-guard';
+export * from './node-parameters/path-utils';
+export * from './evaluation-helpers';
+export * from './workflow-diff';
+export type * from './workflow-settings-scope';
+export * from './connections-diff';
+export * from './workflow-environments-helper';
+export { evaluateJmespathQuery, JmespathQueryError } from './jmespath-query';
+export { decodePathValue, requestPath, requestUrl } from './request-target';
+export type { RequestPath, RequestUrl } from './request-target';
 
-export type { DocMetadata, NativeDoc } from './Extensions';
+export type {
+	DocMetadata,
+	NativeDoc,
+	DocMetadataArgument,
+	DocMetadataExample,
+	Extension,
+} from './extensions';
 
 declare module 'http' {
 	export interface IncomingMessage {

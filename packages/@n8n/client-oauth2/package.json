@@ -1,17 +1,20 @@
 {
   "name": "@n8n/client-oauth2",
-  "version": "0.14.0",
+  "version": "1.30.0",
   "scripts": {
     "clean": "rimraf dist .turbo",
     "dev": "pnpm watch",
-    "typecheck": "tsc",
+    "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "format": "prettier --write . --ignore-path ../../../.prettierignore",
-    "lint": "eslint . --quiet",
-    "lintfix": "eslint . --fix",
+    "build:unchecked": "tsc -p tsconfig.build.json --noCheck",
+    "format": "biome format --write src test",
+    "format:check": "biome ci src test",
+    "lint": "oxlint --quiet",
+    "lint:fix": "oxlint --fix",
     "watch": "tsc -p tsconfig.build.json --watch",
-    "test": "jest",
-    "test:dev": "jest --watch"
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:dev": "vitest --silent=false"
   },
   "main": "dist/index.js",
   "module": "src/index.ts",
@@ -20,6 +23,22 @@
     "dist/**/*"
   ],
   "dependencies": {
-    "axios": "1.6.7"
-  }
+    "@n8n/backend-network": "workspace:*",
+    "@n8n/utils": "workspace:*",
+    "axios": "catalog:"
+  },
+  "devDependencies": {
+    "@n8n/oxlint-config": "workspace:*",
+    "@n8n/typescript-config": "workspace:*",
+    "@n8n/vitest-config": "workspace:*",
+    "@vitest/coverage-v8": "catalog:",
+    "https-proxy-agent": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "typescript": "catalog:typescript",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "nock": "catalog:"
+  },
+  "license": "LicenseRef-n8n-sustainable-use"
 }

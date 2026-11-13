@@ -1,0 +1,138 @@
+import { Time } from '@n8n/constants';
+import type { AuthenticatedRequest } from '@n8n/db';
+import { Container } from '@n8n/di';
+import type { IDataObject, INodeProperties } from 'n8n-workflow';
+
+import { ExternalSecretsConfig } from './external-secrets.config';
+import { withTimeout } from './with-timeout';
+
+export interface SecretsProviderSettings<T = IDataObject> {
+	connected: boolean;
+	connectedAt: Date | null;
+	settings: T;
+}
+
+export interface ExternalSecretsSettings {
+	[key: string]: SecretsProviderSettings;
+}
+
+export type SecretsProviderState =
+	| 'initializing'
+	| 'initialized'
+	| 'connecting'
+	| 'connected'
+	| 'error'
+	| 'retrying';
+
+interface StateTransition {
+	from: SecretsProviderState;
+	to: SecretsProviderState;
+	at: Date;
+	error?: Error;
+}
+
+export abstract class SecretsProvider {
+	abstract displayName: string;
+
+	abstract name: string;
+
+	abstract properties: INodeProperties[];
+
+	abstract init(settings: SecretsProviderSettings): Promise<void>;
+	abstract disconnect(): Promise<void>;
+	abstract update(): Promise<void>;
+	abstract test(): Promise<[boolean] | [boolean, string]>;
+	abstract getSecret(name: string): unknown;
+	abstract hasSecret(name: string): boolean;
+	/** Return discovery paths. Use bracket notation for keys with literal dots or brackets. */
+	abstract getSecretNames(): string[];
+
+	state: SecretsProviderState = 'initializing';
+
+	/** Error carried by the most recent state transition, for callers that only see `state`. */
+	lastError?: Error;
+
+	protected stateHistory: StateTransition[] = [];
+
+	/**
+	 * Template method for connecting - manages state transitions
+	 * Subclasses implement doConnect() with their connection logic
+	 */
+	async connect(): Promise<void> {
+		this.setState('connecting');
+
+		try {
+			// Bounded here rather than around connect() so a doConnect() that answers late loses
+			// the race and is discarded, instead of writing state over a newer attempt.
+			const timeoutMs =
+				Container.get(ExternalSecretsConfig).connectTimeout * Time.seconds.toMilliseconds;
+			await withTimeout(this.doConnect(), timeoutMs, `Timed out connecting after ${timeoutMs}ms`);
+			this.setState('connected');
+		} catch (error) {
+			const typedError = error instanceof Error ? error : new Error(String(error));
+			this.setState('error', typedError);
+			// Don't rethrow - state tells the story
+		}
+	}
+
+	/**
+	 * Subclasses implement this with their actual connection logic
+	 * Should throw on error - base class handles state management
+	 */
+	protected abstract doConnect(): Promise<void>;
+
+	/**
+	 * Transitions to a new state with logging and history tracking
+	 * Public so that manager can update state (for 'retrying')
+	 */
+	setState(newState: SecretsProviderState, error?: Error): void {
+		const oldState = this.state;
+		if (oldState === newState) return;
+
+		this.stateHistory.push({
+			from: oldState,
+			to: newState,
+			at: new Date(),
+			error,
+		});
+
+		this.state = newState;
+		this.lastError = error;
+	}
+
+	/**
+	 * Check if this provider has ever been successfully connected
+	 */
+	get hasEverBeenConnected(): boolean {
+		return this.stateHistory.some((t) => t.to === 'connected');
+	}
+
+	/**
+	 * Check if operations requiring connection can be performed
+	 */
+	get canPerformOperations(): boolean {
+		return this.state === 'connected';
+	}
+}
+
+export declare namespace ExternalSecretsRequest {
+	type GetProviderResponse = Pick<SecretsProvider, 'displayName' | 'name' | 'properties'> & {
+		icon: string;
+		connected: boolean;
+		connectedAt: Date | null;
+		state: SecretsProviderState;
+		data: IDataObject;
+	};
+
+	type GetProviders = AuthenticatedRequest;
+	type GetProvider = AuthenticatedRequest<{ provider: string }, GetProviderResponse>;
+	type SetProviderSettings = AuthenticatedRequest<{ provider: string }, {}, IDataObject>;
+	type TestProviderSettings = SetProviderSettings;
+	type SetProviderConnected = AuthenticatedRequest<
+		{ provider: string },
+		{},
+		{ connected: boolean }
+	>;
+
+	type UpdateProvider = AuthenticatedRequest<{ provider: string }>;
+}

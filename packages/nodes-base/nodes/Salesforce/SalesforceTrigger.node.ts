@@ -1,5 +1,5 @@
-import { NodeApiError } from 'n8n-workflow';
-
+import { DateTime } from 'luxon';
+import { NodeApiError, NodeConnectionTypes, requestPath } from 'n8n-workflow';
 import type {
 	IDataObject,
 	IPollFunctions,
@@ -11,12 +11,13 @@ import type {
 	JsonObject,
 } from 'n8n-workflow';
 
-import { DateTime } from 'luxon';
 import {
 	getQuery,
 	salesforceApiRequest,
 	salesforceApiRequestAllItems,
 	sortOptions,
+	getPollStartDate,
+	filterAndManageProcessedItems,
 } from './GenericFunctions';
 
 export class SalesforceTrigger implements INodeType {
@@ -25,7 +26,7 @@ export class SalesforceTrigger implements INodeType {
 		name: 'salesforceTrigger',
 		icon: 'file:salesforce.svg',
 		group: ['trigger'],
-		version: 1,
+		version: [1, 1.1],
 		description:
 			'Fetches data from Salesforce and starts the workflow on specified polling intervals.',
 		subtitle: '={{($parameter["triggerOn"])}}',
@@ -36,12 +37,43 @@ export class SalesforceTrigger implements INodeType {
 			{
 				name: 'salesforceOAuth2Api',
 				required: true,
+				displayOptions: {
+					show: {
+						authentication: ['oAuth2'],
+					},
+				},
+			},
+			{
+				name: 'salesforceJwtApi',
+				required: true,
+				displayOptions: {
+					show: {
+						authentication: ['jwt'],
+					},
+				},
 			},
 		],
 		polling: true,
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
+			{
+				displayName: 'Authentication',
+				name: 'authentication',
+				type: 'options',
+				options: [
+					{
+						name: 'OAuth2',
+						value: 'oAuth2',
+					},
+					{
+						name: 'OAuth2 JWT',
+						value: 'jwt',
+					},
+				],
+				default: 'oAuth2',
+				description: 'OAuth Authorization Flow',
+			},
 			{
 				displayName: 'Trigger On',
 				name: 'triggerOn',
@@ -117,7 +149,7 @@ export class SalesforceTrigger implements INodeType {
 					{
 						name: 'Opportunity Updated',
 						value: 'opportunityUpdated',
-						description: 'When an existing opportunity is created',
+						description: 'When an existing opportunity is modified',
 					},
 					{
 						name: 'Task Created',
@@ -156,7 +188,7 @@ export class SalesforceTrigger implements INodeType {
 					},
 				},
 				description:
-					'Name of the custom object. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Name of the custom object. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 		],
 	};
@@ -168,7 +200,11 @@ export class SalesforceTrigger implements INodeType {
 			async getCustomObjects(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
 				// TODO: find a way to filter this object to get just the lead sources instead of the whole object
-				const { sobjects: objects } = await salesforceApiRequest.call(this, 'GET', '/sobjects');
+				const { sobjects: objects } = await salesforceApiRequest.call(
+					this,
+					'GET',
+					requestPath`/sobjects`,
+				);
 				for (const object of objects) {
 					if (object.custom === true) {
 						const objectName = object.label;
@@ -186,22 +222,28 @@ export class SalesforceTrigger implements INodeType {
 	};
 
 	async poll(this: IPollFunctions): Promise<INodeExecutionData[][] | null> {
-		const workflowData = this.getWorkflowStaticData('node');
+		const workflowData: { processedIds?: string[]; lastTimeChecked?: string } =
+			this.getWorkflowStaticData('node');
 		let responseData;
 		const qs: IDataObject = {};
 		const triggerOn = this.getNodeParameter('triggerOn') as string;
 		let triggerResource = triggerOn.slice(0, 1).toUpperCase() + triggerOn.slice(1, -7);
 		const changeType = triggerOn.slice(-7);
+		const nodeVersion = this.getNode().typeVersion;
 
 		if (triggerResource === 'CustomObject') {
 			triggerResource = this.getNodeParameter('customObject') as string;
 		}
 
-		const now = DateTime.now().toISO();
-		const startDate = (workflowData.lastTimeChecked as string) || now;
-		const endDate = now;
+		const endDate = DateTime.now().toISO();
+
+		if (!workflowData.processedIds) {
+			workflowData.processedIds = [];
+		}
+		const processedIds = workflowData.processedIds;
+
 		try {
-			const pollStartDate = startDate;
+			const pollStartDate = getPollStartDate(workflowData.lastTimeChecked);
 			const pollEndDate = endDate;
 
 			const options = {
@@ -243,15 +285,15 @@ export class SalesforceTrigger implements INodeType {
 
 			try {
 				if (this.getMode() === 'manual') {
-					qs.q = getQuery(options, triggerResource, false, 1);
+					qs.q = getQuery(options, triggerResource, false, 1, nodeVersion);
 				} else {
-					qs.q = getQuery(options, triggerResource, true);
+					qs.q = getQuery(options, triggerResource, true, 0, nodeVersion);
 				}
 				responseData = await salesforceApiRequestAllItems.call(
 					this,
 					'records',
 					'GET',
-					'/query',
+					requestPath`/query`,
 					{},
 					qs,
 				);
@@ -263,6 +305,21 @@ export class SalesforceTrigger implements INodeType {
 				workflowData.lastTimeChecked = endDate;
 				return null;
 			}
+
+			const { newItems, updatedProcessedIds } = filterAndManageProcessedItems(
+				responseData,
+				processedIds,
+				changeType === 'Created' ? 'Created' : 'Updated',
+			);
+
+			workflowData.processedIds = updatedProcessedIds;
+			workflowData.lastTimeChecked = endDate;
+
+			if (newItems.length > 0) {
+				return [this.helpers.returnJsonArray(newItems as IDataObject[])];
+			}
+
+			return null;
 		} catch (error) {
 			if (this.getMode() === 'manual' || !workflowData.lastTimeChecked) {
 				throw error;
@@ -279,12 +336,5 @@ export class SalesforceTrigger implements INodeType {
 			);
 			throw error;
 		}
-		workflowData.lastTimeChecked = endDate;
-
-		if (Array.isArray(responseData) && responseData.length) {
-			return [this.helpers.returnJsonArray(responseData as IDataObject[])];
-		}
-
-		return null;
 	}
 }

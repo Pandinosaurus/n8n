@@ -1,12 +1,12 @@
 import type { IDataObject, ILoadOptionsFunctions, INodePropertyOptions } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeOperationError, requestPath } from 'n8n-workflow';
 
-import { apiRequest } from '../transport';
+import { apiRequestAllItems } from '../transport';
 
 // Get all the available channels
 export async function getChannels(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	const endpoint = 'channels';
-	const responseData = await apiRequest.call(this, 'GET', endpoint, {});
+	const endpoint = requestPath`channels`;
+	const responseData = await apiRequestAllItems.call(this, 'GET', endpoint, {});
 
 	if (responseData === undefined) {
 		throw new NodeOperationError(this.getNode(), 'No data got returned');
@@ -25,7 +25,7 @@ export async function getChannels(this: ILoadOptionsFunctions): Promise<INodePro
 
 		returnData.push({
 			name,
-			value: data.id,
+			value: data.id as string,
 		});
 	}
 
@@ -47,8 +47,8 @@ export async function getChannelsInTeam(
 	this: ILoadOptionsFunctions,
 ): Promise<INodePropertyOptions[]> {
 	const teamId = this.getCurrentNodeParameter('teamId');
-	const endpoint = `users/me/teams/${teamId}/channels`;
-	const responseData = await apiRequest.call(this, 'GET', endpoint, {});
+	const endpoint = requestPath`users/me/teams/${teamId}/channels`;
+	const responseData = await apiRequestAllItems.call(this, 'GET', endpoint, {});
 
 	if (responseData === undefined) {
 		throw new NodeOperationError(this.getNode(), 'No data got returned');
@@ -72,7 +72,7 @@ export async function getChannelsInTeam(
 
 		returnData.push({
 			name,
-			value: data.id,
+			value: data.id as string,
 		});
 	}
 
@@ -90,8 +90,8 @@ export async function getChannelsInTeam(
 }
 
 export async function getTeams(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	const endpoint = 'users/me/teams';
-	const responseData = await apiRequest.call(this, 'GET', endpoint, {});
+	const endpoint = requestPath`users/me/teams`;
+	const responseData = await apiRequestAllItems.call(this, 'GET', endpoint, {});
 
 	if (responseData === undefined) {
 		throw new NodeOperationError(this.getNode(), 'No data got returned');
@@ -108,7 +108,7 @@ export async function getTeams(this: ILoadOptionsFunctions): Promise<INodeProper
 
 		returnData.push({
 			name,
-			value: data.id,
+			value: data.id as string,
 		});
 	}
 
@@ -126,8 +126,8 @@ export async function getTeams(this: ILoadOptionsFunctions): Promise<INodeProper
 }
 
 export async function getUsers(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	const endpoint = 'users';
-	const responseData = await apiRequest.call(this, 'GET', endpoint, {});
+	const endpoint = requestPath`users`;
+	const responseData = await apiRequestAllItems.call(this, 'GET', endpoint, {});
 
 	if (responseData === undefined) {
 		throw new NodeOperationError(this.getNode(), 'No data got returned');
@@ -140,8 +140,8 @@ export async function getUsers(this: ILoadOptionsFunctions): Promise<INodeProper
 		}
 
 		returnData.push({
-			name: data.username,
-			value: data.id,
+			name: data.username as string,
+			value: data.id as string,
 		});
 	}
 

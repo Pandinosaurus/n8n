@@ -5,8 +5,10 @@ import type {
 	IHttpRequestMethods,
 	IRequestOptions,
 	JsonObject,
+	RequestUrl,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
 /**
  * Make an API request to Dropbox
@@ -15,13 +17,13 @@ import { NodeApiError } from 'n8n-workflow';
 export async function dropboxApiRequest(
 	this: IHookFunctions | IExecuteFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestUrl,
 	body: object,
 	query: IDataObject = {},
 	headers: IDataObject = {},
-	option: IDataObject = {},
+	option: Pick<IRequestOptions, 'json' | 'encoding'> = {},
 ): Promise<any> {
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		headers,
 		method,
 		qs: query,
@@ -53,7 +55,7 @@ export async function dropboxpiRequestAllItems(
 	this: IExecuteFunctions | IHookFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestUrl,
 
 	body: any = {},
 	query: IDataObject = {},
@@ -63,9 +65,9 @@ export async function dropboxpiRequestAllItems(
 
 	const returnData: IDataObject[] = [];
 
-	const paginationEndpoint: IDataObject = {
-		folder: 'https://api.dropboxapi.com/2/files/list_folder/continue',
-		search: 'https://api.dropboxapi.com/2/files/search/continue_v2',
+	const paginationEndpoint: Record<string, RequestUrl> = {
+		folder: requestUrl`https://api.dropboxapi.com/2/files/list_folder/continue`,
+		search: requestUrl`https://api.dropboxapi.com/2/files/search/continue_v2`,
 	};
 
 	let responseData;
@@ -80,7 +82,7 @@ export async function dropboxpiRequestAllItems(
 		);
 		const cursor = responseData.cursor;
 		if (cursor !== undefined) {
-			endpoint = paginationEndpoint[resource] as string;
+			endpoint = paginationEndpoint[resource];
 			body = { cursor };
 		}
 		returnData.push.apply(returnData, responseData[propertyName] as IDataObject[]);
@@ -93,7 +95,7 @@ export async function getRootDirectory(this: IHookFunctions | IExecuteFunctions)
 	return await dropboxApiRequest.call(
 		this,
 		'POST',
-		'https://api.dropboxapi.com/2/users/get_current_account',
+		requestUrl`https://api.dropboxapi.com/2/users/get_current_account`,
 		{},
 	);
 }
@@ -116,8 +118,8 @@ export function simplify(data: IDataObject[]) {
 export async function getCredentials(this: IExecuteFunctions) {
 	const authenticationMethod = this.getNodeParameter('authentication', 0) as string;
 	if (authenticationMethod === 'accessToken') {
-		return (await this.getCredentials('dropboxApi')) as IDataObject;
+		return await this.getCredentials('dropboxApi');
 	} else {
-		return (await this.getCredentials('dropboxOAuth2Api')) as IDataObject;
+		return await this.getCredentials('dropboxOAuth2Api');
 	}
 }

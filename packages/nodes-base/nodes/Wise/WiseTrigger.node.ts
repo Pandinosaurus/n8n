@@ -8,6 +8,7 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import type { Profile } from './GenericFunctions';
 import { getTriggerName, livePublicKey, testPublicKey, wiseApiRequest } from './GenericFunctions';
@@ -25,7 +26,7 @@ export class WiseTrigger implements INodeType {
 			name: 'Wise Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'wiseApi',
@@ -46,7 +47,7 @@ export class WiseTrigger implements INodeType {
 				name: 'profileId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				required: true,
 				typeOptions: {
 					loadOptionsMethod: 'getProfiles',
@@ -66,6 +67,11 @@ export class WiseTrigger implements INodeType {
 						description: 'Triggered every time a balance account is credited',
 					},
 					{
+						name: 'Balance Update',
+						value: 'balanceUpdate',
+						description: 'Triggered every time a balance account is credited or debited',
+					},
+					{
 						name: 'Transfer Active Case',
 						value: 'transferActiveCases',
 						description: "Triggered every time a transfer's list of active cases is updated",
@@ -83,7 +89,7 @@ export class WiseTrigger implements INodeType {
 	methods = {
 		loadOptions: {
 			async getProfiles(this: ILoadOptionsFunctions) {
-				const profiles = await wiseApiRequest.call(this, 'GET', 'v1/profiles');
+				const profiles = await wiseApiRequest.call(this, 'GET', requestPath`v1/profiles`);
 				return profiles.map(({ id, type }: Profile) => ({
 					name: type.charAt(0).toUpperCase() + type.slice(1),
 					value: id,
@@ -102,7 +108,7 @@ export class WiseTrigger implements INodeType {
 				const webhooks = await wiseApiRequest.call(
 					this,
 					'GET',
-					`v3/profiles/${profileId}/subscriptions`,
+					requestPath`v3/profiles/${profileId}/subscriptions`,
 				);
 				const trigger = getTriggerName(event);
 				for (const webhook of webhooks) {
@@ -134,7 +140,7 @@ export class WiseTrigger implements INodeType {
 				const webhook = await wiseApiRequest.call(
 					this,
 					'POST',
-					`v3/profiles/${profileId}/subscriptions`,
+					requestPath`v3/profiles/${profileId}/subscriptions`,
 					body,
 				);
 				webhookData.webhookId = webhook.id;
@@ -147,7 +153,7 @@ export class WiseTrigger implements INodeType {
 					await wiseApiRequest.call(
 						this,
 						'DELETE',
-						`v3/profiles/${profileId}/subscriptions/${webhookData.webhookId}`,
+						requestPath`v3/profiles/${profileId}/subscriptions/${webhookData.webhookId}`,
 					);
 				} catch (error) {
 					return false;

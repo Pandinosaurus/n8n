@@ -6,7 +6,10 @@ import type {
 	IRequestOptions,
 	IHttpRequestOptions,
 	ILoadOptionsFunctions,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
+import { requestUrl } from 'n8n-workflow';
 
 /**
  * Make an API request to Twilio
@@ -15,27 +18,27 @@ import type {
 export async function twilioApiRequest(
 	this: IHookFunctions | IExecuteFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject,
 	query?: IDataObject,
 ): Promise<any> {
-	const credentials = (await this.getCredentials('twilioApi')) as {
+	const credentials = await this.getCredentials<{
 		accountSid: string;
 		authType: 'authToken' | 'apiKey';
 		authToken: string;
 		apiKeySid: string;
 		apiKeySecret: string;
-	};
+	}>('twilioApi');
 
 	if (query === undefined) {
 		query = {};
 	}
 
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		method,
 		form: body,
 		qs: query,
-		uri: `https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}${endpoint}`,
+		uri: requestUrl`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}${endpoint}`,
 		json: true,
 	};
 
@@ -45,16 +48,16 @@ export async function twilioApiRequest(
 export async function twilioTriggerApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: FormData | IDataObject = {},
 ): Promise<any> {
-	const options: IHttpRequestOptions = {
+	const options: WithRequestTarget<IHttpRequestOptions> = {
 		method,
 		body,
 		headers: {
 			'Content-Type': 'application/x-www-form-urlencoded',
 		},
-		url: `https://events.twilio.com/v1/${endpoint}`,
+		url: requestUrl`https://events.twilio.com/v1/${endpoint}`,
 		json: true,
 	};
 	return await this.helpers.requestWithAuthentication.call(this, 'twilioApi', options);

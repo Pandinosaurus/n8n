@@ -4,9 +4,12 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { theHiveApiRequest } from '../../transport';
-import { caseRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { caseRLC } from '../../descriptions';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	caseRLC,
@@ -17,7 +20,7 @@ const properties: INodeProperties[] = [
 		default: '',
 		required: true,
 		description:
-			'ID of the attachment. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'ID of the attachment. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		typeOptions: {
 			loadOptionsMethod: 'loadCaseAttachments',
 			loadOptionsDependsOn: ['caseId.value'],
@@ -27,7 +30,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -72,7 +75,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	const response = await theHiveApiRequest.call(
 		this,
 		'GET',
-		`/v1/case/${caseId}/attachment/${attachmentId}/download`,
+		requestPath`/v1/case/${caseId}/attachment/${attachmentId}/download`,
 		undefined,
 		undefined,
 		undefined,

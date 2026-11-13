@@ -7,10 +7,10 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
+import { bitlinkPath, bitlyApiRequest, bitlyApiRequestAllItems } from './GenericFunctions';
 import { linkFields, linkOperations } from './LinkDescription';
-
-import { bitlyApiRequest, bitlyApiRequestAllItems } from './GenericFunctions';
 
 export class Bitly implements INodeType {
 	description: INodeTypeDescription = {
@@ -24,8 +24,9 @@ export class Bitly implements INodeType {
 		defaults: {
 			name: 'Bitly',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'bitlyApi',
@@ -87,7 +88,12 @@ export class Bitly implements INodeType {
 			// select them easily
 			async getGroups(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const groups = await bitlyApiRequestAllItems.call(this, 'groups', 'GET', '/groups');
+				const groups = await bitlyApiRequestAllItems.call(
+					this,
+					'groups',
+					'GET',
+					requestPath`/groups`,
+				);
 				for (const group of groups) {
 					const groupName = group.name;
 					const groupId = group.guid;
@@ -107,7 +113,7 @@ export class Bitly implements INodeType {
 					this,
 					'tags',
 					'GET',
-					`groups/${groupId}/tags`,
+					requestPath`/groups/${groupId}/tags`,
 				);
 				for (const tag of tags) {
 					const tagName = tag;
@@ -163,7 +169,7 @@ export class Bitly implements INodeType {
 								});
 							}
 						}
-						responseData = await bitlyApiRequest.call(this, 'POST', '/bitlinks', body);
+						responseData = await bitlyApiRequest.call(this, 'POST', requestPath`/bitlinks`, body);
 					}
 					if (operation === 'update') {
 						const linkId = this.getNodeParameter('id', i) as string;
@@ -197,11 +203,20 @@ export class Bitly implements INodeType {
 								});
 							}
 						}
-						responseData = await bitlyApiRequest.call(this, 'PATCH', `/bitlinks/${linkId}`, body);
+						responseData = await bitlyApiRequest.call(
+							this,
+							'PATCH',
+							bitlinkPath.call(this, linkId, i),
+							body,
+						);
 					}
 					if (operation === 'get') {
 						const linkId = this.getNodeParameter('id', i) as string;
-						responseData = await bitlyApiRequest.call(this, 'GET', `/bitlinks/${linkId}`);
+						responseData = await bitlyApiRequest.call(
+							this,
+							'GET',
+							bitlinkPath.call(this, linkId, i),
+						);
 					}
 				}
 

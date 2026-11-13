@@ -1,4 +1,4 @@
-import type { IDataObject } from '../Interfaces';
+import type { IDataObject } from '../interfaces';
 import { ExecutionBaseError } from './abstract/execution-base.error';
 
 export interface ExpressionErrorOptions {
@@ -22,6 +22,7 @@ export interface ExpressionErrorOptions {
 		| 'paired_item_no_info'
 		| 'paired_item_multiple_matches'
 		| 'paired_item_no_connection'
+		| 'paired_item_not_on_branch'
 		| 'paired_item_intermediate_nodes';
 }
 
@@ -30,7 +31,14 @@ export interface ExpressionErrorOptions {
  */
 export class ExpressionError extends ExecutionBaseError {
 	constructor(message: string, options?: ExpressionErrorOptions) {
-		super(message, { cause: options?.cause });
+		super(message, { cause: options?.cause, level: 'warning' });
+
+		// The vm and quickjs engines rethrow a host error only when its name is
+		// `ExpressionError`, and a minified build renames the class. Subclasses keep
+		// their own name.
+		if (new.target === ExpressionError) {
+			this.name = 'ExpressionError';
+		}
 
 		if (options?.description !== undefined) {
 			this.description = options.description;
@@ -40,7 +48,6 @@ export class ExpressionError extends ExecutionBaseError {
 			'causeDetailed',
 			'descriptionTemplate',
 			'descriptionKey',
-			'functionality',
 			'itemIndex',
 			'messageTemplate',
 			'nodeCause',
@@ -48,8 +55,13 @@ export class ExpressionError extends ExecutionBaseError {
 			'runIndex',
 			'type',
 		];
+
 		if (options !== undefined) {
-			Object.keys(options as IDataObject).forEach((key) => {
+			if (options.functionality !== undefined) {
+				this.functionality = options.functionality;
+			}
+
+			Object.keys(options).forEach((key) => {
 				if (allowedKeys.includes(key)) {
 					this.context[key] = (options as IDataObject)[key];
 				}

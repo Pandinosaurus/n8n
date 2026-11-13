@@ -1,3 +1,4 @@
+import moment from 'moment-timezone';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -7,16 +8,15 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
+import { contactFields, contactOperations } from './ContactDescription';
 import {
 	allFields,
 	cleanData,
 	googleApiRequest,
 	googleApiRequestAllItems,
 } from './GenericFunctions';
-
-import { contactFields, contactOperations } from './ContactDescription';
 
 export class GoogleContacts implements INodeType {
 	description: INodeTypeDescription = {
@@ -28,11 +28,13 @@ export class GoogleContacts implements INodeType {
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		description: 'Consume Google Contacts API',
+		schemaPath: 'Google/Contacts',
 		defaults: {
 			name: 'Google Contacts',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'googleContactsOAuth2Api',
@@ -68,7 +70,7 @@ export class GoogleContacts implements INodeType {
 					this,
 					'contactGroups',
 					'GET',
-					'/contactGroups',
+					requestPath`/contactGroups`,
 				);
 				for (const group of groups) {
 					const groupName = group.name;
@@ -91,6 +93,19 @@ export class GoogleContacts implements INodeType {
 		let responseData;
 		const resource = this.getNodeParameter('resource', 0);
 		const operation = this.getNodeParameter('operation', 0);
+
+		// Warmup cache
+		// https://developers.google.com/people/v1/contacts#protocol_1
+		if (resource === 'contact' && operation === 'getAll') {
+			await googleApiRequest.call(this, 'GET', requestPath`/people:searchContacts`, undefined, {
+				query: '',
+				readMask: 'names',
+			});
+			await googleApiRequest.call(this, 'GET', requestPath`/people/me/connections`, undefined, {
+				personFields: 'names',
+			});
+		}
+
 		for (let i = 0; i < length; i++) {
 			try {
 				if (resource === 'contact') {
@@ -220,7 +235,7 @@ export class GoogleContacts implements INodeType {
 						responseData = await googleApiRequest.call(
 							this,
 							'POST',
-							'/people:createContact',
+							requestPath`/people:createContact`,
 							body,
 							qs,
 						);
@@ -233,7 +248,7 @@ export class GoogleContacts implements INodeType {
 						responseData = await googleApiRequest.call(
 							this,
 							'DELETE',
-							`/people/${contactId}:deleteContact`,
+							requestPath`/people/${contactId}:deleteContact`,
 							{},
 						);
 						responseData = { success: true };
@@ -250,7 +265,13 @@ export class GoogleContacts implements INodeType {
 							qs.personFields = fields.join(',');
 						}
 
-						responseData = await googleApiRequest.call(this, 'GET', `/people/${contactId}`, {}, qs);
+						responseData = await googleApiRequest.call(
+							this,
+							'GET',
+							requestPath`/people/${contactId}`,
+							{},
+							qs,
+						);
 
 						if (!rawData) {
 							responseData = cleanData(responseData)[0];
@@ -267,7 +288,9 @@ export class GoogleContacts implements INodeType {
 						const rawData = this.getNodeParameter('rawData', i);
 						const useQuery = this.getNodeParameter('useQuery', i) as boolean;
 
-						const endpoint = useQuery ? ':searchContacts' : '/me/connections';
+						const endpoint = useQuery
+							? requestPath`/people:searchContacts`
+							: requestPath`/people/me/connections`;
 
 						if (useQuery) {
 							qs.query = this.getNodeParameter('query', i) as string;
@@ -293,7 +316,7 @@ export class GoogleContacts implements INodeType {
 								this,
 								useQuery ? 'results' : 'connections',
 								'GET',
-								`/people${endpoint}`,
+								endpoint,
 								{},
 								qs,
 							);
@@ -303,7 +326,7 @@ export class GoogleContacts implements INodeType {
 							}
 						} else {
 							qs.pageSize = this.getNodeParameter('limit', i);
-							responseData = await googleApiRequest.call(this, 'GET', `/people${endpoint}`, {}, qs);
+							responseData = await googleApiRequest.call(this, 'GET', endpoint, {}, qs);
 
 							responseData =
 								responseData.connections ||
@@ -337,7 +360,7 @@ export class GoogleContacts implements INodeType {
 							const data = await googleApiRequest.call(
 								this,
 								'GET',
-								`/people/${contactId}`,
+								requestPath`/people/${contactId}`,
 								{},
 								{ personFields: 'Names' },
 							);
@@ -493,7 +516,7 @@ export class GoogleContacts implements INodeType {
 						responseData = await googleApiRequest.call(
 							this,
 							'PATCH',
-							`/people/${contactId}:updateContact`,
+							requestPath`/people/${contactId}:updateContact`,
 							body,
 							qs,
 						);

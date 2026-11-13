@@ -7,16 +7,16 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { deepLApiRequest } from './GenericFunctions';
-
 import { textOperations } from './TextDescription';
 
 export class DeepL implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'DeepL',
 		name: 'deepL',
-		icon: 'file:deepl.svg',
+		icon: { light: 'file:deepl.svg', dark: 'file:deepL.dark.svg' },
 		group: ['input', 'output'],
 		version: 1,
 		description: 'Translate data using DeepL',
@@ -24,8 +24,9 @@ export class DeepL implements INodeType {
 		defaults: {
 			name: 'DeepL',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'deepLApi',
@@ -77,7 +78,7 @@ export class DeepL implements INodeType {
 				const languages = await deepLApiRequest.call(
 					this,
 					'GET',
-					'/languages',
+					requestPath`/languages`,
 					{},
 					{ type: 'target' },
 				);
@@ -127,7 +128,12 @@ export class DeepL implements INodeType {
 								: additionalFields.sourceLang;
 						}
 
-						const { translations } = await deepLApiRequest.call(this, 'GET', '/translate', body);
+						const { translations } = await deepLApiRequest.call(
+							this,
+							'GET',
+							requestPath`/translate`,
+							body,
+						);
 						const [translation] = translations;
 						const translationJsonArray = this.helpers.returnJsonArray(translation as IDataObject[]);
 						const executionData = this.helpers.constructExecutionMetaData(translationJsonArray, {

@@ -1,3 +1,18 @@
+import clone from 'lodash/clone';
+import compact from 'lodash/compact';
+import concat from 'lodash/concat';
+import escapeRegExp from 'lodash/escapeRegExp';
+import every from 'lodash/every';
+import first from 'lodash/first';
+import isArray from 'lodash/isArray';
+import isString from 'lodash/isString';
+import last from 'lodash/last';
+import set from 'lodash/set';
+import some from 'lodash/some';
+import split from 'lodash/split';
+import toNumber from 'lodash/toNumber';
+import toString from 'lodash/toString';
+import trim from 'lodash/trim';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -7,27 +22,24 @@ import type {
 	INodeExecutionData,
 	INodePropertyOptions,
 	IWebhookFunctions,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
+import { NodeOperationError, requestPath, requestUrl, safeRegex } from 'n8n-workflow';
 
-import set from 'lodash/set';
-import concat from 'lodash/concat';
-import split from 'lodash/split';
-import every from 'lodash/every';
-import toString from 'lodash/toString';
-import toNumber from 'lodash/toNumber';
-import isString from 'lodash/isString';
-import compact from 'lodash/compact';
-import first from 'lodash/first';
-import last from 'lodash/last';
-import clone from 'lodash/clone';
-import some from 'lodash/some';
-import isArray from 'lodash/isArray';
-import trim from 'lodash/trim';
-import escapeRegExp from 'lodash/escapeRegExp';
+function toRequestOptions<T extends { url: RequestPath }>(
+	baseUrl: unknown,
+	{ url, ...rest }: T,
+): WithRequestTarget<IHttpRequestOptions> {
+	const options: WithRequestTarget<IHttpRequestOptions> = {
+		url: requestUrl`${baseUrl}${url}`,
+	};
+	return Object.assign(options, rest);
+}
 
 export async function koBoToolboxApiRequest(
 	this: IExecuteFunctions | IWebhookFunctions | IHookFunctions | ILoadOptionsFunctions,
-	option: IDataObject = {},
+	option: IDataObject & { url: RequestPath },
 ): Promise<any> {
 	const credentials = await this.getCredentials('koBoToolboxApi');
 
@@ -40,32 +52,39 @@ export async function koBoToolboxApiRequest(
 		delete option.returnAll;
 	}
 
-	const options: IHttpRequestOptions = {
-		url: '',
+	const options: WithRequestTarget<IHttpRequestOptions> = toRequestOptions(credentials.URL, {
 		headers: {
 			Accept: 'application/json',
 		},
 		json: true,
-	};
-	if (Object.keys(option)) {
-		Object.assign(options, option);
-	}
-	if (options.url && !/^http(s)?:/.test(options.url)) {
-		options.url = (credentials.URL as string) + options.url;
-	}
+		...option,
+	});
 
+	let requestOptions: IHttpRequestOptions | WithRequestTarget<IHttpRequestOptions> = options;
 	let results = null;
 	let keepLooking = true;
 	while (keepLooking) {
-		const response = await this.helpers.httpRequestWithAuthentication.call(
+		const response: IDataObject = await this.helpers.httpRequestWithAuthentication.call(
 			this,
 			'koBoToolboxApi',
-			options,
+			requestOptions,
 		);
 		// Append or set results
 		results = response.results ? concat(results || [], response.results) : response;
 		if (returnAll && response.next) {
-			options.url = response.next;
+			const next = String(response.next);
+			const baseUrl = String(credentials.URL);
+			if (
+				!URL.canParse(next) ||
+				!URL.canParse(baseUrl) ||
+				new URL(next).origin !== new URL(baseUrl).origin
+			) {
+				throw new NodeOperationError(
+					this.getNode(),
+					'Refusing to send credentials to an unexpected host',
+				);
+			}
+			requestOptions = { ...options, url: next };
 		} else {
 			keepLooking = false;
 		}
@@ -76,15 +95,13 @@ export async function koBoToolboxApiRequest(
 
 export async function koBoToolboxRawRequest(
 	this: IExecuteFunctions | IWebhookFunctions | IHookFunctions | ILoadOptionsFunctions,
-	option: IHttpRequestOptions,
+	option: Omit<IHttpRequestOptions, 'url' | 'baseURL'> & { url: RequestPath },
 ): Promise<any> {
 	const credentials = await this.getCredentials('koBoToolboxApi');
 
-	if (option.url && !/^http(s)?:/.test(option.url)) {
-		option.url = (credentials.URL as string) + option.url;
-	}
+	const options: WithRequestTarget<IHttpRequestOptions> = toRequestOptions(credentials.URL, option);
 
-	return await this.helpers.httpRequestWithAuthentication.call(this, 'koBoToolboxApi', option);
+	return await this.helpers.httpRequestWithAuthentication.call(this, 'koBoToolboxApi', options);
 }
 
 function parseGeoPoint(geoPoint: string): null | number[] {
@@ -106,8 +123,7 @@ export function parseStringList(value: string): string[] {
 }
 
 const matchWildcard = (value: string, pattern: string): boolean => {
-	const regex = new RegExp(`^${escapeRegExp(pattern).replace('\\*', '.*')}$`);
-	return regex.test(value);
+	return safeRegex.test(`^${escapeRegExp(pattern).replace('\\*', '.*')}$`, value);
 };
 
 const formatValue = (value: any, format: string): any => {
@@ -203,6 +219,56 @@ export function formatSubmission(
 	return response;
 }
 
+const KOBO_DOMAINS = ['kobotoolbox.org', 'humanitarianresponse.info'];
+
+export function validateAttachmentUrl(url: string, allowedDomain: string): void {
+	let attachmentUrl: URL;
+	let allowedUrl: URL;
+
+	try {
+		attachmentUrl = new URL(url);
+	} catch {
+		throw new Error('Invalid attachment URL format');
+	}
+
+	if (!['http:', 'https:'].includes(attachmentUrl.protocol)) {
+		throw new Error('Attachment URL must use HTTP or HTTPS');
+	}
+
+	try {
+		if (!allowedDomain.startsWith('http://') && !allowedDomain.startsWith('https://')) {
+			allowedDomain = `https://${allowedDomain}`;
+		}
+		allowedUrl = new URL(allowedDomain);
+	} catch {
+		throw new Error('Invalid allowed domain configuration');
+	}
+
+	const attachmentHost = attachmentUrl.hostname.toLowerCase();
+	const allowedHost = allowedUrl.hostname.toLowerCase();
+
+	const matchesDomain =
+		attachmentHost === allowedHost || attachmentHost.endsWith(`.${allowedHost}`);
+
+	if (matchesDomain) return;
+
+	const isKoboDomain = KOBO_DOMAINS.some(
+		(domain) => allowedHost === domain || allowedHost.endsWith(`.${domain}`),
+	);
+
+	if (isKoboDomain) {
+		const isFromKoboDomain = KOBO_DOMAINS.some(
+			(domain) => attachmentHost === domain || attachmentHost.endsWith(`.${domain}`),
+		);
+
+		if (isFromKoboDomain) return;
+	}
+
+	throw new Error(
+		`Attachment URL domain (${attachmentHost}) does not match allowed domain (${allowedHost})`,
+	);
+}
+
 export async function downloadAttachments(
 	this: IExecuteFunctions | IWebhookFunctions,
 	submission: IDataObject,
@@ -217,6 +283,7 @@ export async function downloadAttachments(
 	};
 
 	const credentials = await this.getCredentials('koBoToolboxApi');
+	const koboToolboxUrl = credentials.URL as string;
 
 	// Look for attachment links - there can be more than one
 	const attachmentList = (submission._attachments || submission.attachments) as any[];
@@ -248,6 +315,13 @@ export async function downloadAttachments(
 			let response = null;
 			const attachmentUrl =
 				attachment[options.version as string] || (attachment.download_url as string);
+
+			try {
+				validateAttachmentUrl(attachmentUrl, koboToolboxUrl);
+			} catch (error) {
+				throw new NodeOperationError(this.getNode(), error.message);
+			}
+
 			let final = false,
 				redir = 0;
 
@@ -267,6 +341,11 @@ export async function downloadAttachments(
 				response = await this.helpers.httpRequest(axiosOptions);
 
 				if (response?.headers.location) {
+					try {
+						validateAttachmentUrl(response.headers.location, koboToolboxUrl);
+					} catch (error) {
+						throw new NodeOperationError(this.getNode(), error.message);
+					}
 					// Follow redirect
 					axiosOptions.url = response.headers.location;
 					redir++;
@@ -300,7 +379,7 @@ export async function downloadAttachments(
 
 export async function loadForms(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 	const responseData = await koBoToolboxApiRequest.call(this, {
-		url: '/api/v2/assets/',
+		url: requestPath`/api/v2/assets/`,
 		qs: {
 			q: 'asset_type:survey',
 			ordering: 'name',

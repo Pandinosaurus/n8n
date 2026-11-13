@@ -5,15 +5,8 @@ import type {
 	ResourceMapperField,
 	ResourceMapperFields,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
-import { theHiveApiRequest } from '../transport';
-
-import {
-	alertCommonFields,
-	caseCommonFields,
-	observableCommonFields,
-	taskCommonFields,
-} from '../helpers/constants';
 import {
 	loadAlertStatus,
 	loadCaseStatus,
@@ -21,9 +14,16 @@ import {
 	loadObservableTypes,
 	loadUsers,
 } from './loadOptions';
+import {
+	alertCommonFields,
+	caseCommonFields,
+	observableCommonFields,
+	taskCommonFields,
+} from '../helpers/constants';
+import { theHiveApiRequest } from '../transport';
 
 async function getCustomFields(this: ILoadOptionsFunctions) {
-	const customFields = (await theHiveApiRequest.call(this, 'POST', '/v1/query', {
+	const customFields = (await theHiveApiRequest.call(this, 'POST', requestPath`/v1/query`, {
 		query: [
 			{
 				_name: 'listCustomField',

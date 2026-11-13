@@ -1,6 +1,12 @@
 import type { INodeProperties } from 'n8n-workflow';
 
 import { blocks } from './Blocks';
+import {
+	databasePageUrlExtractionRegexp,
+	databasePageUrlValidationRegexp,
+	idExtractionRegexp,
+	idValidationRegexp,
+} from '../constants';
 
 export const pageOperations: INodeProperties[] = [
 	{
@@ -88,21 +94,19 @@ export const pageFields: INodeProperties[] = [
 				displayName: 'Link',
 				name: 'url',
 				type: 'string',
-				placeholder: 'https://www.notion.so/My-Page-b4eeb113e118403aa450af65ac25f0b9',
+				placeholder: 'https://www.notion.com/My-Page-b4eeb113e118403aa450af65ac25f0b9',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
-							errorMessage: 'Not a valid Notion Page URL',
+							regex: databasePageUrlValidationRegexp,
+							errorMessage: 'Not a valid Notion Database Page URL',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: databasePageUrlExtractionRegexp,
 				},
 			},
 			{
@@ -114,17 +118,16 @@ export const pageFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
+							regex: idValidationRegexp,
 							errorMessage: 'Not a valid Notion Page ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -153,6 +156,10 @@ export const pageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint:
+				'When true, pages under another page or the workspace return only id, name, and url. Database pages also return property_ keys with snake_case names, such as property_status. Non-ASCII characters become separators before converting names. Rich-text values are strings. People values are arrays of email addresses, with {} for missing emails. When false, read the native properties object. Match expressions and verification output fixtures to the returned page type.',
+		},
 	},
 	/* -------------------------------------------------------------------------- */
 	/*                                page:create                                 */
@@ -168,21 +175,19 @@ export const pageFields: INodeProperties[] = [
 				displayName: 'Link',
 				name: 'url',
 				type: 'string',
-				placeholder: 'https://www.notion.so/My-Page-b4eeb113e118403aa450af65ac25f0b9',
+				placeholder: 'https://www.notion.com/My-Page-b4eeb113e118403aa450af65ac25f0b9',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
-							errorMessage: 'Not a valid Notion Page URL',
+							regex: databasePageUrlValidationRegexp,
+							errorMessage: 'Not a valid Notion Database Page URL',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: databasePageUrlExtractionRegexp,
 				},
 			},
 			{
@@ -194,17 +199,16 @@ export const pageFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
+							regex: idValidationRegexp,
 							errorMessage: 'Not a valid Notion Page ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -241,6 +245,10 @@ export const pageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint:
+				'When true, the created child page returns only id and name in v1, and id, name, and url in v2. When false, returns the native page response with its properties object. Match verification output fixtures to the node version and output mode.',
+		},
 	},
 	...blocks('page', 'create'),
 	{
@@ -254,7 +262,7 @@ export const pageFields: INodeProperties[] = [
 			},
 		},
 		default: {},
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		options: [
 			{
 				displayName: 'Icon Type',
@@ -316,6 +324,10 @@ export const pageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint:
+				'When true, pages under another page or the workspace return only id and name. Database pages return id and simplified properties under their original names and case, such as $json.Status. Rich-text values are strings. People values are arrays of email addresses, with {} for missing emails. When false, read the native properties object. Match expressions and verification output fixtures to the returned page type.',
+		},
 	},
 	/* -------------------------------------------------------------------------- */
 	/*                                page:search                                  */
@@ -376,6 +388,10 @@ export const pageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint:
+				'Legacy search can return pages and databases. When true, v1 database pages return id and properties under their original names, ordinary pages return id and name, and databases return id and title. In v2, all these objects include id, name, and url; database pages also have property_ keys with snake_case names. V2 replaces non-ASCII characters with separators before converting names. Rich-text values are strings. People values are arrays of email addresses, with {} for missing emails. When false, retains native fields. Match expressions and verification output fixtures to the object type and node version.',
+		},
 	},
 	{
 		displayName: 'Options',

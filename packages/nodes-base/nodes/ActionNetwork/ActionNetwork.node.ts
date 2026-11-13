@@ -5,18 +5,7 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
-
-import {
-	actionNetworkApiRequest,
-	adjustEventPayload,
-	adjustPersonPayload,
-	adjustPetitionPayload,
-	handleListing,
-	makeOsdiLink,
-	resourceLoaders,
-	simplifyResponse,
-} from './GenericFunctions';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import {
 	attendanceFields,
@@ -34,7 +23,16 @@ import {
 	tagFields,
 	tagOperations,
 } from './descriptions';
-
+import {
+	actionNetworkApiRequest,
+	adjustEventPayload,
+	adjustPersonPayload,
+	adjustPetitionPayload,
+	handleListing,
+	makeOsdiLink,
+	resourceLoaders,
+	simplifyResponse,
+} from './GenericFunctions';
 import type {
 	AllFieldsUi,
 	EmailAddressUi,
@@ -56,8 +54,9 @@ export class ActionNetwork implements INodeType {
 		defaults: {
 			name: 'Action Network',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'actionNetworkApi',
@@ -151,7 +150,7 @@ export class ActionNetwork implements INodeType {
 
 						const body = makeOsdiLink(personId) as IDataObject;
 
-						const endpoint = `/events/${eventId}/attendances`;
+						const endpoint = requestPath`/events/${eventId}/attendances`;
 						response = await actionNetworkApiRequest.call(this, 'POST', endpoint, body);
 					} else if (operation === 'get') {
 						// ----------------------------------------
@@ -161,7 +160,7 @@ export class ActionNetwork implements INodeType {
 						const eventId = this.getNodeParameter('eventId', i);
 						const attendanceId = this.getNodeParameter('attendanceId', i);
 
-						const endpoint = `/events/${eventId}/attendances/${attendanceId}`;
+						const endpoint = requestPath`/events/${eventId}/attendances/${attendanceId}`;
 						response = await actionNetworkApiRequest.call(this, 'GET', endpoint);
 					} else if (operation === 'getAll') {
 						// ----------------------------------------
@@ -170,7 +169,7 @@ export class ActionNetwork implements INodeType {
 
 						const eventId = this.getNodeParameter('eventId', i);
 
-						const endpoint = `/events/${eventId}/attendances`;
+						const endpoint = requestPath`/events/${eventId}/attendances`;
 						response = await handleListing.call(this, 'GET', endpoint);
 					}
 				} else if (resource === 'event') {
@@ -196,7 +195,7 @@ export class ActionNetwork implements INodeType {
 							Object.assign(body, adjustEventPayload(additionalFields));
 						}
 
-						response = await actionNetworkApiRequest.call(this, 'POST', '/events', body);
+						response = await actionNetworkApiRequest.call(this, 'POST', requestPath`/events`, body);
 					} else if (operation === 'get') {
 						// ----------------------------------------
 						//                event: get
@@ -204,13 +203,17 @@ export class ActionNetwork implements INodeType {
 
 						const eventId = this.getNodeParameter('eventId', i);
 
-						response = await actionNetworkApiRequest.call(this, 'GET', `/events/${eventId}`);
+						response = await actionNetworkApiRequest.call(
+							this,
+							'GET',
+							requestPath`/events/${eventId}`,
+						);
 					} else if (operation === 'getAll') {
 						// ----------------------------------------
 						//              event: getAll
 						// ----------------------------------------
 
-						response = await handleListing.call(this, 'GET', '/events');
+						response = await handleListing.call(this, 'GET', requestPath`/events`);
 					}
 				} else if (resource === 'person') {
 					// **********************************************************************
@@ -238,7 +241,7 @@ export class ActionNetwork implements INodeType {
 							Object.assign(body.person, adjustPersonPayload(additionalFields));
 						}
 
-						response = await actionNetworkApiRequest.call(this, 'POST', '/people', body);
+						response = await actionNetworkApiRequest.call(this, 'POST', requestPath`/people`, body);
 					} else if (operation === 'get') {
 						// ----------------------------------------
 						//               person: get
@@ -249,14 +252,18 @@ export class ActionNetwork implements INodeType {
 						response = (await actionNetworkApiRequest.call(
 							this,
 							'GET',
-							`/people/${personId}`,
+							requestPath`/people/${personId}`,
 						)) as PersonResponse;
 					} else if (operation === 'getAll') {
 						// ----------------------------------------
 						//              person: getAll
 						// ----------------------------------------
 
-						response = (await handleListing.call(this, 'GET', '/people')) as PersonResponse[];
+						response = (await handleListing.call(
+							this,
+							'GET',
+							requestPath`/people`,
+						)) as PersonResponse[];
 					} else if (operation === 'update') {
 						// ----------------------------------------
 						//              person: update
@@ -276,7 +283,12 @@ export class ActionNetwork implements INodeType {
 							);
 						}
 
-						response = await actionNetworkApiRequest.call(this, 'PUT', `/people/${personId}`, body);
+						response = await actionNetworkApiRequest.call(
+							this,
+							'PUT',
+							requestPath`/people/${personId}`,
+							body,
+						);
 					}
 				} else if (resource === 'petition') {
 					// **********************************************************************
@@ -301,7 +313,12 @@ export class ActionNetwork implements INodeType {
 							Object.assign(body, adjustPetitionPayload(additionalFields));
 						}
 
-						response = await actionNetworkApiRequest.call(this, 'POST', '/petitions', body);
+						response = await actionNetworkApiRequest.call(
+							this,
+							'POST',
+							requestPath`/petitions`,
+							body,
+						);
 					} else if (operation === 'get') {
 						// ----------------------------------------
 						//              petition: get
@@ -309,14 +326,14 @@ export class ActionNetwork implements INodeType {
 
 						const petitionId = this.getNodeParameter('petitionId', i);
 
-						const endpoint = `/petitions/${petitionId}`;
+						const endpoint = requestPath`/petitions/${petitionId}`;
 						response = await actionNetworkApiRequest.call(this, 'GET', endpoint);
 					} else if (operation === 'getAll') {
 						// ----------------------------------------
 						//             petition: getAll
 						// ----------------------------------------
 
-						response = await handleListing.call(this, 'GET', '/petitions');
+						response = await handleListing.call(this, 'GET', requestPath`/petitions`);
 					} else if (operation === 'update') {
 						// ----------------------------------------
 						//             petition: update
@@ -339,7 +356,7 @@ export class ActionNetwork implements INodeType {
 						response = await actionNetworkApiRequest.call(
 							this,
 							'PUT',
-							`/petitions/${petitionId}`,
+							requestPath`/petitions/${petitionId}`,
 							body,
 						);
 					}
@@ -366,7 +383,7 @@ export class ActionNetwork implements INodeType {
 							Object.assign(body, additionalFields);
 						}
 
-						const endpoint = `/petitions/${petitionId}/signatures`;
+						const endpoint = requestPath`/petitions/${petitionId}/signatures`;
 						response = await actionNetworkApiRequest.call(this, 'POST', endpoint, body);
 					} else if (operation === 'get') {
 						// ----------------------------------------
@@ -376,7 +393,7 @@ export class ActionNetwork implements INodeType {
 						const petitionId = this.getNodeParameter('petitionId', i);
 						const signatureId = this.getNodeParameter('signatureId', i);
 
-						const endpoint = `/petitions/${petitionId}/signatures/${signatureId}`;
+						const endpoint = requestPath`/petitions/${petitionId}/signatures/${signatureId}`;
 						response = await actionNetworkApiRequest.call(this, 'GET', endpoint);
 					} else if (operation === 'getAll') {
 						// ----------------------------------------
@@ -385,7 +402,7 @@ export class ActionNetwork implements INodeType {
 
 						const petitionId = this.getNodeParameter('petitionId', i);
 
-						const endpoint = `/petitions/${petitionId}/signatures`;
+						const endpoint = requestPath`/petitions/${petitionId}/signatures`;
 						response = await handleListing.call(this, 'GET', endpoint);
 					} else if (operation === 'update') {
 						// ----------------------------------------
@@ -407,7 +424,7 @@ export class ActionNetwork implements INodeType {
 							);
 						}
 
-						const endpoint = `/petitions/${petitionId}/signatures/${signatureId}`;
+						const endpoint = requestPath`/petitions/${petitionId}/signatures/${signatureId}`;
 						response = await actionNetworkApiRequest.call(this, 'PUT', endpoint, body);
 					}
 				} else if (resource === 'tag') {
@@ -426,7 +443,7 @@ export class ActionNetwork implements INodeType {
 							name: this.getNodeParameter('name', i),
 						} as IDataObject;
 
-						response = await actionNetworkApiRequest.call(this, 'POST', '/tags', body);
+						response = await actionNetworkApiRequest.call(this, 'POST', requestPath`/tags`, body);
 					} else if (operation === 'get') {
 						// ----------------------------------------
 						//                 tag: get
@@ -434,13 +451,13 @@ export class ActionNetwork implements INodeType {
 
 						const tagId = this.getNodeParameter('tagId', i);
 
-						response = await actionNetworkApiRequest.call(this, 'GET', `/tags/${tagId}`);
+						response = await actionNetworkApiRequest.call(this, 'GET', requestPath`/tags/${tagId}`);
 					} else if (operation === 'getAll') {
 						// ----------------------------------------
 						//               tag: getAll
 						// ----------------------------------------
 
-						response = await handleListing.call(this, 'GET', '/tags');
+						response = await handleListing.call(this, 'GET', requestPath`/tags`);
 					}
 				} else if (resource === 'personTag') {
 					// **********************************************************************
@@ -459,7 +476,7 @@ export class ActionNetwork implements INodeType {
 
 						const body = makeOsdiLink(personId) as IDataObject;
 
-						const endpoint = `/tags/${tagId}/taggings`;
+						const endpoint = requestPath`/tags/${tagId}/taggings`;
 						response = await actionNetworkApiRequest.call(this, 'POST', endpoint, body);
 					} else if (operation === 'remove') {
 						// ----------------------------------------
@@ -469,7 +486,7 @@ export class ActionNetwork implements INodeType {
 						const tagId = this.getNodeParameter('tagId', i);
 						const taggingId = this.getNodeParameter('taggingId', i);
 
-						const endpoint = `/tags/${tagId}/taggings/${taggingId}`;
+						const endpoint = requestPath`/tags/${tagId}/taggings/${taggingId}`;
 						response = await actionNetworkApiRequest.call(this, 'DELETE', endpoint);
 					}
 				}

@@ -1,3 +1,4 @@
+import moment from 'moment-timezone';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -5,19 +6,15 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-
-import moment from 'moment-timezone';
-import { uptimeRobotApiRequest } from './GenericFunctions';
-
-import { monitorFields, monitorOperations } from './MonitorDescription';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { alertContactFields, alertContactOperations } from './AlertContactDescription';
-
+import { uptimeRobotApiRequest } from './GenericFunctions';
 import {
 	maintenanceWindowFields,
 	maintenanceWindowOperations,
 } from './MaintenanceWindowDescription';
-
+import { monitorFields, monitorOperations } from './MonitorDescription';
 import { publicStatusPageFields, publicStatusPageOperations } from './PublicStatusPageDescription';
 
 export class UptimeRobot implements INodeType {
@@ -32,8 +29,9 @@ export class UptimeRobot implements INodeType {
 		defaults: {
 			name: 'UptimeRobot',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'uptimeRobotApi',
@@ -130,7 +128,11 @@ export class UptimeRobot implements INodeType {
 				//https://uptimerobot.com/#methods
 				if (resource === 'account') {
 					if (operation === 'get') {
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/getAccountDetails');
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/getAccountDetails`,
+						);
 						responseData = responseData.account;
 					}
 				}
@@ -143,7 +145,12 @@ export class UptimeRobot implements INodeType {
 							type: this.getNodeParameter('type', i) as number,
 						};
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/newMonitor', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/newMonitor`,
+							body,
+						);
 						responseData = responseData.monitor;
 					}
 
@@ -152,14 +159,24 @@ export class UptimeRobot implements INodeType {
 							id: this.getNodeParameter('id', i) as string,
 						};
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/deleteMonitor', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/deleteMonitor`,
+							body,
+						);
 						responseData = responseData.monitor;
 					}
 					if (operation === 'get') {
 						const monitors = this.getNodeParameter('id', i) as string;
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/getMonitors', {
-							monitors,
-						});
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/getMonitors`,
+							{
+								monitors,
+							},
+						);
 						responseData = responseData.monitors;
 					}
 
@@ -196,7 +213,12 @@ export class UptimeRobot implements INodeType {
 							body.limit = this.getNodeParameter('limit', i);
 						}
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/getMonitors', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/getMonitors`,
+							body,
+						);
 						responseData = responseData.monitors;
 					}
 
@@ -205,7 +227,12 @@ export class UptimeRobot implements INodeType {
 							id: this.getNodeParameter('id', i) as string,
 						};
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/resetMonitor', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/resetMonitor`,
+							body,
+						);
 						responseData = responseData.monitor;
 					}
 
@@ -215,7 +242,12 @@ export class UptimeRobot implements INodeType {
 							...this.getNodeParameter('updateFields', i),
 						};
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/editMonitor', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/editMonitor`,
+							body,
+						);
 						responseData = responseData.monitor;
 					}
 				}
@@ -228,7 +260,12 @@ export class UptimeRobot implements INodeType {
 							type: this.getNodeParameter('type', i) as number,
 						};
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/newAlertContact', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/newAlertContact`,
+							body,
+						);
 						responseData = responseData.alertcontact;
 					}
 					if (operation === 'delete') {
@@ -239,7 +276,7 @@ export class UptimeRobot implements INodeType {
 						responseData = await uptimeRobotApiRequest.call(
 							this,
 							'POST',
-							'/deleteAlertContact',
+							requestPath`/deleteAlertContact`,
 							body,
 						);
 						responseData = responseData.alert_contact;
@@ -247,9 +284,14 @@ export class UptimeRobot implements INodeType {
 					if (operation === 'get') {
 						const id = this.getNodeParameter('id', i) as string;
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/getAlertContacts', {
-							alert_contacts: id,
-						});
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/getAlertContacts`,
+							{
+								alert_contacts: id,
+							},
+						);
 						responseData = responseData.alert_contacts;
 					}
 					if (operation === 'getAll') {
@@ -266,7 +308,7 @@ export class UptimeRobot implements INodeType {
 						responseData = await uptimeRobotApiRequest.call(
 							this,
 							'POST',
-							'/getAlertContacts',
+							requestPath`/getAlertContacts`,
 							body,
 						);
 						responseData = responseData.alert_contacts;
@@ -280,7 +322,7 @@ export class UptimeRobot implements INodeType {
 						responseData = await uptimeRobotApiRequest.call(
 							this,
 							'POST',
-							'/editAlertContact',
+							requestPath`/editAlertContact`,
 							body,
 						);
 						responseData = responseData.alert_contact;
@@ -310,7 +352,12 @@ export class UptimeRobot implements INodeType {
 							body.value = this.getNodeParameter('monthDay', i) as number;
 						}
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/newMWindow', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/newMWindow`,
+							body,
+						);
 						responseData = responseData.mwindow;
 					}
 					if (operation === 'delete') {
@@ -318,15 +365,25 @@ export class UptimeRobot implements INodeType {
 							id: this.getNodeParameter('id', i) as string,
 						};
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/deleteMWindow', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/deleteMWindow`,
+							body,
+						);
 						responseData = { status: responseData.message };
 					}
 					if (operation === 'get') {
 						const mwindows = this.getNodeParameter('id', i) as string;
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/getMWindows', {
-							mwindows,
-						});
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/getMWindows`,
+							{
+								mwindows,
+							},
+						);
 						responseData = responseData.mwindows;
 					}
 					if (operation === 'getAll') {
@@ -340,7 +397,12 @@ export class UptimeRobot implements INodeType {
 							body.limit = this.getNodeParameter('limit', i);
 						}
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/getMWindows', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/getMWindows`,
+							body,
+						);
 						responseData = responseData.mwindows;
 					}
 					if (operation === 'update') {
@@ -364,7 +426,12 @@ export class UptimeRobot implements INodeType {
 							body.value = body.monthDay;
 							delete body.monthDay;
 						}
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/editMWindow', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/editMWindow`,
+							body,
+						);
 						responseData = responseData.mwindow;
 					}
 				}
@@ -376,7 +443,12 @@ export class UptimeRobot implements INodeType {
 							...this.getNodeParameter('additionalFields', i),
 						};
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/newPSP', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/newPSP`,
+							body,
+						);
 						responseData = responseData.psp;
 					}
 					if (operation === 'delete') {
@@ -384,13 +456,20 @@ export class UptimeRobot implements INodeType {
 							id: this.getNodeParameter('id', i) as string,
 						};
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/deletePSP', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/deletePSP`,
+							body,
+						);
 						responseData = responseData.psp;
 					}
 					if (operation === 'get') {
 						const psps = this.getNodeParameter('id', i) as string;
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/getPSPs', { psps });
+						responseData = await uptimeRobotApiRequest.call(this, 'POST', requestPath`/getPSPs`, {
+							psps,
+						});
 						responseData = responseData.psps;
 					}
 					if (operation === 'getAll') {
@@ -404,7 +483,12 @@ export class UptimeRobot implements INodeType {
 							body.limit = this.getNodeParameter('limit', i);
 						}
 
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/getPSPs', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/getPSPs`,
+							body,
+						);
 						responseData = responseData.psps;
 					}
 					if (operation === 'update') {
@@ -412,7 +496,12 @@ export class UptimeRobot implements INodeType {
 							id: this.getNodeParameter('id', i) as string,
 							...this.getNodeParameter('updateFields', i),
 						};
-						responseData = await uptimeRobotApiRequest.call(this, 'POST', '/editPSP', body);
+						responseData = await uptimeRobotApiRequest.call(
+							this,
+							'POST',
+							requestPath`/editPSP`,
+							body,
+						);
 						responseData = responseData.psp;
 					}
 				}

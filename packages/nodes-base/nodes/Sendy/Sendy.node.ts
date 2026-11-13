@@ -6,12 +6,10 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
-
-import { sendyApiRequest } from './GenericFunctions';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { campaignFields, campaignOperations } from './CampaignDescription';
-
+import { sendyApiRequest } from './GenericFunctions';
 import { subscriberFields, subscriberOperations } from './SubscriberDescription';
 
 export class Sendy implements INodeType {
@@ -27,8 +25,9 @@ export class Sendy implements INodeType {
 		defaults: {
 			name: 'Sendy',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'sendyApi',
@@ -140,7 +139,7 @@ export class Sendy implements INodeType {
 					responseData = await sendyApiRequest.call(
 						this,
 						'POST',
-						'/api/campaigns/create.php',
+						requestPath`/api/campaigns/create.php`,
 						body,
 					);
 
@@ -169,7 +168,7 @@ export class Sendy implements INodeType {
 
 					Object.assign(body, additionalFields);
 
-					responseData = await sendyApiRequest.call(this, 'POST', '/subscribe', body);
+					responseData = await sendyApiRequest.call(this, 'POST', requestPath`/subscribe`, body);
 
 					if (responseData === '1') {
 						responseData = { success: true };
@@ -192,7 +191,7 @@ export class Sendy implements INodeType {
 					responseData = await sendyApiRequest.call(
 						this,
 						'POST',
-						'/api/subscribers/active-subscriber-count.php',
+						requestPath`/api/subscribers/active-subscriber-count.php`,
 						body,
 					);
 
@@ -228,7 +227,7 @@ export class Sendy implements INodeType {
 					responseData = await sendyApiRequest.call(
 						this,
 						'POST',
-						'/api/subscribers/delete.php',
+						requestPath`/api/subscribers/delete.php`,
 						body,
 					);
 
@@ -253,7 +252,7 @@ export class Sendy implements INodeType {
 						list: listId,
 					};
 
-					responseData = await sendyApiRequest.call(this, 'POST', '/unsubscribe', body);
+					responseData = await sendyApiRequest.call(this, 'POST', requestPath`/unsubscribe`, body);
 
 					if (responseData === '1') {
 						responseData = { success: true };
@@ -279,7 +278,7 @@ export class Sendy implements INodeType {
 					responseData = await sendyApiRequest.call(
 						this,
 						'POST',
-						'/api/subscribers/subscription-status.php',
+						requestPath`/api/subscribers/subscription-status.php`,
 						body,
 					);
 

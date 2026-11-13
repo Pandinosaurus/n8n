@@ -1,14 +1,18 @@
-import type {
-	IDataObject,
-	IExecuteFunctions,
-	INodeExecutionData,
-	INodeProperties,
+import {
+	NodeOperationError,
+	type IDataObject,
+	type IExecuteFunctions,
+	type INodeExecutionData,
+	type INodeProperties,
 } from 'n8n-workflow';
-import type { ExcelResponse } from '../../helpers/interfaces';
-import { prepareOutput } from '../../helpers/utils';
-import { microsoftApiRequest } from '../../transport';
-import { workbookRLC, worksheetRLC } from '../common.descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { processJsonInput, updateDisplayOptions } from '@utils/utilities';
+
+import type { ExcelResponse } from '../../helpers/interfaces';
+import { findAppendRange, prepareOutput } from '../../helpers/utils';
+import { microsoftApiRequest, toWorkbookId } from '../../transport';
+import { workbookRLC, worksheetRLC } from '../common.descriptions';
 
 const properties: INodeProperties[] = [
 	workbookRLC,
@@ -75,7 +79,7 @@ const properties: INodeProperties[] = [
 						name: 'column',
 						type: 'options',
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 						typeOptions: {
 							loadOptionsDependsOn: ['worksheet.value'],
 							loadOptionsMethod: 'getWorksheetColumnRow',
@@ -96,7 +100,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -140,9 +144,15 @@ export async function execute(
 ): Promise<INodeExecutionData[]> {
 	const returnData: INodeExecutionData[] = [];
 
-	const workbookId = this.getNodeParameter('workbook', 0, undefined, {
-		extractValue: true,
-	}) as string;
+	const nodeVersion = this.getNode().typeVersion;
+
+	// Whole-batch operation: one request set for all items; request-level params (including the SP target) are read at item 0.
+	const workbookId = toWorkbookId.call(
+		this,
+		this.getNodeParameter('workbook', 0, undefined, {
+			extractValue: true,
+		}) as string,
+	);
 
 	const worksheetId = this.getNodeParameter('worksheet', 0, undefined, {
 		extractValue: true,
@@ -153,7 +163,12 @@ export async function execute(
 	const worksheetData = await microsoftApiRequest.call(
 		this,
 		'GET',
-		`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/usedRange`,
+		requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/usedRange`,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		0,
 	);
 
 	let values: string[][] = [];
@@ -161,6 +176,24 @@ export async function execute(
 	if (dataMode === 'raw') {
 		const data = this.getNodeParameter('data', 0);
 		values = processJsonInput(data, 'Data') as string[][];
+		const notArray = !values || !Array.isArray(values);
+		if (notArray) {
+			throw new NodeOperationError(this.getNode(), 'Data must be an array of arrays of strings');
+		}
+		const notStringArray =
+			values.some((item) => !Array.isArray(item)) ||
+			values.flat().some((item) => typeof item !== 'string');
+		if (notStringArray) {
+			throw new NodeOperationError(this.getNode(), 'Data must be an array of arrays of strings');
+		}
+	}
+
+	const isTableEmpty = !worksheetData.address.includes(':');
+	if (isTableEmpty && dataMode !== 'raw') {
+		throw new NodeOperationError(
+			this.getNode(),
+			'No data found in the specified range, mapping not possible, you can use raw mode instead to update selected range',
+		);
 	}
 
 	const columnsRow = (worksheetData.values as string[][])[0];
@@ -202,22 +235,39 @@ export async function execute(
 			values.push(updateRow);
 		}
 	}
-
 	const { address } = worksheetData;
-	const usedRange = address.split('!')[1];
 
-	const [rangeFrom, rangeTo] = usedRange.split(':');
-	const cellDataFrom = rangeFrom.match(/([a-zA-Z]{1,10})([0-9]{0,10})/) || [];
-	const cellDataTo = rangeTo.match(/([a-zA-Z]{1,10})([0-9]{0,10})/) || [];
+	let range = '';
 
-	const from = `${cellDataFrom[1]}${Number(cellDataTo[2]) + 1}`;
-	const to = `${cellDataTo[1]}${Number(cellDataTo[2]) + Number(values.length)}`;
+	if (nodeVersion >= 2.2) {
+		range = findAppendRange(address, {
+			cols: values[0]?.length ?? 0,
+			rows: values?.length ?? 0,
+		});
+	} else {
+		// v2.1: incorrectly appends raw data, left for backward compatibility reasons
+		// if used range dimensions are smaller or bigger than inserted values dimensions, it will throw error
+		// Example: if used range is 2x4(cols x rows) and new data is 2x3, it will throw error "The number of rows or columns in the input array doesn't match the size or dimensions of the range."
+		const usedRange = address.split('!')[1];
+
+		const [rangeFrom, rangeTo] = usedRange.split(':');
+		const cellDataFrom = rangeFrom.match(/([a-zA-Z]{1,10})([0-9]{0,10})/) || [];
+		const cellDataTo = rangeTo.match(/([a-zA-Z]{1,10})([0-9]{0,10})/) || [];
+		const from = `${cellDataFrom[1]}${Number(cellDataTo[2]) + 1}`;
+		const to = `${cellDataTo[1]}${Number(cellDataTo[2]) + Number(values.length)}`;
+
+		range = `${from}:${to}`;
+	}
 
 	const responseData: ExcelResponse = await microsoftApiRequest.call(
 		this,
 		'PATCH',
-		`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${from}:${to}')`,
+		requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
 		{ values },
+		undefined,
+		undefined,
+		undefined,
+		0,
 	);
 
 	const rawData = this.getNodeParameter('options.rawData', 0, false) as boolean;

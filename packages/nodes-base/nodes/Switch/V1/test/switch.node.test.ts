@@ -1,4 +1,11 @@
-import { testWorkflows, getWorkflowFilenames } from '@test/nodes/Helpers';
-const workflows = getWorkflowFilenames(__dirname);
+import { NodeTestHarness } from '@nodes-testing/node-test-harness';
+import { matchesRegex } from '../SwitchV1.node';
 
-describe('Execute Switch Node', () => testWorkflows(workflows));
+describe('Execute Switch Node', () => {
+	new NodeTestHarness().setupTests();
+
+	it('matches slash-delimited regex rules', () => {
+		expect(matchesRegex('alpha-123', '/^alpha-\\d+$/')).toBe(true);
+		expect(matchesRegex('beta', '/^alpha-\\d+$/')).toBe(false);
+	});
+});

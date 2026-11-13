@@ -1,19 +1,26 @@
-import nock from 'nock';
+import type { IHttpRequestMethods } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import * as upload from '../../../../v2/actions/file/upload.operation';
-
-import * as transport from '../../../../v2/transport';
 import * as utils from '../../../../v2/helpers/utils';
+import * as transport from '../../../../v2/transport';
+import { createMockExecuteFunction, createTestStream, driveNode } from '../helpers';
+import type * as _importType0 from '../../../../v2/transport';
+import type * as _importType1 from '../../../../v2/helpers/utils';
 
-import { createMockExecuteFunction, driveNode } from '../helpers';
+const fileContent = Buffer.from('Hello Drive!');
+const originalFilename = 'original.txt';
+const contentLength = 123;
+const mimeType = 'text/plain';
 
-jest.mock('../../../../v2/transport', () => {
-	const originalModule = jest.requireActual('../../../../v2/transport');
+vi.mock('../../../../v2/transport', async () => {
+	const originalModule = await vi.importActual<typeof _importType0>('../../../../v2/transport');
 	return {
 		...originalModule,
-		googleApiRequest: jest.fn(async function (method: IHttpRequestMethods) {
+		googleApiRequest: vi.fn(async function (method: IHttpRequestMethods) {
 			if (method === 'POST') {
 				return {
+					id: 'uploadIDxxxxxx',
 					headers: { location: 'someLocation' },
 				};
 			}
@@ -22,38 +29,34 @@ jest.mock('../../../../v2/transport', () => {
 	};
 });
 
-jest.mock('../../../../v2/helpers/utils', () => {
-	const originalModule = jest.requireActual('../../../../v2/helpers/utils');
+vi.mock('../../../../v2/helpers/utils', async () => {
+	const originalModule = await vi.importActual<typeof _importType1>('../../../../v2/helpers/utils');
 	return {
 		...originalModule,
-		getItemBinaryData: jest.fn(async function () {
+		getItemBinaryData: vi.fn(async function () {
 			return {
-				contentLength: '123',
-				fileContent: 'Hello Drive!',
-				originalFilename: 'original.txt',
-				mimeType: 'text/plain',
+				contentLength,
+				fileContent,
+				originalFilename,
+				mimeType,
 			};
 		}),
 	};
 });
 
 describe('test GoogleDriveV2: file upload', () => {
-	beforeAll(() => {
-		nock.disableNetConnect();
+	beforeEach(() => {
+		vi.clearAllMocks();
 	});
 
-	afterAll(() => {
-		nock.restore();
-		jest.unmock('../../../../v2/transport');
-		jest.unmock('../../../../v2/helpers/utils');
-	});
-
-	it('should be called with', async () => {
+	it('should upload buffers', async () => {
+		const name = 'newFile.txt';
+		const parent = 'folderIDxxxxxx';
 		const nodeParameters = {
-			name: 'newFile.txt',
+			name,
 			folderId: {
 				__rl: true,
-				value: 'folderIDxxxxxx',
+				value: parent,
 				mode: 'list',
 				cachedResultName: 'testFolder 3',
 				cachedResultUrl: 'https://drive.google.com/drive/folders/folderIDxxxxxx',
@@ -71,18 +74,23 @@ describe('test GoogleDriveV2: file upload', () => {
 
 		expect(transport.googleApiRequest).toHaveBeenCalledWith(
 			'POST',
-			'/upload/drive/v3/files',
+			requestPath`/upload/drive/v3/files`,
+			expect.any(Buffer),
+			{ uploadType: 'multipart', supportsAllDrives: true },
 			undefined,
-			{ uploadType: 'resumable' },
-			undefined,
-			{ returnFullResponse: true },
+			{
+				headers: {
+					'Content-Length': 498,
+					'Content-Type': expect.stringMatching(/^multipart\/related; boundary=(\\S)*/),
+				},
+			},
 		);
 		expect(transport.googleApiRequest).toHaveBeenCalledWith(
 			'PATCH',
-			'/drive/v3/files/undefined',
-			{ mimeType: 'text/plain', name: 'newFile.txt', originalFilename: 'original.txt' },
+			requestPath`/drive/v3/files/uploadIDxxxxxx`,
+			{ mimeType, name, originalFilename },
 			{
-				addParents: 'folderIDxxxxxx',
+				addParents: parent,
 				supportsAllDrives: true,
 				corpora: 'allDrives',
 				includeItemsFromAllDrives: true,
@@ -92,5 +100,67 @@ describe('test GoogleDriveV2: file upload', () => {
 
 		expect(utils.getItemBinaryData).toBeCalledTimes(1);
 		expect(utils.getItemBinaryData).toHaveBeenCalled();
+	});
+
+	it('should stream large files in 2MB chunks', async () => {
+		const name = 'newFile.jpg';
+		const parent = 'folderIDxxxxxx';
+		const originalFilename = 'test.jpg';
+		const mimeType = 'image/jpg';
+		const nodeParameters = {
+			name,
+			folderId: {
+				__rl: true,
+				value: parent,
+				mode: 'list',
+				cachedResultName: 'testFolder 3',
+				cachedResultUrl: 'https://drive.google.com/drive/folders/folderIDxxxxxx',
+			},
+			options: {
+				simplifyOutput: true,
+			},
+		};
+
+		const fakeExecuteFunction = createMockExecuteFunction(nodeParameters, driveNode);
+		const httpRequestSpy = vi
+			.spyOn(fakeExecuteFunction.helpers, 'httpRequest')
+			.mockResolvedValue({ id: 'uploadIDxxxxxx' });
+
+		const fileSize = 7 * 1024 * 1024; // 7MB
+		vi.mocked(utils.getItemBinaryData).mockResolvedValue({
+			mimeType,
+			originalFilename,
+			contentLength: fileSize,
+			fileContent: createTestStream(fileSize),
+		});
+
+		await upload.execute.call(fakeExecuteFunction, 0);
+
+		// 4 chunks: 7MB = 3x2MB + 1x1MB
+		expect(httpRequestSpy).toHaveBeenCalledTimes(4);
+		expect(httpRequestSpy).toHaveBeenCalledWith(
+			expect.objectContaining({ body: expect.any(Buffer) }),
+		);
+		expect(transport.googleApiRequest).toBeCalledTimes(2);
+		expect(transport.googleApiRequest).toHaveBeenCalledWith(
+			'POST',
+			requestPath`/upload/drive/v3/files`,
+			{ name, parents: [parent] },
+			{ uploadType: 'resumable', supportsAllDrives: true },
+			undefined,
+			{ returnFullResponse: true, headers: { 'X-Upload-Content-Type': 'image/jpg' } },
+		);
+		expect(transport.googleApiRequest).toHaveBeenCalledWith(
+			'PATCH',
+			requestPath`/drive/v3/files/uploadIDxxxxxx`,
+			{ mimeType, name, originalFilename },
+			{
+				addParents: parent,
+				supportsAllDrives: true,
+				corpora: 'allDrives',
+				includeItemsFromAllDrives: true,
+				spaces: 'appDataFolder, drive',
+			},
+		);
 	});
 });

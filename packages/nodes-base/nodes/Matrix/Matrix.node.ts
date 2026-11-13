@@ -7,19 +7,14 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-
-import { handleMatrixCall, matrixApiRequest } from './GenericFunctions';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { accountOperations } from './AccountDescription';
-
 import { eventFields, eventOperations } from './EventDescription';
-
+import { handleMatrixCall, matrixApiRequest } from './GenericFunctions';
 import { mediaFields, mediaOperations } from './MediaDescription';
-
 import { messageFields, messageOperations } from './MessageDescription';
-
 import { roomFields, roomOperations } from './RoomDescription';
-
 import { roomMemberFields, roomMemberOperations } from './RoomMemberDescription';
 
 export class Matrix implements INodeType {
@@ -29,14 +24,16 @@ export class Matrix implements INodeType {
 		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
 		icon: 'file:matrix.png',
 		group: ['output'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		description: 'Consume Matrix API',
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		defaults: {
 			name: 'Matrix',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'matrixApi',
@@ -96,7 +93,11 @@ export class Matrix implements INodeType {
 			async getChannels(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
 
-				const joinedRoomsResponse = await matrixApiRequest.call(this, 'GET', '/joined_rooms');
+				const joinedRoomsResponse = await matrixApiRequest.call(
+					this,
+					'GET',
+					requestPath`/joined_rooms`,
+				);
 
 				await Promise.all(
 					joinedRoomsResponse.joined_rooms.map(async (roomId: string) => {
@@ -104,7 +105,7 @@ export class Matrix implements INodeType {
 							const roomNameResponse = await matrixApiRequest.call(
 								this,
 								'GET',
-								`/rooms/${roomId}/state/m.room.name`,
+								requestPath`/rooms/${roomId}/state/m.room.name`,
 							);
 							returnData.push({
 								name: roomNameResponse.name,
@@ -143,7 +144,7 @@ export class Matrix implements INodeType {
 
 		for (let i = 0; i < items.length; i++) {
 			try {
-				const responseData = await handleMatrixCall.call(this, items[i], i, resource, operation);
+				const responseData = await handleMatrixCall.call(this, i, resource, operation);
 				const executionData = this.helpers.constructExecutionMetaData(
 					this.helpers.returnJsonArray(responseData as IDataObject[]),
 					{ itemData: { item: i } },

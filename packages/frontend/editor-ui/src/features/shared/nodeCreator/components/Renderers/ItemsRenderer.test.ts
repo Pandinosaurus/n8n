@@ -1,0 +1,191 @@
+import { nextTick } from 'vue';
+import { createTestingPinia } from '@pinia/testing';
+import { fireEvent } from '@testing-library/vue';
+import {
+	mockSubcategoryCreateElement,
+	mockLabelCreateElement,
+	mockNodeCreateElement,
+	mockActionCreateElement,
+	mockCommandCreateElement,
+	mockViewCreateElement,
+	mockSectionCreateElement,
+} from '../../__tests__/utils';
+import ItemsRenderer from './ItemsRenderer.vue';
+import { createComponentRenderer } from '@/__tests__/render';
+import { useAiGatewayStore } from '@/app/stores/aiGateway.store';
+
+const renderComponent = createComponentRenderer(ItemsRenderer);
+
+describe('ItemsRenderer', () => {
+	it('should render items', async () => {
+		const items = [
+			mockSubcategoryCreateElement({ title: 'Subcategory 1' }),
+			mockLabelCreateElement('subcategory', { key: 'label1' }),
+			mockNodeCreateElement(
+				{ subcategory: 'subcategory' },
+				{ displayName: 'Node 1', name: 'node1' },
+			),
+			mockNodeCreateElement(
+				{ subcategory: 'subcategory' },
+				{ displayName: 'Node 2', name: 'node2' },
+			),
+			mockNodeCreateElement(
+				{ subcategory: 'subcategory' },
+				{ displayName: 'Node 3', name: 'node3' },
+			),
+			mockLabelCreateElement('subcategory', { key: 'label2' }),
+			mockNodeCreateElement(
+				{ subcategory: 'subcategory' },
+				{ displayName: 'Node 2', name: 'node2' },
+			),
+			mockNodeCreateElement(
+				{ subcategory: 'subcategory' },
+				{ displayName: 'Node 3', name: 'node3' },
+			),
+			mockSubcategoryCreateElement({ title: 'Subcategory 2' }),
+			mockSectionCreateElement(),
+		];
+
+		const { container } = renderComponent({
+			pinia: createTestingPinia(),
+			props: { elements: items },
+			global: {
+				stubs: ['N8nLoading'],
+			},
+		});
+
+		await nextTick();
+
+		const nodeItems = container.querySelectorAll('.iteratorItem .nodeItem');
+		const labels = container.querySelectorAll('.iteratorItem .label');
+		const subCategories = container.querySelectorAll('.iteratorItem .subCategory');
+		const sections = container.querySelectorAll('.categoryItem');
+
+		expect(sections.length).toBe(1);
+		expect(nodeItems.length).toBe(7); // 5 nodes in subcategories | 2 nodes in a section
+		expect(labels.length).toBe(2);
+		expect(subCategories.length).toBe(2);
+	});
+
+	it('should render the wallet balance on sections with the creditsBalance trailing element', async () => {
+		const pinia = createTestingPinia();
+		const aiGatewayStore = useAiGatewayStore(pinia);
+		aiGatewayStore.balance = 5;
+
+		const { getByTestId } = renderComponent({
+			pinia,
+			props: {
+				elements: [mockSectionCreateElement({ trailing: 'creditsBalance' })],
+			},
+			global: {
+				stubs: ['N8nLoading'],
+			},
+		});
+
+		await nextTick();
+
+		expect(getByTestId('node-creator-credits-balance').textContent).toContain('$5.00 left');
+	});
+
+	it('should render "No credits" when the balance is depleted', async () => {
+		const pinia = createTestingPinia();
+		const aiGatewayStore = useAiGatewayStore(pinia);
+		aiGatewayStore.balance = 0;
+
+		const { getByTestId } = renderComponent({
+			pinia,
+			props: {
+				elements: [mockSectionCreateElement({ trailing: 'creditsBalance' })],
+			},
+			global: {
+				stubs: ['N8nLoading'],
+			},
+		});
+
+		await nextTick();
+
+		expect(getByTestId('node-creator-credits-balance').textContent).toContain('No credits');
+	});
+
+	it('should fire selected events on click', async () => {
+		const items = [
+			mockSubcategoryCreateElement(),
+			mockNodeCreateElement(),
+			mockActionCreateElement(),
+			mockViewCreateElement(),
+			mockCommandCreateElement(),
+		];
+		const { container, emitted } = renderComponent({
+			pinia: createTestingPinia(),
+			props: { elements: items },
+		});
+		//
+		await nextTick();
+
+		const itemTypes = {
+			node: container.querySelector('.iteratorItem .nodeItem'),
+			subcategory: container.querySelector('.iteratorItem .subCategory'),
+			action: container.querySelector('.iteratorItem .action'),
+			view: container.querySelector('.iteratorItem .view'),
+			command: container.querySelector('.iteratorItem .command'),
+		};
+
+		for (const [index, itemType] of Object.keys(itemTypes).entries()) {
+			const itemElement = itemTypes[itemType as keyof typeof itemTypes];
+			if (itemElement) {
+				await fireEvent.click(itemElement);
+				const emittedEvent = emitted().selected[index];
+				// Use a type guard to check if emittedEvent is an array and if its first element has a 'type' property
+				if (
+					Array.isArray(emittedEvent) &&
+					emittedEvent.length > 0 &&
+					typeof emittedEvent[0] === 'object' &&
+					'type' in emittedEvent[0]
+				) {
+					expect(emittedEvent[0].type).toBe(itemType);
+				} else {
+					expect.fail('Emitted event is not an array or does not have a type property');
+				}
+			}
+		}
+	});
+
+	it('should show the navigation arrow for views but not commands', async () => {
+		const { container } = renderComponent({
+			pinia: createTestingPinia(),
+			props: { elements: [mockViewCreateElement(), mockCommandCreateElement()] },
+		});
+		await nextTick();
+
+		expect(container.querySelector('.view [data-icon="arrow-right"]')).toBeInTheDocument();
+		expect(container.querySelector('.command [data-icon="arrow-right"]')).not.toBeInTheDocument();
+	});
+
+	it('should separate a command from preceding items only when browsing', async () => {
+		const command = mockCommandCreateElement();
+		const { container, rerender } = renderComponent({
+			pinia: createTestingPinia(),
+			props: { elements: [command] },
+		});
+		await nextTick();
+
+		expect(container.querySelector('.command')).not.toHaveClass('withSeparator');
+
+		await rerender({ elements: [mockNodeCreateElement(), command] });
+		await nextTick();
+
+		expect(container.querySelector('.command')).toHaveClass('withSeparator');
+
+		const searchResult = renderComponent({
+			pinia: createTestingPinia({
+				initialState: {
+					nodeCreatorViewStacks: { viewStacks: [{ search: 'contain' }] },
+				},
+			}),
+			props: { elements: [mockNodeCreateElement(), command, mockNodeCreateElement()] },
+		});
+		await nextTick();
+
+		expect(searchResult.container.querySelector('.command')).not.toHaveClass('withSeparator');
+	});
+});

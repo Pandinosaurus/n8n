@@ -1,8 +1,11 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
-import { microsoftApiRequest } from '../../transport';
+import { requestPath } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
+
 import { folderFields, folderRLC } from '../../descriptions';
 import { decodeOutlookId } from '../../helpers/utils';
-import { updateDisplayOptions } from '@utils/utilities';
+import { microsoftApiRequest } from '../../transport';
 
 export const properties: INodeProperties[] = [
 	folderRLC,
@@ -10,7 +13,7 @@ export const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -55,7 +58,8 @@ export async function execute(this: IExecuteFunctions, index: number) {
 	const responseData = await microsoftApiRequest.call(
 		this,
 		'GET',
-		`/mailFolders/${folderId}`,
+		requestPath`/mailFolders/${folderId}`,
+		index,
 		{},
 		qs,
 	);

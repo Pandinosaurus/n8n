@@ -1,5 +1,7 @@
 import type { INodeProperties } from 'n8n-workflow';
 
+import { accountResourceLocator } from './SharedDescriptions';
+
 export const contactOperations: INodeProperties[] = [
 	{
 		displayName: 'Operation',
@@ -94,7 +96,7 @@ export const contactFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'The field to check to see if the contact already exists. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'The field to check to see if the contact already exists. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 	},
 	{
 		displayName: 'Value to Match',
@@ -138,17 +140,7 @@ export const contactFields: INodeProperties[] = [
 			},
 		},
 		options: [
-			{
-				displayName: 'Account Name or ID',
-				name: 'acconuntId',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getAccounts',
-				},
-				default: '',
-				description:
-					'ID of the account that is the parent of this contact. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
-			},
+			accountResourceLocator('acconuntId', 'The account that is the parent of this contact'),
 			{
 				displayName: 'Assistant Name',
 				name: 'assistantName',
@@ -194,7 +186,7 @@ export const contactFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Value',
@@ -246,6 +238,13 @@ export const contactFields: INodeProperties[] = [
 					'If bounce management is activated and an email sent to the contact bounces, the reason the bounce occurred',
 			},
 			{
+				displayName: 'Email Opt Out',
+				name: 'hasOptedOutOfEmail',
+				type: 'boolean',
+				default: false,
+				description: 'Whether the contact does not want to receive email from Salesforce',
+			},
+			{
 				displayName: 'Fax',
 				name: 'fax',
 				type: 'string',
@@ -258,6 +257,20 @@ export const contactFields: INodeProperties[] = [
 				type: 'string',
 				default: '',
 				description: 'First name of the contact. Maximum size is 40 characters.',
+			},
+			{
+				displayName: 'Middle Name',
+				name: 'middleName',
+				type: 'string',
+				default: '',
+				description: 'Middle name of the contact. Maximum size is 40 characters.',
+			},
+			{
+				displayName: 'Suffix',
+				name: 'suffix',
+				type: 'string',
+				default: '',
+				description: 'Name suffix of the contact. Maximum size is 40 characters.',
 			},
 			{
 				displayName: 'Home Phone',
@@ -283,7 +296,7 @@ export const contactFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Mailing City',
@@ -362,15 +375,38 @@ export const contactFields: INodeProperties[] = [
 				description: 'Street for alternate address',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'The owner of the contact. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the contact',
 			},
 			{
 				displayName: 'Phone',
@@ -384,7 +420,7 @@ export const contactFields: INodeProperties[] = [
 				name: 'recordTypeId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getRecordTypes',
 				},
@@ -397,6 +433,20 @@ export const contactFields: INodeProperties[] = [
 				default: '',
 				description:
 					'Honorific abbreviation, word, or phrase to be used in front of name in greetings, such as Dr. or Mrs.',
+			},
+			{
+				displayName: 'Pronouns',
+				name: 'pronouns',
+				type: 'string',
+				default: '',
+				description: "The contact's personal pronouns",
+			},
+			{
+				displayName: 'Gender Identity',
+				name: 'genderIdentity',
+				type: 'string',
+				default: '',
+				description: "The contact's gender identity",
 			},
 			{
 				displayName: 'Title',
@@ -438,17 +488,7 @@ export const contactFields: INodeProperties[] = [
 			},
 		},
 		options: [
-			{
-				displayName: 'Account Name or ID',
-				name: 'acconuntId',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getAccounts',
-				},
-				default: '',
-				description:
-					'ID of the account that is the parent of this contact. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
-			},
+			accountResourceLocator('acconuntId', 'The account that is the parent of this contact'),
 			{
 				displayName: 'Assistant Name',
 				name: 'assistantName',
@@ -494,7 +534,7 @@ export const contactFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Value',
@@ -546,6 +586,13 @@ export const contactFields: INodeProperties[] = [
 					'If bounce management is activated and an email sent to the contact bounces, the reason the bounce occurred',
 			},
 			{
+				displayName: 'Email Opt Out',
+				name: 'hasOptedOutOfEmail',
+				type: 'boolean',
+				default: false,
+				description: 'Whether the contact does not want to receive email from Salesforce',
+			},
+			{
 				displayName: 'Fax',
 				name: 'fax',
 				type: 'string',
@@ -558,6 +605,20 @@ export const contactFields: INodeProperties[] = [
 				type: 'string',
 				default: '',
 				description: 'First name of the contact. Maximum size is 40 characters.',
+			},
+			{
+				displayName: 'Middle Name',
+				name: 'middleName',
+				type: 'string',
+				default: '',
+				description: 'Middle name of the contact. Maximum size is 40 characters.',
+			},
+			{
+				displayName: 'Suffix',
+				name: 'suffix',
+				type: 'string',
+				default: '',
+				description: 'Name suffix of the contact. Maximum size is 40 characters.',
 			},
 			{
 				displayName: 'Home Phone',
@@ -590,7 +651,7 @@ export const contactFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Mailing City',
@@ -669,15 +730,38 @@ export const contactFields: INodeProperties[] = [
 				description: 'Street for alternate address',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'The owner of the contact. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the contact',
 			},
 			{
 				displayName: 'Phone',
@@ -691,7 +775,7 @@ export const contactFields: INodeProperties[] = [
 				name: 'recordTypeId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getRecordTypes',
 				},
@@ -704,6 +788,20 @@ export const contactFields: INodeProperties[] = [
 				default: '',
 				description:
 					'Honorific abbreviation, word, or phrase to be used in front of name in greetings, such as Dr. or Mrs.',
+			},
+			{
+				displayName: 'Pronouns',
+				name: 'pronouns',
+				type: 'string',
+				default: '',
+				description: "The contact's personal pronouns",
+			},
+			{
+				displayName: 'Gender Identity',
+				name: 'genderIdentity',
+				type: 'string',
+				default: '',
+				description: "The contact's gender identity",
 			},
 			{
 				displayName: 'Title',
@@ -822,7 +920,7 @@ export const contactFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'For date, number, or boolean, please use expressions. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'For date, number, or boolean, please use expressions. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							// eslint-disable-next-line n8n-nodes-base/node-param-operation-without-no-data-expression
 							{
@@ -906,7 +1004,7 @@ export const contactFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'ID of the campaign that needs to be fetched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'ID of the campaign that needs to be fetched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 	},
 	{
 		displayName: 'Options',
@@ -991,15 +1089,38 @@ export const contactFields: INodeProperties[] = [
 					'Whether only the note owner or a user with the “Modify All Data” permission can view the note or query it via the API',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'ID of the user who owns the note. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the note',
 			},
 		],
 	},

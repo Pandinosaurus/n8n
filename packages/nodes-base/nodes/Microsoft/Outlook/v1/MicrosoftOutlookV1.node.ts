@@ -1,5 +1,3 @@
-/* eslint-disable n8n-nodes-base/node-filename-against-convention */
-
 import type {
 	IBinaryKeyData,
 	IDataObject,
@@ -12,8 +10,14 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
+import { oldVersionNotice } from '@utils/descriptions';
+
+import { draftFields, draftOperations } from './DraftDescription';
+import { draftMessageSharedFields } from './DraftMessageSharedDescription';
+import { folderFields, folderOperations } from './FolderDescription';
+import { folderMessageFields, folderMessageOperations } from './FolderMessageDecription';
 import {
 	createMessage,
 	downloadAttachments,
@@ -21,23 +25,11 @@ import {
 	microsoftApiRequest,
 	microsoftApiRequestAllItems,
 } from './GenericFunctions';
-
-import { draftFields, draftOperations } from './DraftDescription';
-
-import { draftMessageSharedFields } from './DraftMessageSharedDescription';
-
-import { messageFields, messageOperations } from './MessageDescription';
-
 import {
 	messageAttachmentFields,
 	messageAttachmentOperations,
 } from './MessageAttachmentDescription';
-
-import { folderFields, folderOperations } from './FolderDescription';
-
-import { folderMessageFields, folderMessageOperations } from './FolderMessageDecription';
-
-import { oldVersionNotice } from '@utils/descriptions';
+import { messageFields, messageOperations } from './MessageDescription';
 
 const versionDescription: INodeTypeDescription = {
 	displayName: 'Microsoft Outlook',
@@ -50,8 +42,8 @@ const versionDescription: INodeTypeDescription = {
 	defaults: {
 		name: 'Microsoft Outlook',
 	},
-	inputs: ['main'],
-	outputs: ['main'],
+	inputs: [NodeConnectionTypes.Main],
+	outputs: [NodeConnectionTypes.Main],
 	credentials: [
 		{
 			name: 'microsoftOutlookOAuth2Api',
@@ -130,7 +122,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 					this,
 					'value',
 					'GET',
-					'/outlook/masterCategories',
+					requestPath`/outlook/masterCategories`,
 				);
 				for (const category of categories) {
 					returnData.push({
@@ -158,7 +150,11 @@ export class MicrosoftOutlookV1 implements INodeType {
 				for (let i = 0; i < length; i++) {
 					try {
 						const messageId = this.getNodeParameter('messageId', i) as string;
-						responseData = await microsoftApiRequest.call(this, 'DELETE', `/messages/${messageId}`);
+						responseData = await microsoftApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/messages/${messageId}`,
+						);
 
 						returnData.push({ success: true });
 					} catch (error) {
@@ -188,7 +184,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'GET',
-							`/messages/${messageId}`,
+							requestPath`/messages/${messageId}`,
 							undefined,
 							qs,
 						);
@@ -231,7 +227,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'PATCH',
-							`/messages/${messageId}`,
+							requestPath`/messages/${messageId}`,
 							body,
 							{},
 						);
@@ -295,7 +291,13 @@ export class MicrosoftOutlookV1 implements INodeType {
 							});
 						}
 
-						responseData = await microsoftApiRequest.call(this, 'POST', '/messages', body, {});
+						responseData = await microsoftApiRequest.call(
+							this,
+							'POST',
+							requestPath`/messages`,
+							body,
+							{},
+						);
 
 						returnData.push(responseData as IDataObject);
 					} catch (error) {
@@ -319,7 +321,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 								.split(',')
 								.filter((email) => !!email);
 							if (recipients.length !== 0) {
-								await microsoftApiRequest.call(this, 'PATCH', `/messages/${messageId}`, {
+								await microsoftApiRequest.call(this, 'PATCH', requestPath`/messages/${messageId}`, {
 									toRecipients: recipients.map((recipient: string) => makeRecipient(recipient)),
 								});
 							}
@@ -328,7 +330,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'POST',
-							`/messages/${messageId}/send`,
+							requestPath`/messages/${messageId}/send`,
 						);
 
 						returnData.push({ success: true });
@@ -369,7 +371,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'POST',
-							`/messages/${messageId}/${action}`,
+							requestPath`/messages/${messageId}/${action}`,
 							body,
 						);
 
@@ -406,7 +408,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 								await microsoftApiRequest.call(
 									this,
 									'POST',
-									`/messages/${responseData.id}/attachments`,
+									requestPath`/messages/${responseData.id}/attachments`,
 									attachment,
 									{},
 								);
@@ -414,7 +416,11 @@ export class MicrosoftOutlookV1 implements INodeType {
 						}
 
 						if (send) {
-							await microsoftApiRequest.call(this, 'POST', `/messages/${responseData.id}/send`);
+							await microsoftApiRequest.call(
+								this,
+								'POST',
+								requestPath`/messages/${responseData.id}/send`,
+							);
 						}
 
 						returnData.push(responseData as IDataObject);
@@ -436,7 +442,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						const response = await microsoftApiRequest.call(
 							this,
 							'GET',
-							`/messages/${messageId}/$value`,
+							requestPath`/messages/${messageId}/$value`,
 							undefined,
 							{},
 							undefined,
@@ -495,7 +501,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 							qs.$filter = additionalFields.filter;
 						}
 
-						const endpoint = '/messages';
+						const endpoint = requestPath`/messages`;
 
 						if (returnAll) {
 							responseData = await microsoftApiRequestAllItems.call(
@@ -549,7 +555,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'POST',
-							`/messages/${messageId}/move`,
+							requestPath`/messages/${messageId}/move`,
 							body,
 						);
 						returnData.push({ success: true });
@@ -624,7 +630,13 @@ export class MicrosoftOutlookV1 implements INodeType {
 							saveToSentItems,
 						};
 
-						responseData = await microsoftApiRequest.call(this, 'POST', '/sendMail', body, {});
+						responseData = await microsoftApiRequest.call(
+							this,
+							'POST',
+							requestPath`/sendMail`,
+							body,
+							{},
+						);
 						returnData.push({ success: true });
 					} catch (error) {
 						if (this.continueOnFail()) {
@@ -689,7 +701,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 							responseData = await microsoftApiRequest.call(
 								this,
 								'POST',
-								`/messages/${messageId}/attachments/createUploadSession`,
+								requestPath`/messages/${messageId}/attachments/createUploadSession`,
 								body,
 							);
 							const uploadUrl = responseData.uploadUrl;
@@ -731,7 +743,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 							responseData = await microsoftApiRequest.call(
 								this,
 								'POST',
-								`/messages/${messageId}/attachments`,
+								requestPath`/messages/${messageId}/attachments`,
 								body,
 								{},
 							);
@@ -758,7 +770,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						const attachmentDetails = await microsoftApiRequest.call(
 							this,
 							'GET',
-							`/messages/${messageId}/attachments/${attachmentId}`,
+							requestPath`/messages/${messageId}/attachments/${attachmentId}`,
 							undefined,
 							{ $select: 'id,name,contentType' },
 						);
@@ -772,7 +784,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						const response = await microsoftApiRequest.call(
 							this,
 							'GET',
-							`/messages/${messageId}/attachments/${attachmentId}/$value`,
+							requestPath`/messages/${messageId}/attachments/${attachmentId}/$value`,
 							undefined,
 							{},
 							undefined,
@@ -825,7 +837,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'GET',
-							`/messages/${messageId}/attachments/${attachmentId}`,
+							requestPath`/messages/${messageId}/attachments/${attachmentId}`,
 							undefined,
 							qs,
 						);
@@ -857,7 +869,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 							qs.$filter = additionalFields.filter;
 						}
 
-						const endpoint = `/messages/${messageId}/attachments`;
+						const endpoint = requestPath`/messages/${messageId}/attachments`;
 						if (returnAll) {
 							responseData = await microsoftApiRequestAllItems.call(
 								this,
@@ -894,10 +906,10 @@ export class MicrosoftOutlookV1 implements INodeType {
 							displayName,
 						};
 
-						let endpoint = '/mailFolders';
+						let endpoint = requestPath`/mailFolders`;
 
 						if (folderType === 'searchFolder') {
-							endpoint = '/mailFolders/searchfolders/childFolders';
+							endpoint = requestPath`/mailFolders/searchfolders/childFolders`;
 							const includeNestedFolders = this.getNodeParameter('includeNestedFolders', i);
 							const sourceFolderIds = this.getNodeParameter('sourceFolderIds', i);
 							const filterQuery = this.getNodeParameter('filterQuery', i);
@@ -928,7 +940,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'DELETE',
-							`/mailFolders/${folderId}`,
+							requestPath`/mailFolders/${folderId}`,
 						);
 						returnData.push({ success: true });
 					} catch (error) {
@@ -957,7 +969,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'GET',
-							`/mailFolders/${folderId}`,
+							requestPath`/mailFolders/${folderId}`,
 							{},
 							qs,
 						);
@@ -991,13 +1003,19 @@ export class MicrosoftOutlookV1 implements INodeType {
 								this,
 								'value',
 								'GET',
-								'/mailFolders',
+								requestPath`/mailFolders`,
 								{},
 								qs,
 							);
 						} else {
 							qs.$top = this.getNodeParameter('limit', i);
-							responseData = await microsoftApiRequest.call(this, 'GET', '/mailFolders', {}, qs);
+							responseData = await microsoftApiRequest.call(
+								this,
+								'GET',
+								requestPath`/mailFolders`,
+								{},
+								qs,
+							);
 							responseData = responseData.value;
 						}
 						returnData.push.apply(returnData, responseData as IDataObject[]);
@@ -1031,7 +1049,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 								this,
 								'value',
 								'GET',
-								`/mailFolders/${folderId}/childFolders`,
+								requestPath`/mailFolders/${folderId}/childFolders`,
 								qs,
 							);
 						} else {
@@ -1039,7 +1057,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 							responseData = await microsoftApiRequest.call(
 								this,
 								'GET',
-								`/mailFolders/${folderId}/childFolders`,
+								requestPath`/mailFolders/${folderId}/childFolders`,
 								undefined,
 								qs,
 							);
@@ -1069,7 +1087,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 						responseData = await microsoftApiRequest.call(
 							this,
 							'PATCH',
-							`/mailFolders/${folderId}`,
+							requestPath`/mailFolders/${folderId}`,
 							body,
 						);
 						returnData.push(responseData as IDataObject);
@@ -1100,7 +1118,7 @@ export class MicrosoftOutlookV1 implements INodeType {
 							qs.$filter = additionalFields.filter;
 						}
 
-						const endpoint = `/mailFolders/${folderId}/messages`;
+						const endpoint = requestPath`/mailFolders/${folderId}/messages`;
 						if (returnAll) {
 							responseData = await microsoftApiRequestAllItems.call(
 								this,

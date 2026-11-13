@@ -7,6 +7,13 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
+import {
+	assertParamIsString,
+	NodeConnectionTypes,
+	NodeOperationError,
+	requestPath,
+} from 'n8n-workflow';
+
 import { linkedInApiRequest } from './GenericFunctions';
 import { postFields, postOperations } from './PostDescription';
 
@@ -22,8 +29,18 @@ export class LinkedIn implements INodeType {
 		defaults: {
 			name: 'LinkedIn',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		builderHint: {
+			searchHint: 'LinkedIn API does not support scraping profiles or leads.',
+			relatedNodes: [
+				{
+					nodeType: 'n8n-nodes-base.phantombuster',
+					relationHint: 'For LinkedIn lead scraping and data extraction',
+				},
+			],
+		},
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'linkedInOAuth2Api',
@@ -86,11 +103,11 @@ export class LinkedIn implements INodeType {
 			// https://docs.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/sign-in-with-linkedin
 			async getPersonUrn(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const authentication = this.getNodeParameter('authentication', 0);
-				let endpoint = '/me';
+				let endpoint = requestPath`/v2/me`;
 				if (authentication === 'standard') {
 					const { legacy } = await this.getCredentials('linkedInOAuth2Api');
 					if (!legacy) {
-						endpoint = '/v2/userinfo';
+						endpoint = requestPath`/v2/userinfo`;
 					}
 				}
 				const person = await linkedInApiRequest.call(this, 'GET', endpoint, {});
@@ -121,10 +138,21 @@ export class LinkedIn implements INodeType {
 			try {
 				if (resource === 'post') {
 					if (operation === 'create') {
-						const text = this.getNodeParameter('text', i) as string;
+						let text = this.getNodeParameter('text', i);
+						assertParamIsString('text', text, this.getNode());
+						if (text.trim() === '') {
+							throw new NodeOperationError(
+								this.getNode(),
+								'The Text field is empty. Enter text to publish the post.',
+								{ itemIndex: i, level: 'info' },
+							);
+						}
 						const shareMediaCategory = this.getNodeParameter('shareMediaCategory', i) as string;
 						const postAs = this.getNodeParameter('postAs', i) as string;
 						const additionalFields = this.getNodeParameter('additionalFields', i);
+
+						// LinkedIn uses "little text" https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/little-text-format?view=li-lms-2024-06
+						text = text.replace(/[\(*\)\[\]\{\}<>@|~_]/gm, (char) => '\\' + char);
 
 						let authorUrn = '';
 						let visibility = 'PUBLIC';
@@ -167,16 +195,27 @@ export class LinkedIn implements INodeType {
 							const registerObject = await linkedInApiRequest.call(
 								this,
 								'POST',
-								'/images?action=initializeUpload',
+								requestPath`/images?action=initializeUpload`,
 								registerRequest,
 							);
 
 							const binaryPropertyName = this.getNodeParameter('binaryPropertyName', i);
-							this.helpers.assertBinaryData(i, binaryPropertyName);
+							const imageMetadata = this.helpers.assertBinaryData(i, binaryPropertyName);
 
 							const buffer = await this.helpers.getBinaryDataBuffer(i, binaryPropertyName);
 							const { uploadUrl, image } = registerObject.value;
-							await linkedInApiRequest.call(this, 'POST', uploadUrl as string, buffer, true);
+
+							const headers = {};
+							Object.assign(headers, { 'Content-Type': imageMetadata.mimeType });
+
+							await linkedInApiRequest.call(
+								this,
+								'POST',
+								uploadUrl as string,
+								buffer,
+								true,
+								headers,
+							);
 
 							const imageBody = {
 								content: {
@@ -220,16 +259,27 @@ export class LinkedIn implements INodeType {
 								const registerObject = await linkedInApiRequest.call(
 									this,
 									'POST',
-									'/images?action=initializeUpload',
+									requestPath`/images?action=initializeUpload`,
 									registerRequest,
 								);
 
 								const binaryPropertyName = additionalFields.thumbnailBinaryPropertyName as string;
-								this.helpers.assertBinaryData(i, binaryPropertyName);
+								const imageMetadata = this.helpers.assertBinaryData(i, binaryPropertyName);
 
 								const buffer = await this.helpers.getBinaryDataBuffer(i, binaryPropertyName);
 								const { uploadUrl, image } = registerObject.value;
-								await linkedInApiRequest.call(this, 'POST', uploadUrl as string, buffer, true);
+
+								const headers = {};
+								Object.assign(headers, { 'Content-Type': imageMetadata.mimeType });
+
+								await linkedInApiRequest.call(
+									this,
+									'POST',
+									uploadUrl as string,
+									buffer,
+									true,
+									headers,
+								);
 								Object.assign(articleBody.content.article, { thumbnail: image });
 							}
 
@@ -242,9 +292,11 @@ export class LinkedIn implements INodeType {
 								delete body.title;
 							}
 						} else {
-							Object.assign(body, { commentary: text });
+							Object.assign(body, {
+								commentary: text,
+							});
 						}
-						const endpoint = '/posts';
+						const endpoint = requestPath`/posts`;
 						responseData = await linkedInApiRequest.call(this, 'POST', endpoint, body);
 					}
 				}

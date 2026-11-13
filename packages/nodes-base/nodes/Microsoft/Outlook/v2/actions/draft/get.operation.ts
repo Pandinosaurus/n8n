@@ -4,10 +4,13 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
+
+import { draftRLC } from '../../descriptions';
 import { messageFields, simplifyOutputMessages } from '../../helpers/utils';
 import { downloadAttachments, microsoftApiRequest } from '../../transport';
-import { draftRLC } from '../../descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 export const properties: INodeProperties[] = [
 	draftRLC,
@@ -48,7 +51,7 @@ export const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -105,7 +108,14 @@ export async function execute(this: IExecuteFunctions, index: number) {
 			'id,conversationId,subject,bodyPreview,from,toRecipients,categories,hasAttachments';
 	}
 
-	responseData = await microsoftApiRequest.call(this, 'GET', `/messages/${draftId}`, undefined, qs);
+	responseData = await microsoftApiRequest.call(
+		this,
+		'GET',
+		requestPath`/messages/${draftId}`,
+		index,
+		undefined,
+		qs,
+	);
 
 	if (output === 'simple') {
 		responseData = simplifyOutputMessages([responseData as IDataObject]);
@@ -115,7 +125,12 @@ export async function execute(this: IExecuteFunctions, index: number) {
 
 	if (options.downloadAttachments) {
 		const prefix = (options.attachmentsPrefix as string) || 'attachment_';
-		executionData = await downloadAttachments.call(this, responseData as IDataObject, prefix);
+		executionData = await downloadAttachments.call(
+			this,
+			responseData as IDataObject,
+			prefix,
+			index,
+		);
 	} else {
 		executionData = this.helpers.constructExecutionMetaData(
 			this.helpers.returnJsonArray(responseData as IDataObject),

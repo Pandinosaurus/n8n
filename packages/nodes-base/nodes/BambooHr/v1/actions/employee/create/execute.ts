@@ -1,8 +1,8 @@
-import type { IExecuteFunctions, IDataObject, INodeExecutionData } from 'n8n-workflow';
-
-import moment from 'moment-timezone';
-
 import { capitalCase } from 'change-case';
+import moment from 'moment-timezone';
+import type { IExecuteFunctions, IDataObject, INodeExecutionData } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
 import { apiRequest } from '../../../transport';
 
 export async function create(
@@ -11,7 +11,7 @@ export async function create(
 ): Promise<INodeExecutionData[]> {
 	const body: IDataObject = {};
 	const requestMethod = 'POST';
-	const endpoint = 'employees';
+	const endpoint = requestPath`employees`;
 
 	//body parameters
 	body.firstName = this.getNodeParameter('firstName', index) as string;

@@ -1,13 +1,15 @@
+import flow from 'lodash/flow';
+import omit from 'lodash/omit';
 import type {
 	IDataObject,
 	IExecuteFunctions,
 	IHttpRequestMethods,
 	ILoadOptionsFunctions,
 	IRequestOptions,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-
-import flow from 'lodash/flow';
-import omit from 'lodash/omit';
+import { requestPath, requestUrl } from 'n8n-workflow';
 
 import type {
 	AllFieldsUi,
@@ -22,15 +24,15 @@ import type {
 export async function actionNetworkApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
 ) {
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		method,
 		body,
 		qs,
-		uri: `https://actionnetwork.org/api/v2${endpoint}`,
+		uri: requestUrl`https://actionnetwork.org/api/v2${endpoint}`,
 		json: true,
 	};
 
@@ -64,7 +66,7 @@ const toItemsKey = (endpoint: string) => {
 export async function handleListing(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
 	options?: { returnAll: true },
@@ -78,16 +80,10 @@ export async function handleListing(
 	const returnAll = options?.returnAll ?? (this.getNodeParameter('returnAll', 0, false) as boolean);
 	const limit = this.getNodeParameter('limit', 0, 0) as number;
 
-	const itemsKey = toItemsKey(endpoint);
+	const itemsKey = toItemsKey(endpoint.value);
 
 	do {
-		responseData = await actionNetworkApiRequest.call(
-			this,
-			method as IHttpRequestMethods,
-			endpoint,
-			body,
-			qs,
-		);
+		responseData = await actionNetworkApiRequest.call(this, method, endpoint, body, qs);
 		const items = responseData._embedded[itemsKey];
 		returnData.push(...(items as IDataObject[]));
 
@@ -228,7 +224,14 @@ export const adjustEventPayload = adjustLocation;
 // ----------------------------------------
 
 async function loadResource(this: ILoadOptionsFunctions, resource: string) {
-	return await handleListing.call(this, 'GET', `/${resource}`, {}, {}, { returnAll: true });
+	return await handleListing.call(
+		this,
+		'GET',
+		requestPath`/${resource}`,
+		{},
+		{},
+		{ returnAll: true },
+	);
 }
 
 export const resourceLoaders = {
@@ -242,7 +245,7 @@ export const resourceLoaders = {
 
 	async getTaggings(this: ILoadOptionsFunctions) {
 		const tagId = this.getNodeParameter('tagId', 0);
-		const endpoint = `/tags/${tagId}/taggings`;
+		const endpoint = requestPath`/tags/${tagId}/taggings`;
 
 		// two-resource endpoint, so direct call
 		const taggings = (await handleListing.call(

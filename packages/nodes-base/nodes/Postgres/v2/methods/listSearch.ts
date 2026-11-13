@@ -1,16 +1,19 @@
 import type { ILoadOptionsFunctions, INodeListSearchResult } from 'n8n-workflow';
 
-import { configurePostgres } from '../transport';
+import { configurePostgres } from '../../transport';
 import type { PostgresNodeCredentials } from '../helpers/interfaces';
+import { parseParameterLoadingError } from '../helpers/utils';
 
 export async function schemaSearch(this: ILoadOptionsFunctions): Promise<INodeListSearchResult> {
-	const credentials = (await this.getCredentials('postgres')) as PostgresNodeCredentials;
-	const options = { nodeVersion: this.getNode().typeVersion };
-
-	const { db, sshClient } = await configurePostgres(credentials, options);
-
 	try {
-		const response = await db.any('SELECT schema_name FROM information_schema.schemata');
+		const credentials = await this.getCredentials<PostgresNodeCredentials>('postgres');
+		const options = { nodeVersion: this.getNode().typeVersion };
+
+		const { db } = await configurePostgres.call(this, credentials, options);
+
+		const response = await db.any(
+			'SELECT schema_name FROM information_schema.schemata ORDER BY schema_name',
+		);
 
 		return {
 			results: response.map((schema) => ({
@@ -19,27 +22,23 @@ export async function schemaSearch(this: ILoadOptionsFunctions): Promise<INodeLi
 			})),
 		};
 	} catch (error) {
-		throw error;
-	} finally {
-		if (sshClient) {
-			sshClient.end();
-		}
-		if (!db.$pool.ending) await db.$pool.end();
+		throw parseParameterLoadingError(this.getNode(), error);
 	}
 }
+
 export async function tableSearch(this: ILoadOptionsFunctions): Promise<INodeListSearchResult> {
-	const credentials = (await this.getCredentials('postgres')) as PostgresNodeCredentials;
-	const options = { nodeVersion: this.getNode().typeVersion };
-
-	const { db, sshClient } = await configurePostgres(credentials, options);
-
-	const schema = this.getNodeParameter('schema', 0, {
-		extractValue: true,
-	}) as string;
-
 	try {
+		const credentials = await this.getCredentials<PostgresNodeCredentials>('postgres');
+		const options = { nodeVersion: this.getNode().typeVersion };
+
+		const { db } = await configurePostgres.call(this, credentials, options);
+
+		const schema = this.getNodeParameter('schema', 0, {
+			extractValue: true,
+		}) as string;
+
 		const response = await db.any(
-			'SELECT table_name FROM information_schema.tables WHERE table_schema=$1',
+			'SELECT table_name FROM information_schema.tables WHERE table_schema=$1 ORDER BY table_name',
 			[schema],
 		);
 
@@ -50,11 +49,6 @@ export async function tableSearch(this: ILoadOptionsFunctions): Promise<INodeLis
 			})),
 		};
 	} catch (error) {
-		throw error;
-	} finally {
-		if (sshClient) {
-			sshClient.end();
-		}
-		if (!db.$pool.ending) await db.$pool.end();
+		throw parseParameterLoadingError(this.getNode(), error);
 	}
 }

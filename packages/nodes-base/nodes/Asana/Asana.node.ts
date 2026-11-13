@@ -1,3 +1,5 @@
+import { snakeCase } from 'change-case';
+import moment from 'moment-timezone';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -8,11 +10,8 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeApiError, NodeOperationError, requestPath } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
-
-import { snakeCase } from 'change-case';
 import {
 	asanaApiRequest,
 	asanaApiRequestAllItems,
@@ -33,8 +32,9 @@ export class Asana implements INodeType {
 		defaults: {
 			name: 'Asana',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'asanaApi',
@@ -202,7 +202,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'Set Assignee on the subtask. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Set Assignee on the subtask. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Assignee Status',
@@ -269,7 +269,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'The workspace to create the subtask in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The workspace to create the subtask in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 				],
 			},
@@ -343,7 +343,7 @@ export class Asana implements INodeType {
 						},
 						default: ['gid', 'name', 'resource_type'],
 						description:
-							'Defines fields to return. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Defines fields to return. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Pretty',
@@ -434,7 +434,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The workspace to create the task in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The workspace to create the task in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Name',
@@ -515,7 +515,7 @@ export class Asana implements INodeType {
 				},
 				typeOptions: {
 					minValue: 1,
-					maxValue: 500,
+					maxValue: 100,
 				},
 				default: 100,
 				description: 'Max number of results to return',
@@ -543,7 +543,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'The assignee to filter tasks on. Note: If you specify assignee, you must also specify the workspace to filter on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The assignee to filter tasks on. Note: If you specify assignee, you must also specify the workspace to filter on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Field Names or IDs',
@@ -554,7 +554,7 @@ export class Asana implements INodeType {
 						},
 						default: ['gid', 'name', 'resource_type'],
 						description:
-							'Defines fields to return. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Defines fields to return. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Pretty',
@@ -572,7 +572,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'The project to filter tasks on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The project to filter tasks on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Section Name or ID',
@@ -583,7 +583,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'The section to filter tasks on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The section to filter tasks on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Workspace Name or ID',
@@ -594,7 +594,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'The workspace to filter tasks on. Note: If you specify workspace, you must also specify the assignee to filter on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The workspace to filter tasks on. Note: If you specify workspace, you must also specify the assignee to filter on. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Completed Since',
@@ -649,7 +649,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'Project to show the sections of. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Project to show the sections of. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Section Name or ID',
@@ -669,7 +669,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The Section to move the task to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The Section to move the task to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 
 			// ----------------------------------
@@ -710,7 +710,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The workspace in which the task is searched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The workspace in which the task is searched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Filters',
@@ -771,7 +771,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'Set Assignee on the task. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Set Assignee on the task. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Assignee Status',
@@ -850,7 +850,7 @@ export class Asana implements INodeType {
 						},
 						default: [],
 						description:
-							'The project to filter tasks on. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The project to filter tasks on. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 				],
 			},
@@ -1052,7 +1052,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The project where the task will be added. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The project where the task will be added. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Additional Fields',
@@ -1128,7 +1128,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The project where the task will be removed from. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The project where the task will be removed from. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			// ----------------------------------
 			//         taskTag
@@ -1196,7 +1196,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The tag that should be added. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The tag that should be added. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 
 			// ----------------------------------
@@ -1234,7 +1234,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The tag that should be added. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The tag that should be added. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 
 			// ----------------------------------
@@ -1306,7 +1306,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The workspace in which to get users. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The workspace in which to get users. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 
 			// ----------------------------------
@@ -1391,7 +1391,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The workspace to create the project in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The workspace to create the project in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Team Name or ID',
@@ -1409,7 +1409,7 @@ export class Asana implements INodeType {
 				},
 				default: '',
 				description:
-					'The team this project will be assigned to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The team this project will be assigned to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Additional Fields',
@@ -1447,6 +1447,27 @@ export class Asana implements INodeType {
 						type: 'string',
 						default: '',
 						description: 'Basic description or notes for the project',
+					},
+					{
+						displayName: 'Privacy Setting',
+						name: 'privacy_setting',
+						type: 'options',
+						options: [
+							{
+								name: 'Private',
+								value: 'private',
+							},
+							{
+								name: 'Private to Team',
+								value: 'private_to_team',
+							},
+							{
+								name: 'Public to Workspace',
+								value: 'public_to_workspace',
+							},
+						],
+						default: 'private',
+						description: 'The privacy setting of the project',
 					},
 				],
 			},
@@ -1503,7 +1524,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The workspace in which to get users. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The workspace in which to get users. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Return All',
@@ -1531,7 +1552,7 @@ export class Asana implements INodeType {
 				},
 				typeOptions: {
 					minValue: 1,
-					maxValue: 500,
+					maxValue: 100,
 				},
 				default: 100,
 				description: 'Max number of results to return',
@@ -1568,7 +1589,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'The new name of the task. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The new name of the task. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 				],
 			},
@@ -1592,7 +1613,7 @@ export class Asana implements INodeType {
 					},
 				},
 				description:
-					'The workspace in which to get users. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The workspace in which to get users. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Project ID',
@@ -1660,6 +1681,27 @@ export class Asana implements INodeType {
 						description: 'The new assignee/cardinal for this project',
 					},
 					{
+						displayName: 'Privacy Setting',
+						name: 'privacy_setting',
+						type: 'options',
+						options: [
+							{
+								name: 'Private',
+								value: 'private',
+							},
+							{
+								name: 'Private to Team',
+								value: 'private_to_team',
+							},
+							{
+								name: 'Public to Workspace',
+								value: 'public_to_workspace',
+							},
+						],
+						default: 'private',
+						description: 'The privacy setting of the project',
+					},
+					{
 						displayName: 'Team Name or ID',
 						name: 'team',
 						type: 'options',
@@ -1669,7 +1711,7 @@ export class Asana implements INodeType {
 						},
 						default: '',
 						description:
-							'The team this project will be assigned to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'The team this project will be assigned to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 				],
 			},
@@ -1685,7 +1727,7 @@ export class Asana implements INodeType {
 			// Get all the available projects to display them to user so that they can be
 			// selected easily
 			async getProjects(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const responseData = await asanaApiRequest.call(this, 'GET', '/projects', {});
+				const responseData = await asanaApiRequest.call(this, 'GET', requestPath`/projects`, {});
 
 				if (responseData.data === undefined) {
 					throw new NodeApiError(this.getNode(), responseData as JsonObject, {
@@ -1728,7 +1770,7 @@ export class Asana implements INodeType {
 				const responseData = await asanaApiRequest.call(
 					this,
 					'GET',
-					`/projects/${projectId}/sections`,
+					requestPath`/projects/${projectId}/sections`,
 					{},
 				);
 
@@ -1770,7 +1812,12 @@ export class Asana implements INodeType {
 			async getTeams(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const workspaceId = this.getCurrentNodeParameter('workspace');
 
-				const workspace = await asanaApiRequest.call(this, 'GET', `/workspaces/${workspaceId}`, {});
+				const workspace = await asanaApiRequest.call(
+					this,
+					'GET',
+					requestPath`/workspaces/${workspaceId}`,
+					{},
+				);
 
 				// if the workspace selected it's not an organization then error as they endpoint
 				// to retrieve the teams from an organization just work with workspaces that are an organization
@@ -1785,7 +1832,7 @@ export class Asana implements INodeType {
 				const responseData = await asanaApiRequestAllItems.call(
 					this,
 					'GET',
-					`/organizations/${workspaceId}/teams`,
+					requestPath`/organizations/${workspaceId}/teams`,
 					{},
 				);
 
@@ -1822,7 +1869,7 @@ export class Asana implements INodeType {
 				const taskId = this.getNodeParameter('id') as string;
 				let taskData;
 				try {
-					taskData = await asanaApiRequest.call(this, 'GET', `/tasks/${taskId}`, {});
+					taskData = await asanaApiRequest.call(this, 'GET', requestPath`/tasks/${taskId}`, {});
 				} catch (error) {
 					throw new NodeApiError(this.getNode(), error as JsonObject, {
 						message: `Could not find task with id "${taskId}" so tags could not be loaded.`,
@@ -1830,7 +1877,13 @@ export class Asana implements INodeType {
 				}
 
 				const workspace = taskData.data.workspace.gid;
-				const responseData = await asanaApiRequest.call(this, 'GET', '/tags', {}, { workspace });
+				const responseData = await asanaApiRequest.call(
+					this,
+					'GET',
+					requestPath`/tags`,
+					{},
+					{ workspace },
+				);
 
 				if (responseData.data === undefined) {
 					throw new NodeApiError(this.getNode(), responseData as JsonObject, {
@@ -1867,7 +1920,7 @@ export class Asana implements INodeType {
 			// Get all users to display them to user so that they can be selected easily
 			// See: https://developers.asana.com/docs/get-multiple-users
 			async getUsers(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const responseData = await asanaApiRequest.call(this, 'GET', '/users', {});
+				const responseData = await asanaApiRequest.call(this, 'GET', requestPath`/users`, {});
 
 				if (responseData.data === undefined) {
 					throw new NodeApiError(this.getNode(), responseData as JsonObject, {
@@ -1938,7 +1991,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'POST',
-							`/tasks/${taskId}/subtasks`,
+							requestPath`/tasks/${taskId}/subtasks`,
 							body,
 							qs,
 						);
@@ -1972,7 +2025,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'GET',
-							`/tasks/${taskId}/subtasks`,
+							requestPath`/tasks/${taskId}/subtasks`,
 							body,
 							qs,
 						);
@@ -1998,7 +2051,7 @@ export class Asana implements INodeType {
 						const otherProperties = this.getNodeParameter('otherProperties', i) as IDataObject;
 						Object.assign(body, otherProperties);
 
-						responseData = await asanaApiRequest.call(this, 'POST', '/tasks', body, qs);
+						responseData = await asanaApiRequest.call(this, 'POST', requestPath`/tasks`, body, qs);
 
 						responseData = responseData.data;
 					} else if (operation === 'delete') {
@@ -2009,7 +2062,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'DELETE',
-							`/tasks/${this.getNodeParameter('id', i) as string}`,
+							requestPath`/tasks/${this.getNodeParameter('id', i) as string}`,
 							body,
 							qs,
 						);
@@ -2023,7 +2076,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'GET',
-							`/tasks/${this.getNodeParameter('id', i) as string}`,
+							requestPath`/tasks/${this.getNodeParameter('id', i) as string}`,
 							body,
 							qs,
 						);
@@ -2059,11 +2112,17 @@ export class Asana implements INodeType {
 						}
 
 						if (returnAll) {
-							responseData = await asanaApiRequestAllItems.call(this, 'GET', '/tasks', body, qs);
+							responseData = await asanaApiRequestAllItems.call(
+								this,
+								'GET',
+								requestPath`/tasks`,
+								body,
+								qs,
+							);
 						} else {
 							qs.limit = this.getNodeParameter('limit', i);
 
-							responseData = await asanaApiRequest.call(this, 'GET', '/tasks', body, qs);
+							responseData = await asanaApiRequest.call(this, 'GET', requestPath`/tasks`, body, qs);
 
 							responseData = responseData.data;
 						}
@@ -2081,7 +2140,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'POST',
-							`/sections/${sectionId}/addTask`,
+							requestPath`/sections/${sectionId}/addTask`,
 							body,
 							qs,
 						);
@@ -2098,7 +2157,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'PUT',
-							`/tasks/${this.getNodeParameter('id', i) as string}`,
+							requestPath`/tasks/${this.getNodeParameter('id', i) as string}`,
 							body,
 							qs,
 						);
@@ -2120,7 +2179,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'GET',
-							`/workspaces/${workspaceId}/tasks/search`,
+							requestPath`/workspaces/${workspaceId}/tasks/search`,
 							body,
 							qs,
 						);
@@ -2151,7 +2210,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'POST',
-							`/tasks/${taskId}/stories`,
+							requestPath`/tasks/${taskId}/stories`,
 							body,
 							qs,
 						);
@@ -2169,7 +2228,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'DELETE',
-							`/stories/${commentId}`,
+							requestPath`/stories/${commentId}`,
 							body,
 							qs,
 						);
@@ -2190,7 +2249,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'POST',
-							`/tasks/${taskId}/addTag`,
+							requestPath`/tasks/${taskId}/addTag`,
 							body,
 							qs,
 						);
@@ -2210,7 +2269,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'POST',
-							`/tasks/${taskId}/removeTag`,
+							requestPath`/tasks/${taskId}/removeTag`,
 							body,
 							qs,
 						);
@@ -2235,7 +2294,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'POST',
-							`/tasks/${taskId}/addProject`,
+							requestPath`/tasks/${taskId}/addProject`,
 							body,
 							qs,
 						);
@@ -2255,7 +2314,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'POST',
-							`/tasks/${taskId}/removeProject`,
+							requestPath`/tasks/${taskId}/removeProject`,
 							body,
 							qs,
 						);
@@ -2271,7 +2330,13 @@ export class Asana implements INodeType {
 
 						const userId = this.getNodeParameter('userId', i) as string;
 
-						responseData = await asanaApiRequest.call(this, 'GET', `/users/${userId}`, body, qs);
+						responseData = await asanaApiRequest.call(
+							this,
+							'GET',
+							requestPath`/users/${userId}`,
+							body,
+							qs,
+						);
 						responseData = responseData.data;
 					} else if (operation === 'getAll') {
 						// ----------------------------------
@@ -2283,7 +2348,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'GET',
-							`/workspaces/${workspaceId}/users`,
+							requestPath`/workspaces/${workspaceId}/users`,
 							body,
 							qs,
 						);
@@ -2314,7 +2379,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'POST',
-							`/teams/${teamId}/projects`,
+							requestPath`/teams/${teamId}/projects`,
 							body,
 							qs,
 						);
@@ -2327,7 +2392,13 @@ export class Asana implements INodeType {
 						// ----------------------------------
 						const projectId = this.getNodeParameter('id', i) as string;
 
-						await asanaApiRequest.call(this, 'DELETE', `/projects/${projectId}`, body, qs);
+						await asanaApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/projects/${projectId}`,
+							body,
+							qs,
+						);
 
 						responseData = { success: true };
 					}
@@ -2341,7 +2412,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'GET',
-							`/projects/${projectId}`,
+							requestPath`/projects/${projectId}`,
 							body,
 							qs,
 						);
@@ -2368,11 +2439,23 @@ export class Asana implements INodeType {
 						}
 
 						if (returnAll) {
-							responseData = await asanaApiRequestAllItems.call(this, 'GET', '/projects', body, qs);
+							responseData = await asanaApiRequestAllItems.call(
+								this,
+								'GET',
+								requestPath`/projects`,
+								body,
+								qs,
+							);
 						} else {
 							qs.limit = this.getNodeParameter('limit', i);
 
-							responseData = await asanaApiRequest.call(this, 'GET', '/projects', body, qs);
+							responseData = await asanaApiRequest.call(
+								this,
+								'GET',
+								requestPath`/projects`,
+								body,
+								qs,
+							);
 
 							responseData = responseData.data;
 						}
@@ -2408,7 +2491,7 @@ export class Asana implements INodeType {
 						responseData = await asanaApiRequest.call(
 							this,
 							'PUT',
-							`/projects/${projectId}`,
+							requestPath`/projects/${projectId}`,
 							body,
 							qs,
 						);
@@ -2425,8 +2508,15 @@ export class Asana implements INodeType {
 					),
 				);
 			} catch (error) {
+				if (error instanceof NodeApiError && error.description) {
+					error.message = error.description;
+				}
 				if (this.continueOnFail()) {
-					returnData.push({ error: error.message });
+					const executionErrorData = this.helpers.constructExecutionMetaData(
+						this.helpers.returnJsonArray({ error: error.message }),
+						{ itemData: { item: i } },
+					);
+					returnData.push(...executionErrorData);
 					continue;
 				}
 				throw error;

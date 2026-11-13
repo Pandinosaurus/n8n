@@ -1,3 +1,4 @@
+import { snakeCase } from 'change-case';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -6,19 +7,20 @@ import type {
 	IOAuth2Options,
 	IHttpRequestMethods,
 	IRequestOptions,
+	LegacyRequestOptions,
+	RequestPath,
 } from 'n8n-workflow';
-
-import { snakeCase } from 'change-case';
+import { requestUrl } from 'n8n-workflow';
 
 export async function shopifyApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},
 	uri?: string,
-	option: IDataObject = {},
+	option: Pick<IRequestOptions, 'resolveWithFullResponse'> = {},
 ): Promise<any> {
 	const authenticationMethod = this.getNodeParameter('authentication', 0, 'oAuth2') as string;
 
@@ -35,10 +37,12 @@ export async function shopifyApiRequest(
 		credentials = await this.getCredentials('shopifyOAuth2Api');
 	}
 
-	const options: IRequestOptions = {
+	const options: LegacyRequestOptions = {
 		method,
 		qs: query,
-		uri: uri || `https://${credentials.shopSubdomain}.myshopify.com/admin/api/2019-10${resource}`,
+		uri:
+			uri ||
+			requestUrl`https://${credentials.shopSubdomain}.myshopify.com/admin/api/2024-07/${resource}`,
 		body,
 		json: true,
 	};
@@ -66,7 +70,7 @@ export async function shopifyApiRequest(
 
 	// Only limit and fields are allowed for page_info links
 	// https://shopify.dev/docs/api/usage/pagination-rest#limitations-and-considerations
-	if (uri && uri.includes('page_info')) {
+	if (uri?.includes('page_info')) {
 		options.qs = {};
 
 		if (query.limit) {
@@ -87,7 +91,7 @@ export async function shopifyApiRequestAllItems(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},

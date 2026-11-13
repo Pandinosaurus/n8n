@@ -1,6 +1,12 @@
 import type { INodeProperties } from 'n8n-workflow';
 
 import { blocks } from './Blocks';
+import {
+	blockUrlExtractionRegexp,
+	blockUrlValidationRegexp,
+	idExtractionRegexp,
+	idValidationRegexp,
+} from '../constants';
 
 //RLC with fixed regex for blockId
 const blockIdRLC: INodeProperties = {
@@ -15,20 +21,19 @@ const blockIdRLC: INodeProperties = {
 			name: 'url',
 			type: 'string',
 			placeholder:
-				'e.g. https://www.notion.so/Block-Test-88888ccc303e4f44847f27d24bd7ad8e?pvs=4#c44444444444bbbbb4d32fdfdd84e',
+				'e.g. https://www.notion.com/Block-Test-88888ccc303e4f44847f27d24bd7ad8e?pvs=4#c44444444444bbbbb4d32fdfdd84e',
 			validation: [
 				{
 					type: 'regex',
 					properties: {
-						regex:
-							'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
+						regex: blockUrlValidationRegexp,
 						errorMessage: 'Not a valid Notion Block URL',
 					},
 				},
 			],
 			// extractValue: {
 			// 	type: 'regex',
-			// 	regex: 'https:\\/\\/www\\.notion\\.so\\/.+\\?pvs=[0-9]+#([a-f0-9]{2,})',
+			// 	regex: blockUrlExtractionRegexp,
 			// },
 		},
 		{
@@ -40,7 +45,7 @@ const blockIdRLC: INodeProperties = {
 				{
 					type: 'regex',
 					properties: {
-						regex: '[a-f0-9]{2,}',
+						regex: idValidationRegexp,
 						errorMessage: 'Not a valid Notion Block ID',
 					},
 				},
@@ -96,21 +101,19 @@ export const blockFields: INodeProperties[] = [
 				displayName: 'Link',
 				name: 'url',
 				type: 'string',
-				placeholder: 'https://www.notion.so/My-Page-b4eeb113e118403ba450af65ac25f0b9',
+				placeholder: 'https://www.notion.com/My-Page-b4eeb113e118403ba450af65ac25f0b9',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
+							regex: blockUrlValidationRegexp,
 							errorMessage: 'Not a valid Notion Block URL',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: blockUrlExtractionRegexp,
 				},
 			},
 			{
@@ -122,17 +125,16 @@ export const blockFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
+							regex: idValidationRegexp,
 							errorMessage: 'Not a valid Notion Block ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -171,21 +173,19 @@ export const blockFields: INodeProperties[] = [
 				displayName: 'Link',
 				name: 'url',
 				type: 'string',
-				placeholder: 'https://www.notion.so/My-Page-b4eeb113e118403ba450af65ac25f0b9',
+				placeholder: 'https://www.notion.com/My-Page-b4eeb113e118403ba450af65ac25f0b9',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
+							regex: blockUrlValidationRegexp,
 							errorMessage: 'Not a valid Notion Block URL',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: blockUrlExtractionRegexp,
 				},
 			},
 			{
@@ -197,17 +197,16 @@ export const blockFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
+							regex: idValidationRegexp,
 							errorMessage: 'Not a valid Notion Block ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -257,7 +256,6 @@ export const blockFields: INodeProperties[] = [
 		},
 		typeOptions: {
 			minValue: 1,
-			maxValue: 100,
 		},
 		default: 50,
 		description: 'Max number of results to return',
@@ -288,5 +286,9 @@ export const blockFields: INodeProperties[] = [
 			},
 		},
 		default: true,
+		builderHint: {
+			propertyHint:
+				'When true, adds root_id and removes created_time, last_edited_time, and created_by. Child page and child database titles become content. A block-type text array becomes content by joining its plain_text values. A rich_text-only block keeps its nested data, so content is not guaranteed. When false, keeps the native block fields. Match downstream expressions and verification output fixtures to the block type and output mode.',
+		},
 	},
 ];

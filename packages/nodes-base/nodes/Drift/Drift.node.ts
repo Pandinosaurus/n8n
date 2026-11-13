@@ -5,16 +5,18 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { driftApiRequest } from './GenericFunctions';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
+
 import { contactFields, contactOperations } from './ContactDescription';
 import type { IContact } from './ContactInterface';
+import { driftApiRequest } from './GenericFunctions';
 
 export class Drift implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Drift',
 		name: 'drift',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
-		icon: 'file:drift.png',
+
+		icon: { light: 'file:drift.svg', dark: 'file:drift.dark.svg' },
 		group: ['output'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -22,8 +24,9 @@ export class Drift implements INodeType {
 		defaults: {
 			name: 'Drift',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'driftApi',
@@ -102,7 +105,7 @@ export class Drift implements INodeType {
 						if (additionalFields.phone) {
 							body.phone = additionalFields.phone as string;
 						}
-						responseData = await driftApiRequest.call(this, 'POST', '/contacts', {
+						responseData = await driftApiRequest.call(this, 'POST', requestPath`/contacts`, {
 							attributes: body,
 						});
 						responseData = responseData.data;
@@ -121,26 +124,43 @@ export class Drift implements INodeType {
 						if (updateFields.email) {
 							body.email = updateFields.email as string;
 						}
-						responseData = await driftApiRequest.call(this, 'PATCH', `/contacts/${contactId}`, {
-							attributes: body,
-						});
+						responseData = await driftApiRequest.call(
+							this,
+							'PATCH',
+							requestPath`/contacts/${contactId}`,
+							{
+								attributes: body,
+							},
+						);
 						responseData = responseData.data;
 					}
 					//https://devdocs.drift.com/docs/retrieving-contact
 					if (operation === 'get') {
 						const contactId = this.getNodeParameter('contactId', i) as string;
-						responseData = await driftApiRequest.call(this, 'GET', `/contacts/${contactId}`);
+						responseData = await driftApiRequest.call(
+							this,
+							'GET',
+							requestPath`/contacts/${contactId}`,
+						);
 						responseData = responseData.data;
 					}
 					//https://devdocs.drift.com/docs/listing-custom-attributes
 					if (operation === 'getCustomAttributes') {
-						responseData = await driftApiRequest.call(this, 'GET', '/contacts/attributes');
+						responseData = await driftApiRequest.call(
+							this,
+							'GET',
+							requestPath`/contacts/attributes`,
+						);
 						responseData = responseData.data.properties;
 					}
 					//https://devdocs.drift.com/docs/removing-a-contact
 					if (operation === 'delete') {
 						const contactId = this.getNodeParameter('contactId', i) as string;
-						responseData = await driftApiRequest.call(this, 'DELETE', `/contacts/${contactId}`);
+						responseData = await driftApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/contacts/${contactId}`,
+						);
 						responseData = { success: true };
 					}
 				}

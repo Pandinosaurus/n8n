@@ -1,8 +1,9 @@
 import type { IDataObject, ILoadOptionsFunctions, INodePropertyOptions } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
+
 import { GoogleSheet } from '../helpers/GoogleSheet';
-import { getSpreadsheetId } from '../helpers/GoogleSheets.utils';
 import type { ResourceLocator } from '../helpers/GoogleSheets.types';
+import { getSpreadsheetId } from '../helpers/GoogleSheets.utils';
 
 export async function getSheets(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 	const documentId = this.getNodeParameter('documentId', 0) as IDataObject | null;
@@ -38,7 +39,7 @@ export async function getSheets(this: ILoadOptionsFunctions): Promise<INodePrope
 export async function getSheetHeaderRow(
 	this: ILoadOptionsFunctions,
 ): Promise<INodePropertyOptions[]> {
-	const documentId = this.getNodeParameter('documentId', 0) as IDataObject | null;
+	const documentId = this.getNodeParameter('documentId', null) as IDataObject | null;
 
 	if (!documentId) return [];
 
@@ -50,9 +51,13 @@ export async function getSheetHeaderRow(
 	const sheetWithinDocument = this.getNodeParameter('sheetName', undefined, {
 		extractValue: true,
 	}) as string;
-	const { mode: sheetMode } = this.getNodeParameter('sheetName', 0) as {
-		mode: ResourceLocator;
+	const { mode: sheetMode } = (this.getNodeParameter('sheetName') ?? { mode: null }) as {
+		mode: ResourceLocator | null;
 	};
+
+	if (!sheetMode) {
+		return [];
+	}
 
 	const { title: sheetName } = await sheet.spreadsheetGetSheet(
 		this.getNode(),

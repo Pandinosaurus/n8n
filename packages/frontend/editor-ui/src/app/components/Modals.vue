@@ -1,0 +1,613 @@
+<script setup lang="ts">
+import type { VariableModalOptions } from '@/features/settings/environments.ee/environments.types';
+import {
+	ABOUT_MODAL_KEY,
+	CHAT_EMBED_MODAL_KEY,
+	DUPLICATE_MODAL_KEY,
+	EXTERNAL_SECRETS_PROVIDER_MODAL_KEY,
+	SECRETS_PROVIDER_CONNECTION_MODAL_KEY,
+	DELETE_SECRETS_PROVIDER_MODAL_KEY,
+	FROM_AI_PARAMETERS_MODAL_KEY,
+	IMPORT_CURL_MODAL_KEY,
+	IMPORT_WORKFLOW_URL_MODAL_KEY,
+	VERSIONS_MODAL_KEY,
+	NEW_ASSISTANT_SESSION_MODAL,
+	NPS_SURVEY_MODAL_KEY,
+	SETUP_CREDENTIALS_MODAL_KEY,
+	WHATS_NEW_MODAL_KEY,
+	WORKFLOW_ACTIVATION_CONFLICTING_WEBHOOK_MODAL_KEY,
+	WORKFLOW_ACTIVE_MODAL_KEY,
+	WORKFLOW_DIFF_MODAL_KEY,
+	WORKFLOW_EXTRACTION_NAME_MODAL_KEY,
+	WORKFLOW_HISTORY_VERSION_UNPUBLISH,
+	WORKFLOW_HISTORY_NAME_VERSION_MODAL_KEY,
+	WORKFLOW_SETTINGS_MODAL_KEY,
+	WORKFLOW_SHARE_MODAL_KEY,
+	EXPERIMENT_TEMPLATE_RECO_V2_KEY,
+	EXPERIMENT_TEMPLATE_RECO_V3_KEY,
+	BINARY_DATA_VIEW_MODAL_KEY,
+	STOP_MANY_EXECUTIONS_MODAL_KEY,
+	ADD_EXECUTION_TO_DATASET_MODAL_KEY,
+	MIGRATE_WORKFLOW_MODAL_KEY,
+	WORKFLOW_DESCRIPTION_MODAL_KEY,
+	WORKFLOW_PUBLISH_MODAL_KEY,
+	WORKFLOW_HISTORY_PUBLISH_MODAL_KEY,
+	CREDENTIAL_RESOLVER_EDIT_MODAL_KEY,
+	AI_BUILDER_DIFF_MODAL_KEY,
+	AI_GATEWAY_TOP_UP_MODAL_KEY,
+	TRIAL_INTRO_MODAL_KEY,
+} from '@/app/constants';
+import {
+	ANNOTATION_TAGS_MANAGER_MODAL_KEY,
+	TAGS_MANAGER_MODAL_KEY,
+} from '@/features/shared/tags/tags.constants';
+import { DEBUG_PAYWALL_MODAL_KEY } from '@/features/execution/executions/executions.constants';
+import { VARIABLE_MODAL_KEY } from '@/features/settings/environments.ee/environments.constants';
+import {
+	CREDENTIAL_EDIT_MODAL_KEY,
+	CREDENTIAL_SELECT_MODAL_KEY,
+} from '@/features/credentials/credentials.constants';
+import {
+	DELETE_USER_MODAL_KEY,
+	INVITE_USER_MODAL_KEY,
+	PERSONALIZATION_MODAL_KEY,
+} from '@/features/settings/users/users.constants';
+import { COMMUNITY_PLUS_ENROLLMENT_MODAL } from '@/features/settings/usage/usage.constants';
+import {
+	DELETE_FOLDER_MODAL_KEY,
+	MOVE_FOLDER_MODAL_KEY,
+} from '@/features/core/folders/folders.constants';
+import {
+	SOURCE_CONTROL_PULL_MODAL_KEY,
+	SOURCE_CONTROL_PULL_RESULT_MODAL_KEY,
+	SOURCE_CONTROL_PUSH_MODAL_KEY,
+} from '@/features/integrations/sourceControl.ee/sourceControl.constants';
+import { PROJECT_MOVE_RESOURCE_MODAL } from '@/features/collaboration/projects/projects.constants';
+import {
+	COMMUNITY_PACKAGE_CONFIRM_MODAL_KEY,
+	COMMUNITY_PACKAGE_INSTALL_MODAL_KEY,
+} from '@/features/settings/communityNodes/communityNodes.constants';
+import { API_KEY_CREATE_OR_EDIT_MODAL_KEY } from '@/features/settings/apiKeys/apiKeys.constants';
+import type { ApiKeyWithRawValue } from '@n8n/api-types';
+import ModalRoot from '@/app/components/ModalRoot.vue';
+import NpsSurvey from '@/app/components/NpsSurvey.vue';
+import type { WorkflowVersionFormModalData } from '@/features/workflows/workflowHistory/components/WorkflowVersionFormModal.vue';
+import DynamicModalLoader from './DynamicModalLoader.vue';
+import UpdatesPanel from './UpdatesPanel.vue';
+import type { AiGatewayTopUpVariant } from '@/app/composables/useAiGatewayTopUp';
+import { defineAsyncComponent } from 'vue';
+
+const AboutModal = defineAsyncComponent(
+	async () => await import('@/app/components/AboutModal.vue'),
+);
+const ActivationModal = defineAsyncComponent(
+	async () => await import('@/features/workflows/components/ActivationModal.vue'),
+);
+const ApiKeyCreateOrEditModal = defineAsyncComponent(
+	async () => await import('@/features/settings/apiKeys/components/ApiKeyCreateOrEditModal.vue'),
+);
+const NewAssistantSessionModal = defineAsyncComponent(
+	async () => await import('@/features/ai/assistant/components/Chat/NewAssistantSessionModal.vue'),
+);
+const ChatEmbedModal = defineAsyncComponent(
+	async () => await import('@/app/components/ChatEmbedModal.vue'),
+);
+const CommunityPackageInstallModal = defineAsyncComponent(
+	async () =>
+		await import('@/features/settings/communityNodes/components/CommunityPackageInstallModal.vue'),
+);
+const CommunityPackageManageConfirmModal = defineAsyncComponent(
+	async () =>
+		await import(
+			'@/features/settings/communityNodes/components/CommunityPackageManageConfirmModal.vue'
+		),
+);
+const CommunityPlusEnrollmentModal = defineAsyncComponent(
+	async () => await import('@/features/settings/usage/components/CommunityPlusEnrollmentModal.vue'),
+);
+const CredentialEdit = defineAsyncComponent(
+	async () => await import('@/features/credentials/components/CredentialEdit/CredentialEdit.vue'),
+);
+const CredentialsSelectModal = defineAsyncComponent(
+	async () => await import('@/features/credentials/components/CredentialsSelectModal.vue'),
+);
+const DebugPaywallModal = defineAsyncComponent(
+	async () => await import('@/features/execution/executions/components/DebugPaywallModal.vue'),
+);
+const DeleteFolderModal = defineAsyncComponent(
+	async () => await import('@/features/core/folders/components/DeleteFolderModal.vue'),
+);
+const MoveToFolderModal = defineAsyncComponent(
+	async () => await import('@/features/core/folders/components/MoveToFolderModal.vue'),
+);
+const DeleteUserModal = defineAsyncComponent(
+	async () => await import('@/features/settings/users/components/DeleteUserModal.vue'),
+);
+const DuplicateWorkflowDialog = defineAsyncComponent(
+	async () => await import('@/features/workflows/components/DuplicateWorkflowDialog.vue'),
+);
+const ExternalSecretsProviderModal = defineAsyncComponent(
+	async () =>
+		await import(
+			'@/features/integrations/externalSecrets.ee/components/ExternalSecretsProviderModal.ee.vue'
+		),
+);
+const SecretsProviderConnectionModal = defineAsyncComponent(
+	async () =>
+		await import(
+			'@/features/integrations/secretsProviders.ee/components/SecretsProviderConnectionModal.ee.vue'
+		),
+);
+const DeleteSecretsProviderModal = defineAsyncComponent(
+	async () =>
+		await import(
+			'@/features/integrations/secretsProviders.ee/components/DeleteSecretsProviderModal.ee.vue'
+		),
+);
+const FromAiParametersModal = defineAsyncComponent(
+	async () => await import('@/features/ndv/parameters/components/FromAiParametersModal.vue'),
+);
+const ImportCurlModal = defineAsyncComponent(
+	async () => await import('@/features/ndv/parameters/components/ImportCurlModal.vue'),
+);
+const BinaryDataViewModal = defineAsyncComponent(
+	async () => await import('@/features/ndv/runData/components/BinaryDataViewModal.vue'),
+);
+const ImportWorkflowUrlModal = defineAsyncComponent(
+	async () => await import('@/features/workflows/components/ImportWorkflowUrlModal.vue'),
+);
+const InviteUsersModal = defineAsyncComponent(
+	async () => await import('@/features/settings/users/components/InviteUsersModal.vue'),
+);
+const PersonalizationModal = defineAsyncComponent(
+	async () => await import('@/features/settings/users/components/PersonalizationModal.vue'),
+);
+const ProjectMoveResourceModal = defineAsyncComponent(
+	async () =>
+		await import('@/features/collaboration/projects/components/ProjectMoveResourceModal.vue'),
+);
+const SetupWorkflowCredentialsModal = defineAsyncComponent(
+	async () =>
+		await import('@/features/workflows/templates/components/SetupWorkflowCredentialsModal.vue'),
+);
+const SourceControlPullModal = defineAsyncComponent(
+	async () =>
+		await import('@/features/integrations/sourceControl.ee/components/SourceControlPullModal.vue'),
+);
+const SourceControlPullResultModal = defineAsyncComponent(
+	async () =>
+		await import(
+			'@/features/integrations/sourceControl.ee/components/SourceControlPullResultModal.vue'
+		),
+);
+const SourceControlPushModal = defineAsyncComponent(
+	async () =>
+		await import('@/features/integrations/sourceControl.ee/components/SourceControlPushModal.vue'),
+);
+const AnnotationTagsManager = defineAsyncComponent(
+	async () =>
+		await import('@/features/shared/tags/components/TagsManager/AnnotationTagsManager.ee.vue'),
+);
+const WorkflowTagsManager = defineAsyncComponent(
+	async () => await import('@/features/shared/tags/components/TagsManager/WorkflowTagsManager.vue'),
+);
+const WhatsNewModal = defineAsyncComponent(
+	async () => await import('@/app/components/WhatsNewModal.vue'),
+);
+const WorkflowActivationConflictingWebhookModal = defineAsyncComponent(
+	async () =>
+		await import('@/features/workflows/components/WorkflowActivationConflictingWebhookModal.vue'),
+);
+const WorkflowExtractionNameModal = defineAsyncComponent(
+	async () => await import('@/features/workflows/components/WorkflowExtractionNameModal.vue'),
+);
+const WorkflowHistoryVersionUnpublishModal = defineAsyncComponent(
+	async () =>
+		await import(
+			'@/features/workflows/workflowHistory/components/WorkflowHistoryVersionUnpublishModal.vue'
+		),
+);
+const WorkflowVersionFormModal = defineAsyncComponent(
+	async () =>
+		await import('@/features/workflows/workflowHistory/components/WorkflowVersionFormModal.vue'),
+);
+const WorkflowSettings = defineAsyncComponent(
+	async () => await import('@/features/workflows/components/WorkflowSettings/WorkflowSettings.vue'),
+);
+const WorkflowShareModal = defineAsyncComponent(
+	async () => await import('@/features/workflows/components/WorkflowShareModal.ee.vue'),
+);
+const WorkflowDiffModal = defineAsyncComponent(
+	async () => await import('@/features/workflows/workflowDiff/WorkflowDiffModal.vue'),
+);
+const NodeRecommendationModalV2 = defineAsyncComponent(
+	async () => await import('@/experiments/templateRecoV2/components/NodeRecommendationModal.vue'),
+);
+const NodeRecommendationModalV3 = defineAsyncComponent(
+	async () =>
+		await import('@/experiments/personalizedTemplatesV3/components/NodeRecommendationModal.vue'),
+);
+const VariableModal = defineAsyncComponent(
+	async () => await import('@/features/settings/environments.ee/components/VariableModal.vue'),
+);
+const StopManyExecutionsModal = defineAsyncComponent(
+	async () =>
+		await import('@/features/execution/executions/components/StopManyExecutionsModal.vue'),
+);
+const AddExecutionToDatasetModal = defineAsyncComponent(
+	async () =>
+		await import(
+			'@/features/ai/evaluation.ee/components/AddExecutionToDataset/AddExecutionToDatasetModal.vue'
+		),
+);
+const WorkflowDescriptionModal = defineAsyncComponent(
+	async () => await import('@/features/workflows/components/WorkflowDescriptionModal.vue'),
+);
+const WorkflowPublishModal = defineAsyncComponent(
+	async () => await import('@/features/workflows/components/WorkflowPublishModal.vue'),
+);
+const MigrateWorkflowModal = defineAsyncComponent(
+	async () => await import('@/features/settings/migrationReport/MigrateWorkflowModal.vue'),
+);
+const CredentialResolverEditModal = defineAsyncComponent(
+	async () => await import('@/features/resolvers/components/CredentialResolverEditModal.vue'),
+);
+const AIBuilderDiffModal = defineAsyncComponent(
+	async () => await import('@/features/ai/assistant/components/Agent/AIBuilderDiffModal.vue'),
+);
+const AiGatewayTopUpModal = defineAsyncComponent(
+	async () => await import('@/features/ai/gateway/components/AiGatewayTopUpModal.vue'),
+);
+const TrialIntroModal = defineAsyncComponent(
+	async () => await import('@/experiments/trialIntroModal/components/TrialIntroModal.vue'),
+);
+</script>
+
+<template>
+	<div>
+		<ModalRoot :name="CREDENTIAL_EDIT_MODAL_KEY">
+			<template #default="{ modalName, activeId, mode }">
+				<CredentialEdit :modal-name="modalName" :mode="mode" :active-id="activeId" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="API_KEY_CREATE_OR_EDIT_MODAL_KEY">
+			<template
+				#default="{
+					modalName,
+					data: { mode, activeId, rotatedApiKey },
+				}: {
+					modalName: string;
+					data: {
+						mode: 'new' | 'edit';
+						activeId: string;
+						rotatedApiKey?: ApiKeyWithRawValue | null;
+					};
+				}"
+			>
+				<ApiKeyCreateOrEditModal
+					:modal-name="modalName"
+					:mode="mode"
+					:active-id="activeId"
+					:rotated-api-key="rotatedApiKey"
+				/>
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="ABOUT_MODAL_KEY">
+			<AboutModal />
+		</ModalRoot>
+
+		<ModalRoot :name="CHAT_EMBED_MODAL_KEY">
+			<ChatEmbedModal />
+		</ModalRoot>
+
+		<ModalRoot :name="CREDENTIAL_SELECT_MODAL_KEY">
+			<CredentialsSelectModal />
+		</ModalRoot>
+
+		<ModalRoot :name="DUPLICATE_MODAL_KEY">
+			<template #default="{ modalName, active, data }">
+				<DuplicateWorkflowDialog :data="data" :is-active="active" :modal-name="modalName" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="IMPORT_WORKFLOW_URL_MODAL_KEY">
+			<ImportWorkflowUrlModal />
+		</ModalRoot>
+
+		<ModalRoot :name="PERSONALIZATION_MODAL_KEY">
+			<PersonalizationModal />
+		</ModalRoot>
+
+		<ModalRoot :name="TAGS_MANAGER_MODAL_KEY">
+			<WorkflowTagsManager />
+		</ModalRoot>
+
+		<ModalRoot :name="ANNOTATION_TAGS_MANAGER_MODAL_KEY">
+			<AnnotationTagsManager />
+		</ModalRoot>
+
+		<ModalRoot :name="VERSIONS_MODAL_KEY" :keep-alive="true">
+			<UpdatesPanel />
+		</ModalRoot>
+
+		<ModalRoot :name="NPS_SURVEY_MODAL_KEY" :keep-alive="true">
+			<template #default="{ active }">
+				<NpsSurvey :is-active="active" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_SETTINGS_MODAL_KEY">
+			<WorkflowSettings />
+		</ModalRoot>
+
+		<ModalRoot :name="INVITE_USER_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<InviteUsersModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="DELETE_USER_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<DeleteUserModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_ACTIVE_MODAL_KEY">
+			<ActivationModal />
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_SHARE_MODAL_KEY">
+			<template #default="{ modalName, active, data }">
+				<WorkflowShareModal :data="data" :is-active="active" :modal-name="modalName" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="COMMUNITY_PACKAGE_INSTALL_MODAL_KEY">
+			<CommunityPackageInstallModal />
+		</ModalRoot>
+
+		<ModalRoot :name="IMPORT_CURL_MODAL_KEY">
+			<ImportCurlModal />
+		</ModalRoot>
+
+		<ModalRoot :name="COMMUNITY_PACKAGE_CONFIRM_MODAL_KEY">
+			<template #default="{ modalName, activeId, mode }">
+				<CommunityPackageManageConfirmModal
+					:modal-name="modalName"
+					:active-package-name="activeId"
+					:mode="mode"
+				/>
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="SOURCE_CONTROL_PUSH_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<SourceControlPushModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="SOURCE_CONTROL_PULL_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<SourceControlPullModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="SOURCE_CONTROL_PULL_RESULT_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<SourceControlPullResultModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_DIFF_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<WorkflowDiffModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="AI_BUILDER_DIFF_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<AIBuilderDiffModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="EXTERNAL_SECRETS_PROVIDER_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<ExternalSecretsProviderModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="SECRETS_PROVIDER_CONNECTION_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<SecretsProviderConnectionModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="DELETE_SECRETS_PROVIDER_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<DeleteSecretsProviderModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="DEBUG_PAYWALL_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<DebugPaywallModal
+					data-test-id="debug-paywall-modal"
+					:modal-name="modalName"
+					:data="data"
+				/>
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_HISTORY_VERSION_UNPUBLISH">
+			<template #default="{ modalName, data }">
+				<WorkflowHistoryVersionUnpublishModal
+					data-test-id="workflow-history-version-unpublish-modal"
+					:modal-name="modalName"
+					:data="data"
+				/>
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_HISTORY_NAME_VERSION_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<WorkflowVersionFormModal
+					data-test-id="workflow-history-name-version-modal"
+					:modal-name="modalName"
+					:data="data as WorkflowVersionFormModalData"
+				/>
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="SETUP_CREDENTIALS_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<SetupWorkflowCredentialsModal
+					data-test-id="setup-workflow-credentials-modal"
+					:modal-name="modalName"
+					:data="data"
+				/>
+			</template>
+		</ModalRoot>
+		<ModalRoot :name="PROJECT_MOVE_RESOURCE_MODAL">
+			<template #default="{ modalName, data }">
+				<ProjectMoveResourceModal
+					data-test-id="project-move-resource-modal"
+					:modal-name="modalName"
+					:data="data"
+				/>
+			</template>
+		</ModalRoot>
+		<ModalRoot :name="NEW_ASSISTANT_SESSION_MODAL">
+			<template #default="{ modalName, data }">
+				<NewAssistantSessionModal :name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="COMMUNITY_PLUS_ENROLLMENT_MODAL">
+			<template #default="{ modalName, data }">
+				<CommunityPlusEnrollmentModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="DELETE_FOLDER_MODAL_KEY">
+			<template #default="{ modalName, activeId, data }">
+				<DeleteFolderModal :modal-name="modalName" :active-id="activeId" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="MOVE_FOLDER_MODAL_KEY">
+			<template #default="{ modalName, activeId, data }">
+				<MoveToFolderModal :modal-name="modalName" :active-id="activeId" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_ACTIVATION_CONFLICTING_WEBHOOK_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<WorkflowActivationConflictingWebhookModal :data="data" :modal-name="modalName" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="FROM_AI_PARAMETERS_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<FromAiParametersModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="STOP_MANY_EXECUTIONS_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<StopManyExecutionsModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="ADD_EXECUTION_TO_DATASET_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<AddExecutionToDatasetModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_EXTRACTION_NAME_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<WorkflowExtractionNameModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WHATS_NEW_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<WhatsNewModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="EXPERIMENT_TEMPLATE_RECO_V2_KEY">
+			<template #default="{ modalName, data }">
+				<NodeRecommendationModalV2 :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="EXPERIMENT_TEMPLATE_RECO_V3_KEY">
+			<template #default="{ modalName, data }">
+				<NodeRecommendationModalV3 :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="VARIABLE_MODAL_KEY">
+			<template #default="{ data }: { data: VariableModalOptions }">
+				<VariableModal v-bind="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="BINARY_DATA_VIEW_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<BinaryDataViewModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_DESCRIPTION_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<WorkflowDescriptionModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_PUBLISH_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<WorkflowPublishModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="MIGRATE_WORKFLOW_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<MigrateWorkflowModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="WORKFLOW_HISTORY_PUBLISH_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<WorkflowVersionFormModal
+					:modal-name="modalName"
+					:data="data as WorkflowVersionFormModalData"
+				/>
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="CREDENTIAL_RESOLVER_EDIT_MODAL_KEY">
+			<template #default="{ modalName, data }">
+				<CredentialResolverEditModal :modal-name="modalName" :data="data" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="AI_GATEWAY_TOP_UP_MODAL_KEY">
+			<template #default="{ data }: { data: { variant: AiGatewayTopUpVariant } }">
+				<AiGatewayTopUpModal :variant="data.variant" />
+			</template>
+		</ModalRoot>
+
+		<ModalRoot :name="TRIAL_INTRO_MODAL_KEY">
+			<template #default="{ modalName }">
+				<TrialIntroModal :modal-name="modalName" />
+			</template>
+		</ModalRoot>
+
+		<!-- Dynamic modals from modules -->
+		<DynamicModalLoader />
+	</div>
+</template>

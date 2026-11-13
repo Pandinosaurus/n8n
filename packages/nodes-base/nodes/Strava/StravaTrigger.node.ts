@@ -1,4 +1,3 @@
-import { randomBytes } from 'crypto';
 import type {
 	IHookFunctions,
 	IWebhookFunctions,
@@ -7,6 +6,7 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { stravaApiRequest } from './GenericFunctions';
 
@@ -22,7 +22,7 @@ export class StravaTrigger implements INodeType {
 			name: 'Strava Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'stravaOAuth2Api',
@@ -101,7 +101,7 @@ export class StravaTrigger implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				default: {},
 				options: [
 					{
@@ -111,7 +111,7 @@ export class StravaTrigger implements INodeType {
 						default: false,
 						// eslint-disable-next-line n8n-nodes-base/node-param-description-boolean-without-whether
 						description:
-							'Strava allows just one subscription at all times. If you want to delete the current subscription to make room for a new subcription with the current parameters, set this parameter to true. Keep in mind this is a destructive operation.',
+							'Strava allows just one subscription at all times. If you want to delete the current subscription to make room for a new subscription with the current parameters, set this parameter to true. Keep in mind this is a destructive operation.',
 					},
 				],
 			},
@@ -125,7 +125,7 @@ export class StravaTrigger implements INodeType {
 				const webhookData = this.getWorkflowStaticData('node');
 				// Check all the webhooks which exist already if it is identical to the
 				// one that is supposed to get created.
-				const endpoint = '/push_subscriptions';
+				const endpoint = requestPath`/push_subscriptions`;
 
 				const webhooks = await stravaApiRequest.call(this, 'GET', endpoint, {});
 
@@ -142,11 +142,11 @@ export class StravaTrigger implements INodeType {
 				const webhookData = this.getWorkflowStaticData('node');
 				const webhookUrl = this.getNodeWebhookUrl('default');
 
-				const endpoint = '/push_subscriptions';
+				const endpoint = requestPath`/push_subscriptions`;
 
 				const body = {
 					callback_url: webhookUrl,
-					verify_token: randomBytes(20).toString('hex'),
+					verify_token: this.getNode().id,
 				};
 
 				let responseData;
@@ -154,9 +154,8 @@ export class StravaTrigger implements INodeType {
 				try {
 					responseData = await stravaApiRequest.call(this, 'POST', endpoint, body);
 				} catch (error) {
-					const apiErrorResponse = error.cause.response;
-					if (apiErrorResponse?.body?.errors) {
-						const errors = apiErrorResponse.body.errors;
+					if (error?.cause?.error) {
+						const errors = error?.cause?.error?.errors;
 						for (error of errors) {
 							// if there is a subscription already created
 							if (error.resource === 'PushSubscription' && error.code === 'already exists') {
@@ -165,7 +164,7 @@ export class StravaTrigger implements INodeType {
 								const webhooks = await stravaApiRequest.call(
 									this,
 									'GET',
-									'/push_subscriptions',
+									requestPath`/push_subscriptions`,
 									{},
 								);
 
@@ -174,22 +173,13 @@ export class StravaTrigger implements INodeType {
 									await stravaApiRequest.call(
 										this,
 										'DELETE',
-										`/push_subscriptions/${webhooks[0].id}`,
+										requestPath`/push_subscriptions/${webhooks[0].id}`,
 									);
-									// now there is room create a subscription with the n8n data
-									const requestBody = {
-										callback_url: webhookUrl,
-										verify_token: randomBytes(20).toString('hex'),
-									};
 
-									responseData = await stravaApiRequest.call(
-										this,
-										'POST',
-										'/push_subscriptions',
-										requestBody,
-									);
+									// now there is room create a subscription with the n8n data
+									responseData = await stravaApiRequest.call(this, 'POST', endpoint, body);
 								} else {
-									error.message = `A subscription already exists [${webhooks[0].callback_url}]. If you want to delete this subcription and create a new one with the current parameters please go to options and set delete if exist to true`;
+									error.message = `A subscription already exists [${webhooks[0].callback_url}]. If you want to delete this subscription and create a new one with the current parameters please go to options and set delete if exist to true`;
 									throw error;
 								}
 							}
@@ -212,7 +202,7 @@ export class StravaTrigger implements INodeType {
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				if (webhookData.webhookId !== undefined) {
-					const endpoint = `/push_subscriptions/${webhookData.webhookId}`;
+					const endpoint = requestPath`/push_subscriptions/${webhookData.webhookId}`;
 
 					try {
 						await stravaApiRequest.call(this, 'DELETE', endpoint);
@@ -253,12 +243,24 @@ export class StravaTrigger implements INodeType {
 		if (this.getWebhookName() === 'setup') {
 			if (query['hub.challenge']) {
 				// Is a create webhook confirmation request
+				if (query['hub.verify_token'] !== this.getNode().id) {
+					return {};
+				}
+
 				const res = this.getResponseObject();
 				res.status(200).json({ 'hub.challenge': query['hub.challenge'] }).end();
 				return {
 					noWebhookResponse: true,
 				};
 			}
+		}
+
+		const webhookData = this.getWorkflowStaticData('node');
+		if (
+			webhookData.webhookId === undefined ||
+			String(body.subscription_id) !== String(webhookData.webhookId)
+		) {
+			return {};
 		}
 
 		if (object !== '*' && !objectType.includes(body.object_type as string)) {
@@ -270,9 +272,9 @@ export class StravaTrigger implements INodeType {
 		}
 
 		if (resolveData && body.aspect_type !== 'delete') {
-			let endpoint = `/athletes/${body.object_id}/stats`;
+			let endpoint = requestPath`/athletes/${body.object_id}/stats`;
 			if (body.object_type === 'activity') {
-				endpoint = `/activities/${body.object_id}`;
+				endpoint = requestPath`/activities/${body.object_id}`;
 			}
 			body.object_data = await stravaApiRequest.call(this, 'GET', endpoint);
 		}

@@ -1,334 +1,192 @@
-import { NodeConnectionType, NodeOperationError } from 'n8n-workflow';
-import type {
-	ConnectionTypes,
-	INodeInputConfiguration,
-	INodeInputFilter,
-	IExecuteFunctions,
-	INodeExecutionData,
-	INodeType,
-	INodeTypeDescription,
-} from 'n8n-workflow';
-import { getTemplateNoticeField } from '../../../utils/sharedFields';
-import { promptTypeOptions, textInput } from '../../../utils/descriptions';
-import { conversationalAgentProperties } from './agents/ConversationalAgent/description';
-import { conversationalAgentExecute } from './agents/ConversationalAgent/execute';
-import { openAiFunctionsAgentProperties } from './agents/OpenAiFunctionsAgent/description';
-import { openAiFunctionsAgentExecute } from './agents/OpenAiFunctionsAgent/execute';
-import { planAndExecuteAgentProperties } from './agents/PlanAndExecuteAgent/description';
-import { planAndExecuteAgentExecute } from './agents/PlanAndExecuteAgent/execute';
-import { reActAgentAgentProperties } from './agents/ReActAgent/description';
-import { reActAgentAgentExecute } from './agents/ReActAgent/execute';
-import { sqlAgentAgentProperties } from './agents/SqlAgent/description';
-import { sqlAgentAgentExecute } from './agents/SqlAgent/execute';
+import type { INodeTypeBaseDescription, IVersionedNodeType } from 'n8n-workflow';
+import { VersionedNodeType } from 'n8n-workflow';
 
-// Function used in the inputs expression to figure out which inputs to
-// display based on the agent type
-function getInputs(
-	agent: 'conversationalAgent' | 'openAiFunctionsAgent' | 'reActAgent' | 'sqlAgent',
-	hasOutputParser?: boolean,
-): Array<ConnectionTypes | INodeInputConfiguration> {
-	interface SpecialInput {
-		type: ConnectionTypes;
-		filter?: INodeInputFilter;
-		required?: boolean;
-	}
+import { AgentV1 } from './V1/AgentV1.node';
+import { AgentV2 } from './V2/AgentV2.node';
+import { AgentV3 } from './V3/AgentV3.node';
 
-	const getInputData = (
-		inputs: SpecialInput[],
-	): Array<ConnectionTypes | INodeInputConfiguration> => {
-		const displayNames: { [key: string]: string } = {
-			[NodeConnectionType.AiLanguageModel]: 'Model',
-			[NodeConnectionType.AiMemory]: 'Memory',
-			[NodeConnectionType.AiTool]: 'Tool',
-			[NodeConnectionType.AiOutputParser]: 'Output Parser',
+export class Agent extends VersionedNodeType {
+	constructor() {
+		const baseDescription: INodeTypeBaseDescription = {
+			displayName: 'AI Agent',
+			name: 'agent',
+			icon: 'node:ai-agent',
+			iconColor: 'black',
+			group: ['transform'],
+			description: 'Generates an action plan and executes it. Can use external tools.',
+			codex: {
+				alias: ['LangChain', 'Chat', 'Conversational', 'Plan and Execute', 'ReAct', 'Tools'],
+				categories: ['AI'],
+				subcategories: {
+					AI: ['Agents', 'Root Nodes'],
+				},
+				resources: {
+					primaryDocumentation: [
+						{
+							url: 'https://docs.n8n.io/integrations/builtin/cluster-nodes/root-nodes/n8n-nodes-langchain.agent/',
+						},
+					],
+				},
+			},
+			defaultVersion: 3.1,
+			builderHint: {
+				searchHint:
+					"Wire model/memory/tools/outputParser via the SDK `subnodes` config object using factory functions (`languageModel()`, `memory()`, `tool()`, `outputParser()`). Inside subnodes, reference upstream data with `nodeJson(triggerNode, 'path')`, not `$json` — subnodes do not share the main predecessor's item context.",
+				relatedNodes: [
+					{
+						nodeType: 'n8n-nodes-base.aggregate',
+						relationHint: 'Use to combine multiple items together before the agent',
+					},
+					{
+						nodeType: '@n8n/n8n-nodes-langchain.outputParserStructured',
+						relationHint:
+							'Attach for structured output; reference fields as $json.output.fieldName for use in subsequent nodes (conditions, storing data)',
+					},
+					{
+						nodeType: '@n8n/n8n-nodes-langchain.agentTool',
+						relationHint: 'For multi-agent systems using orchestrator pattern',
+					},
+					{
+						nodeType: '@n8n/n8n-nodes-langchain.memoryBufferWindow',
+						relationHint:
+							'Required for conversational workflows - connect memory to every agent that needs to recall previous messages in the conversation',
+					},
+				],
+				extraTypeDefContent: [
+					{
+						content: `<patterns>
+<pattern title="Agent with model, memory, structured output parser">
+const chatTrigger = trigger({
+  type: '@n8n/n8n-nodes-langchain.chatTrigger',
+  version: 1.3,
+  config: {
+    name: 'Chat Trigger',
+    parameters: { public: false },
+    output: [{ sessionId: 'chat-session-id', chatInput: 'Hello' }]
+  }
+});
+
+const model = languageModel({
+  type: '@n8n/n8n-nodes-langchain.lmChatOpenAi',
+  version: 1.3,
+  config: {
+    name: 'OpenAI Chat Model',
+    parameters: { model: { __rl: true, mode: 'list', value: 'gpt-5.4' } },
+    credentials: { openAiApi: { id: 'credId', name: 'OpenAI account' } }
+  }
+});
+
+const parser = outputParser({
+  type: '@n8n/n8n-nodes-langchain.outputParserStructured',
+  version: 1.3,
+  config: {
+    name: 'Output Parser',
+    parameters: {
+      schemaType: 'fromJson',
+      jsonSchemaExample: '{ "score": 75, "tier": "hot" }'
+    }
+  }
+});
+
+const memoryNode = memory({
+  type: '@n8n/n8n-nodes-langchain.memoryBufferWindow',
+  version: 1.3,
+  config: {
+    name: 'Conversation Memory',
+    parameters: {
+      sessionIdType: 'customKey',
+      sessionKey: nodeJson(chatTrigger, 'sessionId'),
+      contextWindowLength: 10
+    }
+  }
+});
+
+const agent = node({
+  type: '@n8n/n8n-nodes-langchain.agent',
+  version: 3.1,
+  config: {
+    name: 'AI Agent',
+    parameters: {
+      promptType: 'define',
+      text: expr('{{ $json.prompt }}'),
+      hasOutputParser: true,
+      options: { systemMessage: 'You are an expert...' }
+    },
+    subnodes: { model, memory: memoryNode, outputParser: parser }
+  }
+});
+</pattern>
+
+<pattern title="Agent with a fallback model (primary + backup provider)">
+// Give ONE agent a backup model with a FLAT model array: the first entry is the
+// primary, the second fills the agent's Fallback Model input. The agent retries
+// on the second model when the first call fails.
+// Do NOT build a second agent or an error-output branch for this — one agent.
+// A NESTED array (model: [[a, b]]) means something else: both models on the SAME
+// input, which is not a fallback.
+
+const primaryModel = languageModel({
+  type: '@n8n/n8n-nodes-langchain.lmChatAnthropic',
+  version: 1.6,
+  config: {
+    name: 'Claude (Primary)',
+    parameters: { model: { __rl: true, mode: 'list', value: 'claude-sonnet-4-5' } }
+  }
+});
+
+const fallbackModel = languageModel({
+  type: '@n8n/n8n-nodes-langchain.lmChatOpenAi',
+  version: 1.3,
+  config: {
+    name: 'OpenAI (Fallback)',
+    parameters: { model: { __rl: true, mode: 'list', value: 'gpt-5.4' } }
+  }
+});
+
+const agentWithFallback = node({
+  type: '@n8n/n8n-nodes-langchain.agent',
+  version: 3.1,
+  config: {
+    name: 'AI Agent',
+    parameters: {
+      promptType: 'define',
+      text: expr('{{ $json.prompt }}'),
+      options: { systemMessage: 'You are an expert...' },
+      // REQUIRED with a second model: the agent only declares its Fallback Model
+      // input when this is on. Without it the second model is wired to an input
+      // that does not exist and never runs.
+      needsFallback: true
+    },
+    subnodes: { model: [primaryModel, fallbackModel] }
+  }
+});
+</pattern>
+</patterns>`,
+					},
+				],
+			},
 		};
 
-		return inputs.map(({ type, filter, required }) => {
-			const input: INodeInputConfiguration = {
-				type,
-				displayName: type in displayNames ? displayNames[type] : undefined,
-				required: type === NodeConnectionType.AiLanguageModel,
-				maxConnections: [NodeConnectionType.AiLanguageModel, NodeConnectionType.AiMemory].includes(
-					type as NodeConnectionType,
-				)
-					? 1
-					: undefined,
-			};
+		const nodeVersions: IVersionedNodeType['nodeVersions'] = {
+			1: new AgentV1(baseDescription),
+			1.1: new AgentV1(baseDescription),
+			1.2: new AgentV1(baseDescription),
+			1.3: new AgentV1(baseDescription),
+			1.4: new AgentV1(baseDescription),
+			1.5: new AgentV1(baseDescription),
+			1.6: new AgentV1(baseDescription),
+			1.7: new AgentV1(baseDescription),
+			1.8: new AgentV1(baseDescription),
+			1.9: new AgentV1(baseDescription),
+			2: new AgentV2(baseDescription),
+			2.1: new AgentV2(baseDescription),
+			2.2: new AgentV2(baseDescription),
+			2.3: new AgentV2(baseDescription),
+			3: new AgentV3(baseDescription),
+			3.1: new AgentV3(baseDescription),
+			// IMPORTANT Reminder to update AgentTool
+		};
 
-			if (filter) {
-				input.filter = filter;
-			}
-
-			return input;
-		});
-	};
-
-	let specialInputs: SpecialInput[] = [];
-
-	if (agent === 'conversationalAgent') {
-		specialInputs = [
-			{
-				type: NodeConnectionType.AiLanguageModel,
-				filter: {
-					nodes: [
-						'@n8n/n8n-nodes-langchain.lmChatAnthropic',
-						'@n8n/n8n-nodes-langchain.lmChatOllama',
-						'@n8n/n8n-nodes-langchain.lmChatOpenAi',
-						'@n8n/n8n-nodes-langchain.lmChatGooglePalm',
-						'@n8n/n8n-nodes-langchain.lmChatMistralCloud',
-						'@n8n/n8n-nodes-langchain.lmChatAzureOpenAi',
-					],
-				},
-			},
-			{
-				type: NodeConnectionType.AiMemory,
-			},
-			{
-				type: NodeConnectionType.AiTool,
-			},
-			{
-				type: NodeConnectionType.AiOutputParser,
-			},
-		];
-	} else if (agent === 'openAiFunctionsAgent') {
-		specialInputs = [
-			{
-				type: NodeConnectionType.AiLanguageModel,
-				filter: {
-					nodes: [
-						'@n8n/n8n-nodes-langchain.lmChatOpenAi',
-						'@n8n/n8n-nodes-langchain.lmChatAzureOpenAi',
-					],
-				},
-			},
-			{
-				type: NodeConnectionType.AiMemory,
-			},
-			{
-				type: NodeConnectionType.AiTool,
-				required: true,
-			},
-			{
-				type: NodeConnectionType.AiOutputParser,
-			},
-		];
-	} else if (agent === 'reActAgent') {
-		specialInputs = [
-			{
-				type: NodeConnectionType.AiLanguageModel,
-			},
-			{
-				type: NodeConnectionType.AiTool,
-			},
-			{
-				type: NodeConnectionType.AiOutputParser,
-			},
-		];
-	} else if (agent === 'sqlAgent') {
-		specialInputs = [
-			{
-				type: NodeConnectionType.AiLanguageModel,
-			},
-			{
-				type: NodeConnectionType.AiMemory,
-			},
-		];
-	} else if (agent === 'planAndExecuteAgent') {
-		specialInputs = [
-			{
-				type: NodeConnectionType.AiLanguageModel,
-			},
-			{
-				type: NodeConnectionType.AiTool,
-			},
-			{
-				type: NodeConnectionType.AiOutputParser,
-			},
-		];
-	}
-
-	if (hasOutputParser === false) {
-		specialInputs = specialInputs.filter(
-			(input) => input.type !== NodeConnectionType.AiOutputParser,
-		);
-	}
-	return [NodeConnectionType.Main, ...getInputData(specialInputs)];
-}
-
-export class Agent implements INodeType {
-	description: INodeTypeDescription = {
-		displayName: 'AI Agent',
-		name: 'agent',
-		icon: 'fa:robot',
-		group: ['transform'],
-		version: [1, 1.1, 1.2, 1.3, 1.4, 1.5],
-		description: 'Generates an action plan and executes it. Can use external tools.',
-		subtitle:
-			"={{ {	conversationalAgent: 'Conversational Agent', openAiFunctionsAgent: 'OpenAI Functions Agent', reActAgent: 'ReAct Agent', sqlAgent: 'SQL Agent', planAndExecuteAgent: 'Plan and Execute Agent' }[$parameter.agent] }}",
-		defaults: {
-			name: 'AI Agent',
-			color: '#404040',
-		},
-		codex: {
-			alias: ['LangChain'],
-			categories: ['AI'],
-			subcategories: {
-				AI: ['Agents'],
-			},
-			resources: {
-				primaryDocumentation: [
-					{
-						url: 'https://docs.n8n.io/integrations/builtin/cluster-nodes/root-nodes/n8n-nodes-langchain.agent/',
-					},
-				],
-			},
-		},
-		inputs: `={{
-			((agent, hasOutputParser) => {
-				${getInputs.toString()};
-				return getInputs(agent, hasOutputParser)
-			})($parameter.agent, $parameter.hasOutputParser === undefined || $parameter.hasOutputParser === true)
-		}}`,
-		outputs: [NodeConnectionType.Main],
-		credentials: [
-			{
-				// eslint-disable-next-line n8n-nodes-base/node-class-description-credentials-name-unsuffixed
-				name: 'mySql',
-				required: true,
-				testedBy: 'mysqlConnectionTest',
-				displayOptions: {
-					show: {
-						agent: ['sqlAgent'],
-						'/dataSource': ['mysql'],
-					},
-				},
-			},
-			{
-				name: 'postgres',
-				required: true,
-				displayOptions: {
-					show: {
-						agent: ['sqlAgent'],
-						'/dataSource': ['postgres'],
-					},
-				},
-			},
-		],
-		properties: [
-			{
-				...getTemplateNoticeField(1954),
-				displayOptions: {
-					show: {
-						agent: ['conversationalAgent'],
-					},
-				},
-			},
-			{
-				displayName: 'Agent',
-				name: 'agent',
-				type: 'options',
-				noDataExpression: true,
-				options: [
-					{
-						name: 'Conversational Agent',
-						value: 'conversationalAgent',
-						description:
-							'Selects tools to accomplish its task and uses memory to recall previous conversations',
-					},
-					{
-						name: 'OpenAI Functions Agent',
-						value: 'openAiFunctionsAgent',
-						description:
-							"Utilizes OpenAI's Function Calling feature to select the appropriate tool and arguments for execution",
-					},
-					{
-						name: 'Plan and Execute Agent',
-						value: 'planAndExecuteAgent',
-						description:
-							'Plan and execute agents accomplish an objective by first planning what to do, then executing the sub tasks',
-					},
-					{
-						name: 'ReAct Agent',
-						value: 'reActAgent',
-						description: 'Strategically select tools to accomplish a given task',
-					},
-					{
-						name: 'SQL Agent',
-						value: 'sqlAgent',
-						description: 'Answers questions about data in an SQL database',
-					},
-				],
-				default: 'conversationalAgent',
-			},
-			{
-				...promptTypeOptions,
-				displayOptions: {
-					hide: {
-						'@version': [{ _cnd: { lte: 1.2 } }],
-						agent: ['sqlAgent'],
-					},
-				},
-			},
-			{
-				...textInput,
-				displayOptions: {
-					show: {
-						promptType: ['define'],
-					},
-					hide: {
-						agent: ['sqlAgent'],
-					},
-				},
-			},
-			{
-				displayName: 'Require Specific Output Format',
-				name: 'hasOutputParser',
-				type: 'boolean',
-				default: false,
-				noDataExpression: true,
-				displayOptions: {
-					hide: {
-						'@version': [{ _cnd: { lte: 1.2 } }],
-						agent: ['sqlAgent'],
-					},
-				},
-			},
-			{
-				displayName: `Connect an <a data-action='openSelectiveNodeCreator' data-action-parameter-connectiontype='${NodeConnectionType.AiOutputParser}'>output parser</a> on the canvas to specify the output format you require`,
-				name: 'notice',
-				type: 'notice',
-				default: '',
-				displayOptions: {
-					show: {
-						hasOutputParser: [true],
-					},
-				},
-			},
-
-			...conversationalAgentProperties,
-			...openAiFunctionsAgentProperties,
-			...reActAgentAgentProperties,
-			...sqlAgentAgentProperties,
-			...planAndExecuteAgentProperties,
-		],
-	};
-
-	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
-		const agentType = this.getNodeParameter('agent', 0, '') as string;
-		const nodeVersion = this.getNode().typeVersion;
-
-		if (agentType === 'conversationalAgent') {
-			return await conversationalAgentExecute.call(this, nodeVersion);
-		} else if (agentType === 'openAiFunctionsAgent') {
-			return await openAiFunctionsAgentExecute.call(this, nodeVersion);
-		} else if (agentType === 'reActAgent') {
-			return await reActAgentAgentExecute.call(this, nodeVersion);
-		} else if (agentType === 'sqlAgent') {
-			return await sqlAgentAgentExecute.call(this, nodeVersion);
-		} else if (agentType === 'planAndExecuteAgent') {
-			return await planAndExecuteAgentExecute.call(this, nodeVersion);
-		}
-
-		throw new NodeOperationError(this.getNode(), `The agent type "${agentType}" is not supported`);
+		super(nodeVersions, baseDescription);
 	}
 }

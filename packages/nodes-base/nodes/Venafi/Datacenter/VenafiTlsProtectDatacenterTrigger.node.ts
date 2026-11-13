@@ -1,12 +1,13 @@
-import type {
-	IPollFunctions,
-	IDataObject,
-	INodeExecutionData,
-	INodeType,
-	INodeTypeDescription,
-} from 'n8n-workflow';
-
 import moment from 'moment-timezone';
+import {
+	type IPollFunctions,
+	type IDataObject,
+	type INodeExecutionData,
+	type INodeType,
+	type INodeTypeDescription,
+	NodeConnectionTypes,
+	requestPath,
+} from 'n8n-workflow';
 
 import { venafiApiRequest } from './GenericFunctions';
 
@@ -30,7 +31,7 @@ export class VenafiTlsProtectDatacenterTrigger implements INodeType {
 		],
 		polling: true,
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
 			{
 				displayName: 'Trigger On',
@@ -62,7 +63,7 @@ export class VenafiTlsProtectDatacenterTrigger implements INodeType {
 		const { Certificates: certificates } = await venafiApiRequest.call(
 			this,
 			'GET',
-			'/vedsdk/certificates',
+			requestPath`/vedsdk/certificates`,
 			{},
 			qs,
 		);

@@ -4,12 +4,13 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
-import { theHiveApiRequest } from '../../transport';
-
-import { fixFieldType, prepareInputItem } from '../../helpers/utils';
-import { caseRLC } from '../../descriptions';
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { caseRLC } from '../../descriptions';
+import { fixFieldType, prepareInputItem } from '../../helpers/utils';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	caseRLC,
@@ -65,7 +66,12 @@ export async function execute(
 
 	body = fixFieldType(body);
 
-	responseData = await theHiveApiRequest.call(this, 'POST', `/v1/case/${caseId}/task`, body);
+	responseData = await theHiveApiRequest.call(
+		this,
+		'POST',
+		requestPath`/v1/case/${caseId}/task`,
+		body,
+	);
 
 	const executionData = this.helpers.constructExecutionMetaData(wrapData(responseData), {
 		itemData: { item: i },

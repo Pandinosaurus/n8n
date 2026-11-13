@@ -1,39 +1,47 @@
+import { sendAt } from 'cron';
+import moment from 'moment-timezone';
 import type {
 	ITriggerFunctions,
-	IDataObject,
 	INodeType,
 	INodeTypeDescription,
 	ITriggerResponse,
+	Cron,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-import { CronJob } from 'cron';
-import moment from 'moment-timezone';
-import type { IRecurencyRule } from './SchedulerInterface';
-import { convertToUnixFormat, recurencyCheck } from './GenericFunctions';
+import {
+	intervalToRecurrence,
+	recurrenceCheck,
+	resetStaleRecurrence,
+	toCronExpression,
+	toCronSource,
+	validateInterval,
+	withIntervalDefaults,
+} from './GenericFunctions';
+import type { IRecurrenceRule, Rule } from './SchedulerInterface';
 
 export class ScheduleTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Schedule Trigger',
 		name: 'scheduleTrigger',
-		icon: 'fa:clock',
+		icon: 'node:schedule-trigger',
+		iconColor: 'black',
 		group: ['trigger', 'schedule'],
-		version: [1, 1.1],
+		version: [1, 1.1, 1.2, 1.3, 1.4],
 		description: 'Triggers the workflow on a given schedule',
 		eventTriggerDescription: '',
 		activationMessage:
 			'Your schedule trigger will now trigger executions on the schedule you have defined.',
 		defaults: {
 			name: 'Schedule Trigger',
-			color: '#31C49F',
 		},
 
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
 			{
 				displayName:
-					'This workflow will run on the schedule you define here once you <a data-key="activate">activate</a> it.<br><br>For testing, you can also trigger it manually: by going back to the canvas and clicking \'test workflow\'',
+					"This workflow will run on the schedule you define here once you publish it.<br><br>For testing, you can also trigger it manually: by going back to the canvas and clicking 'execute workflow'",
 				name: 'notice',
 				type: 'notice',
 				default: '',
@@ -57,6 +65,10 @@ export class ScheduleTrigger implements INodeType {
 					{
 						name: 'interval',
 						displayName: 'Trigger Interval',
+						builderHint: {
+							propertyHint:
+								'You can add multiple intervals to trigger at different times. Use "Custom (Cron)" for more specific scheduling patterns.',
+						},
 						values: [
 							{
 								displayName: 'Trigger Interval',
@@ -105,7 +117,12 @@ export class ScheduleTrigger implements INodeType {
 										field: ['seconds'],
 									},
 								},
+								typeOptions: {
+									minValue: 1,
+									maxValue: 59,
+								},
 								description: 'Number of seconds between each workflow trigger',
+								hint: 'Must be in range 1-59',
 							},
 							{
 								displayName: 'Minutes Between Triggers',
@@ -117,7 +134,12 @@ export class ScheduleTrigger implements INodeType {
 										field: ['minutes'],
 									},
 								},
+								typeOptions: {
+									minValue: 1,
+									maxValue: 59,
+								},
 								description: 'Number of minutes between each workflow trigger',
+								hint: 'Must be in range 1-59',
 							},
 							{
 								displayName: 'Hours Between Triggers',
@@ -128,8 +150,13 @@ export class ScheduleTrigger implements INodeType {
 										field: ['hours'],
 									},
 								},
+								typeOptions: {
+									minValue: 1,
+									maxValue: 23,
+								},
 								default: 1,
 								description: 'Number of hours between each workflow trigger',
+								hint: 'Must be in range 1-23',
 							},
 							{
 								displayName: 'Days Between Triggers',
@@ -140,8 +167,13 @@ export class ScheduleTrigger implements INodeType {
 										field: ['days'],
 									},
 								},
+								typeOptions: {
+									minValue: 1,
+									maxValue: 31,
+								},
 								default: 1,
 								description: 'Number of days between each workflow trigger',
+								hint: 'Must be in range 1-31',
 							},
 							{
 								displayName: 'Weeks Between Triggers',
@@ -159,6 +191,9 @@ export class ScheduleTrigger implements INodeType {
 								displayName: 'Months Between Triggers',
 								name: 'monthsInterval',
 								type: 'number',
+								typeOptions: {
+									minValue: 1,
+								},
 								displayOptions: {
 									show: {
 										field: ['months'],
@@ -402,247 +437,163 @@ export class ScheduleTrigger implements INodeType {
 										field: ['cronExpression'],
 									},
 								},
-								hint: 'Format: [Minute] [Hour] [Day of Month] [Month] [Day of Week]',
+								hint: 'Format: ([Second]) [Minute] [Hour] [Day of Month] [Month] [Day of Week]',
 							},
 						],
 					},
 				],
 			},
+			{
+				displayName: 'If Execution Is Missed',
+				name: 'misfirePolicy',
+				type: 'options',
+				default: 'skip',
+				options: [
+					{ name: 'Run the Most Recent Missed Execution Per Rule', value: 'coalesce' },
+					{ name: 'Run the Most Recent Missed Execution', value: 'coalesce_owner' },
+					{ name: "Don't Run Missed Executions", value: 'skip' },
+				],
+				hint: 'Applies once an execution is later than the grace period set below',
+				isNodeSetting: true,
+				noDataExpression: true, // read at activation, so an expression would never be resolved
+				displayOptions: {
+					show: {
+						'@version': [{ _cnd: { gte: 1.4 } }],
+					},
+				},
+			},
+			{
+				displayName: 'Missed Execution Grace Period (Seconds)',
+				name: 'misfireGraceSeconds',
+				type: 'number',
+				default: 0, // `0` means "use the instance settings"
+				typeOptions: { minValue: 0, numberPrecision: 0 },
+				description:
+					'How late an execution may start before it counts as missed. Set to 0 to use the instance setting.',
+				isNodeSetting: true,
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						'@version': [{ _cnd: { gte: 1.4 } }],
+					},
+				},
+			},
 		],
 	};
 
 	async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
-		const rule = this.getNodeParameter('rule', []) as IDataObject;
-		const interval = rule.interval as IDataObject[];
-		const timezone = this.getTimezone();
 		const version = this.getNode().typeVersion;
-		const cronJobs: CronJob[] = [];
-		const intervalArr: NodeJS.Timeout[] = [];
+		const { interval = [{}] } = this.getNodeParameter('rule', {}) as Partial<Rule>;
+		const intervals = interval.map(withIntervalDefaults);
+		const timezone = this.getTimezone();
 		const staticData = this.getWorkflowStaticData('node') as {
-			recurrencyRules: number[];
+			recurrenceRules: Array<number | undefined>;
+			recurrenceRuleSignatures: Array<string | undefined>;
 		};
-		if (!staticData.recurrencyRules) {
-			staticData.recurrencyRules = [];
+		if (!staticData.recurrenceRules) {
+			staticData.recurrenceRules = [];
 		}
-		const executeTrigger = async (recurency: IRecurencyRule) => {
+		if (!staticData.recurrenceRuleSignatures) {
+			staticData.recurrenceRuleSignatures = [];
+		}
+
+		if (version >= 1.3) {
+			for (let i = 0; i < intervals.length; i++) {
+				validateInterval(this.getNode(), i, intervals[i]);
+			}
+		}
+
+		const workflowId = this.getWorkflow().id;
+		const nodeId = this.getNode().id;
+
+		const executeTrigger = (
+			recurrence: IRecurrenceRule,
+			skipRecurrenceCheck = false,
+			scheduledTime?: Date,
+		) => {
+			if (!skipRecurrenceCheck) {
+				const shouldTrigger = recurrenceCheck(recurrence, staticData.recurrenceRules, timezone);
+				if (!shouldTrigger) return;
+			}
+
+			const momentTz = moment.tz(timezone);
 			const resultData = {
-				timestamp: moment.tz(timezone).toISOString(true),
-				'Readable date': moment.tz(timezone).format('MMMM Do YYYY, h:mm:ss a'),
-				'Readable time': moment.tz(timezone).format('h:mm:ss a'),
-				'Day of week': moment.tz(timezone).format('dddd'),
-				Year: moment.tz(timezone).format('YYYY'),
-				Month: moment.tz(timezone).format('MMMM'),
-				'Day of month': moment.tz(timezone).format('DD'),
-				Hour: moment.tz(timezone).format('HH'),
-				Minute: moment.tz(timezone).format('mm'),
-				Second: moment.tz(timezone).format('ss'),
-				Timezone: moment.tz(timezone).format('z Z'),
+				timestamp: momentTz.toISOString(true),
+				'Readable date': momentTz.format('MMMM Do YYYY, h:mm:ss a'),
+				'Readable time': momentTz.format('h:mm:ss a'),
+				'Day of week': momentTz.format('dddd'),
+				Year: momentTz.format('YYYY'),
+				Month: momentTz.format('MMMM'),
+				'Day of month': momentTz.format('DD'),
+				Hour: momentTz.format('HH'),
+				Minute: momentTz.format('mm'),
+				Second: momentTz.format('ss'),
+				Timezone: `${timezone} (UTC${momentTz.format('Z')})`,
 			};
 
-			if (!recurency.activated) {
-				this.emit([this.helpers.returnJsonArray([resultData])]);
-			} else {
-				if (recurencyCheck(recurency, staticData.recurrencyRules, timezone)) {
-					this.emit([this.helpers.returnJsonArray([resultData])]);
-				}
-			}
+			// The workflowId should always be defined, but if it isn't we skip
+			// the deduplication key.
+			const deduplicationKey =
+				workflowId && scheduledTime
+					? `${workflowId}:${nodeId}:${scheduledTime.toISOString()}`
+					: undefined;
+
+			this.emit(
+				[this.helpers.returnJsonArray([resultData])],
+				/* responsePromise= */ undefined,
+				/* donePromise= */ undefined,
+				deduplicationKey,
+			);
 		};
 
-		for (let i = 0; i < interval.length; i++) {
-			let intervalValue = 1000;
-			if (interval[i].field === 'cronExpression') {
-				if (version > 1) {
-					// ! Remove this part if we use a cron library that follows unix cron expression
-					convertToUnixFormat(interval[i]);
-				}
-				const cronExpression = interval[i].expression as string;
+		const nodeKey = `${workflowId ?? ''}:${nodeId}`;
+		const rules = intervals.map((interval, i) => ({
+			interval,
+			cronExpression: toCronExpression(interval, nodeKey),
+			recurrence: intervalToRecurrence(interval, i),
+		}));
+
+		if (this.getMode() !== 'manual') {
+			// Re-arm rules left stale by a previous schedule config (scheduled mode only).
+			resetStaleRecurrence(staticData, rules);
+
+			for (const { interval, cronExpression, recurrence } of rules) {
 				try {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () => await executeTrigger({ activated: false } as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
+					const cron: Cron = {
+						expression: cronExpression,
+						recurrence,
+						source: toCronSource(interval),
+					};
+					this.helpers.registerCron(cron, (scheduledTime: Date) =>
+						executeTrigger(recurrence, /* skipRecurrenceCheck= */ false, scheduledTime),
 					);
-					cronJobs.push(cronJob);
 				} catch (error) {
-					throw new NodeOperationError(this.getNode(), 'Invalid cron expression', {
-						description: 'More information on how to build them at https://crontab.guru/',
-					});
+					if (interval.field === 'cronExpression') {
+						throw new NodeOperationError(this.getNode(), 'Invalid cron expression', {
+							description: 'More information on how to build them at https://crontab.guru/',
+						});
+					} else {
+						throw error;
+					}
 				}
 			}
-
-			if (interval[i].field === 'seconds') {
-				const seconds = interval[i].secondsInterval as number;
-				intervalValue *= seconds;
-				const intervalObj = setInterval(
-					async () => await executeTrigger({ activated: false } as IRecurencyRule),
-					intervalValue,
-				) as NodeJS.Timeout;
-				intervalArr.push(intervalObj);
-			}
-
-			if (interval[i].field === 'minutes') {
-				const minutes = interval[i].minutesInterval as number;
-				intervalValue *= 60 * minutes;
-				const intervalObj = setInterval(
-					async () => await executeTrigger({ activated: false } as IRecurencyRule),
-					intervalValue,
-				) as NodeJS.Timeout;
-				intervalArr.push(intervalObj);
-			}
-
-			if (interval[i].field === 'hours') {
-				const hour = interval[i].hoursInterval as number;
-				const minute = interval[i].triggerAtMinute?.toString() as string;
-				const cronTimes: string[] = [minute, '*', '*', '*', '*'];
-				const cronExpression: string = cronTimes.join(' ');
-				if (hour === 1) {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () => await executeTrigger({ activated: false } as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
-					);
-					cronJobs.push(cronJob);
-				} else {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () =>
-							await executeTrigger({
-								activated: true,
-								index: i,
-								intervalSize: hour,
-								typeInterval: 'hours',
-							} as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
-					);
-					cronJobs.push(cronJob);
+			return {};
+		} else {
+			const manualTriggerFunction = async () => {
+				const { interval, cronExpression, recurrence } = rules[0];
+				if (interval.field === 'cronExpression') {
+					try {
+						sendAt(cronExpression);
+					} catch (error) {
+						throw new NodeOperationError(this.getNode(), 'Invalid cron expression', {
+							description: 'More information on how to build them at https://crontab.guru/',
+						});
+					}
 				}
-			}
+				executeTrigger(recurrence, true);
+			};
 
-			if (interval[i].field === 'days') {
-				const day = interval[i].daysInterval as number;
-				const hour = interval[i].triggerAtHour?.toString() as string;
-				const minute = interval[i].triggerAtMinute?.toString() as string;
-				const cronTimes: string[] = [minute, hour, '*', '*', '*'];
-				const cronExpression: string = cronTimes.join(' ');
-				if (day === 1) {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () => await executeTrigger({ activated: false } as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
-					);
-					cronJobs.push(cronJob);
-				} else {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () =>
-							await executeTrigger({
-								activated: true,
-								index: i,
-								intervalSize: day,
-								typeInterval: 'days',
-							} as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
-					);
-					cronJobs.push(cronJob);
-				}
-			}
-
-			if (interval[i].field === 'weeks') {
-				const hour = interval[i].triggerAtHour?.toString() as string;
-				const minute = interval[i].triggerAtMinute?.toString() as string;
-				const week = interval[i].weeksInterval as number;
-				const days = interval[i].triggerAtDay as IDataObject[];
-				const day = days.length === 0 ? '*' : days.join(',');
-				const cronTimes: string[] = [minute, hour, '*', '*', day];
-				const cronExpression = cronTimes.join(' ');
-				if (week === 1) {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () => await executeTrigger({ activated: false } as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
-					);
-					cronJobs.push(cronJob);
-				} else {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () =>
-							await executeTrigger({
-								activated: true,
-								index: i,
-								intervalSize: week,
-								typeInterval: 'weeks',
-							} as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
-					);
-					cronJobs.push(cronJob);
-				}
-			}
-
-			if (interval[i].field === 'months') {
-				const month = interval[i].monthsInterval;
-				const day = interval[i].triggerAtDayOfMonth?.toString() as string;
-				const hour = interval[i].triggerAtHour?.toString() as string;
-				const minute = interval[i].triggerAtMinute?.toString() as string;
-				const cronTimes: string[] = [minute, hour, day, '*', '*'];
-				const cronExpression: string = cronTimes.join(' ');
-				if (month === 1) {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () => await executeTrigger({ activated: false } as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
-					);
-					cronJobs.push(cronJob);
-				} else {
-					const cronJob = new CronJob(
-						cronExpression,
-						async () =>
-							await executeTrigger({
-								activated: true,
-								index: i,
-								intervalSize: month,
-								typeInterval: 'months',
-							} as IRecurencyRule),
-						undefined,
-						true,
-						timezone,
-					);
-					cronJobs.push(cronJob);
-				}
-			}
+			return { manualTriggerFunction };
 		}
-
-		async function closeFunction() {
-			for (const cronJob of cronJobs) {
-				cronJob.stop();
-			}
-			for (const entry of intervalArr) {
-				clearInterval(entry);
-			}
-		}
-
-		async function manualTriggerFunction() {
-			void executeTrigger({ activated: false } as IRecurencyRule);
-		}
-
-		return {
-			closeFunction,
-			manualTriggerFunction,
-		};
 	}
 }

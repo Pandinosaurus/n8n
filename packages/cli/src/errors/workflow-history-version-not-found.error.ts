@@ -1,3 +1,3 @@
-import { ApplicationError } from 'n8n-workflow';
+import { UnexpectedError } from '@n8n/errors';
 
-export class WorkflowHistoryVersionNotFoundError extends ApplicationError {}
+export class WorkflowHistoryVersionNotFoundError extends UnexpectedError {}

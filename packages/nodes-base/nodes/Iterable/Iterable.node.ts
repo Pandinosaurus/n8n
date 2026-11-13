@@ -1,3 +1,4 @@
+import moment from 'moment-timezone';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -8,15 +9,11 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
-
-import moment from 'moment-timezone';
-import { iterableApiRequest } from './GenericFunctions';
+import { NodeConnectionTypes, NodeApiError, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { eventFields, eventOperations } from './EventDescription';
-
+import { iterableApiRequest, toPathValue } from './GenericFunctions';
 import { userFields, userOperations } from './UserDescription';
-
 import { userListFields, userListOperations } from './UserListDescription';
 
 export class Iterable implements INodeType {
@@ -26,14 +23,16 @@ export class Iterable implements INodeType {
 		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
 		icon: 'file:iterable.png',
 		group: ['input'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		description: 'Consume Iterable API',
 		defaults: {
 			name: 'Iterable',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'iterableApi',
@@ -75,7 +74,7 @@ export class Iterable implements INodeType {
 		loadOptions: {
 			// Get all the lists available channels
 			async getLists(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const { lists } = await iterableApiRequest.call(this, 'GET', '/lists');
+				const { lists } = await iterableApiRequest.call(this, 'GET', requestPath`/lists`);
 				const returnData: INodePropertyOptions[] = [];
 				for (const list of lists) {
 					returnData.push({
@@ -97,6 +96,7 @@ export class Iterable implements INodeType {
 		let responseData;
 		const resource = this.getNodeParameter('resource', 0);
 		const operation = this.getNodeParameter('operation', 0);
+		const version = this.getNode().typeVersion;
 
 		if (resource === 'event') {
 			if (operation === 'track') {
@@ -139,7 +139,9 @@ export class Iterable implements INodeType {
 					events.push(body);
 				}
 
-				responseData = await iterableApiRequest.call(this, 'POST', '/events/trackBulk', { events });
+				responseData = await iterableApiRequest.call(this, 'POST', requestPath`/events/trackBulk`, {
+					events,
+				});
 
 				returnData.push(responseData as IDataObject);
 			}
@@ -176,7 +178,12 @@ export class Iterable implements INodeType {
 						delete body.dataFieldsUi;
 					}
 
-					responseData = await iterableApiRequest.call(this, 'POST', '/users/update', body);
+					responseData = await iterableApiRequest.call(
+						this,
+						'POST',
+						requestPath`/users/update`,
+						body,
+					);
 
 					if (!this.continueOnFail()) {
 						if (responseData.code !== 'Success') {
@@ -202,10 +209,10 @@ export class Iterable implements INodeType {
 
 					if (by === 'email') {
 						const email = this.getNodeParameter('email', i) as string;
-						endpoint = `/users/${email}`;
+						endpoint = requestPath`/users/${toPathValue(version, email)}`;
 					} else {
 						const userId = this.getNodeParameter('userId', i) as string;
-						endpoint = `/users/byUserId/${userId}`;
+						endpoint = requestPath`/users/byUserId/${toPathValue(version, userId)}`;
 					}
 
 					responseData = await iterableApiRequest.call(this, 'DELETE', endpoint);
@@ -230,11 +237,11 @@ export class Iterable implements INodeType {
 
 					if (by === 'email') {
 						const email = this.getNodeParameter('email', i) as string;
-						endpoint = '/users/getByEmail';
+						endpoint = requestPath`/users/getByEmail`;
 						qs.email = email;
 					} else {
 						const userId = this.getNodeParameter('userId', i) as string;
-						endpoint = `/users/byUserId/${userId}`;
+						endpoint = requestPath`/users/byUserId/${toPathValue(version, userId)}`;
 					}
 
 					responseData = await iterableApiRequest.call(this, 'GET', endpoint, {}, qs);
@@ -280,7 +287,12 @@ export class Iterable implements INodeType {
 
 				body.subscribers = subscribers;
 
-				responseData = await iterableApiRequest.call(this, 'POST', '/lists/subscribe', body);
+				responseData = await iterableApiRequest.call(
+					this,
+					'POST',
+					requestPath`/lists/subscribe`,
+					body,
+				);
 
 				returnData.push(responseData as IDataObject);
 			}
@@ -314,7 +326,12 @@ export class Iterable implements INodeType {
 
 				body.subscribers = subscribers;
 
-				responseData = await iterableApiRequest.call(this, 'POST', '/lists/unsubscribe', body);
+				responseData = await iterableApiRequest.call(
+					this,
+					'POST',
+					requestPath`/lists/unsubscribe`,
+					body,
+				);
 
 				returnData.push(responseData as IDataObject);
 			}

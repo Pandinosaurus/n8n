@@ -1,4 +1,7 @@
-import type { INodeProperties } from 'n8n-workflow';
+import { SEND_AND_WAIT_OPERATION, type INodeProperties } from 'n8n-workflow';
+
+import { appendAttributionOption } from '../../../../utils/descriptions';
+import { simplifyMemoryNotice, simplifyOutputShapeHint } from '../utils/descriptions';
 
 export const messageOperations: INodeProperties[] = [
 	{
@@ -56,6 +59,11 @@ export const messageOperations: INodeProperties[] = [
 				name: 'Send',
 				value: 'send',
 				action: 'Send a message',
+			},
+			{
+				name: 'Send and Wait for Response',
+				value: SEND_AND_WAIT_OPERATION,
+				action: 'Send message and wait for response',
 			},
 		],
 		default: 'send',
@@ -190,7 +198,7 @@ export const messageFields: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		displayOptions: {
 			show: {
 				resource: ['message'],
@@ -200,11 +208,7 @@ export const messageFields: INodeProperties[] = [
 		default: {},
 		options: [
 			{
-				// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
-				displayName: 'Append n8n Attribution',
-				name: 'appendAttribution',
-				type: 'boolean',
-				default: true,
+				...appendAttributionOption,
 				description:
 					'Whether to include the phrase “This email was sent automatically with n8n” to the end of the email',
 			},
@@ -296,12 +300,18 @@ export const messageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint: simplifyOutputShapeHint,
+		},
 	},
+	simplifyMemoryNotice({
+		displayOptions: { show: { operation: ['get'], resource: ['message'], simple: [false] } },
+	}),
 	{
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		displayOptions: {
 			show: {
 				resource: ['message'],
@@ -378,7 +388,13 @@ export const messageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint: simplifyOutputShapeHint,
+		},
 	},
+	simplifyMemoryNotice({
+		displayOptions: { show: { operation: ['getAll'], resource: ['message'], simple: [false] } },
+	}),
 	{
 		displayName:
 			'Fetching a lot of messages may take a long time. Consider using filters to speed things up',
@@ -422,7 +438,7 @@ export const messageFields: INodeProperties[] = [
 				},
 				default: [],
 				description:
-					'Only return messages with labels that match all of the specified label IDs. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Only return messages with labels that match all of the specified label IDs. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Search',
@@ -487,7 +503,7 @@ export const messageFields: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		displayOptions: {
 			show: {
@@ -551,6 +567,6 @@ export const messageFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 	},
 ];

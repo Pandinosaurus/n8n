@@ -1,16 +1,15 @@
-import type { INode } from '../Interfaces';
-import { ApplicationError, type Level } from './application.error';
+import type { INode } from '../interfaces';
+import { OperationalError, type OperationalErrorOptions } from '@n8n/errors';
 
 interface TriggerCloseErrorOptions extends ErrorOptions {
-	level: Level;
+	level: OperationalErrorOptions['level'];
 }
 
-export class TriggerCloseError extends ApplicationError {
+export class TriggerCloseError extends OperationalError {
 	constructor(
 		readonly node: INode,
 		{ cause, level }: TriggerCloseErrorOptions,
 	) {
-		super('Trigger Close Failed', { cause, extra: { nodeName: node.name } });
-		this.level = level;
+		super('Trigger Close Failed', { cause, level, extra: { nodeName: node.name } });
 	}
 }

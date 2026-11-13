@@ -4,8 +4,9 @@ import type {
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
+	RequestPath,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import {
 	endOfDayDataFields,
@@ -15,14 +16,12 @@ import {
 	tickerFields,
 	tickerOperations,
 } from './descriptions';
-
 import {
 	format,
 	marketstackApiRequest,
 	marketstackApiRequestAllItems,
 	validateTimeOptions,
 } from './GenericFunctions';
-
 import type { EndOfDayDataFilters, Operation, Resource } from './types';
 
 export class Marketstack implements INodeType {
@@ -30,15 +29,16 @@ export class Marketstack implements INodeType {
 		displayName: 'Marketstack',
 		name: 'marketstack',
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
-		icon: 'file:marketstack.svg',
+		icon: { light: 'file:marketstack.svg', dark: 'file:marketstack.dark.svg' },
 		group: ['transform'],
 		version: 1,
 		description: 'Consume Marketstack API',
 		defaults: {
 			name: 'Marketstack',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'marketstackApi',
@@ -116,12 +116,12 @@ export class Marketstack implements INodeType {
 							Object.assign(qs, rest);
 						}
 
-						let endpoint: string;
+						let endpoint: RequestPath;
 
 						if (latest) {
-							endpoint = '/eod/latest';
+							endpoint = requestPath`/eod/latest`;
 						} else if (specificDate) {
-							endpoint = `/eod/${format(specificDate)}`;
+							endpoint = requestPath`/eod/${format(specificDate)}`;
 						} else {
 							if (!dateFrom || !dateTo) {
 								throw new NodeOperationError(
@@ -130,7 +130,7 @@ export class Marketstack implements INodeType {
 									{ itemIndex: i },
 								);
 							}
-							endpoint = '/eod';
+							endpoint = requestPath`/eod`;
 							qs.date_from = format(dateFrom);
 							qs.date_to = format(dateTo);
 						}
@@ -144,7 +144,7 @@ export class Marketstack implements INodeType {
 						// ----------------------------------
 
 						const exchange = this.getNodeParameter('exchange', i);
-						const endpoint = `/exchanges/${exchange}`;
+						const endpoint = requestPath`/exchanges/${exchange}`;
 
 						responseData = await marketstackApiRequest.call(this, 'GET', endpoint);
 					}
@@ -155,7 +155,7 @@ export class Marketstack implements INodeType {
 						// ----------------------------------
 
 						const symbol = this.getNodeParameter('symbol', i);
-						const endpoint = `/tickers/${symbol}`;
+						const endpoint = requestPath`/tickers/${symbol}`;
 
 						responseData = await marketstackApiRequest.call(this, 'GET', endpoint);
 					}

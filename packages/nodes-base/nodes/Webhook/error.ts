@@ -1,4 +1,6 @@
-export class WebhookAuthorizationError extends Error {
+import { UserError } from '@n8n/errors';
+
+export class WebhookAuthorizationError extends UserError {
 	constructor(
 		readonly responseCode: number,
 		message?: string,

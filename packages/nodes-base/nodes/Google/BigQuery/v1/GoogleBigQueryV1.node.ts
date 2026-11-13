@@ -1,4 +1,3 @@
-/* eslint-disable n8n-nodes-base/node-filename-against-convention */
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -10,16 +9,14 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-
-import { NodeApiError } from 'n8n-workflow';
-
+import { NodeConnectionTypes, NodeApiError, requestPath } from 'n8n-workflow';
 import { v4 as uuid } from 'uuid';
-import { generatePairedItemData } from '../../../../utils/utilities';
-import { googleApiRequest, googleApiRequestAllItems, simplify } from './GenericFunctions';
-
-import { recordFields, recordOperations } from './RecordDescription';
 
 import { oldVersionNotice } from '@utils/descriptions';
+
+import { googleApiRequest, googleApiRequestAllItems, simplify } from './GenericFunctions';
+import { recordFields, recordOperations } from './RecordDescription';
+import { generatePairedItemData } from '../../../../utils/utilities';
 
 const versionDescription: INodeTypeDescription = {
 	displayName: 'Google BigQuery',
@@ -32,8 +29,8 @@ const versionDescription: INodeTypeDescription = {
 	defaults: {
 		name: 'Google BigQuery',
 	},
-	inputs: ['main'],
-	outputs: ['main'],
+	inputs: [NodeConnectionTypes.Main],
+	outputs: [NodeConnectionTypes.Main],
 	credentials: [
 		{
 			name: 'googleApi',
@@ -106,7 +103,7 @@ export class GoogleBigQueryV1 implements INodeType {
 		loadOptions: {
 			async getProjects(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const { projects } = await googleApiRequest.call(this, 'GET', '/v2/projects');
+				const { projects } = await googleApiRequest.call(this, 'GET', requestPath`/v2/projects`);
 				for (const project of projects) {
 					returnData.push({
 						name: project.friendlyName as string,
@@ -121,7 +118,7 @@ export class GoogleBigQueryV1 implements INodeType {
 				const { datasets } = await googleApiRequest.call(
 					this,
 					'GET',
-					`/v2/projects/${projectId}/datasets`,
+					requestPath`/v2/projects/${projectId}/datasets`,
 				);
 				for (const dataset of datasets) {
 					returnData.push({
@@ -138,7 +135,7 @@ export class GoogleBigQueryV1 implements INodeType {
 				const { tables } = await googleApiRequest.call(
 					this,
 					'GET',
-					`/v2/projects/${projectId}/datasets/${datasetId}/tables`,
+					requestPath`/v2/projects/${projectId}/datasets/${datasetId}/tables`,
 				);
 				for (const table of tables) {
 					returnData.push({
@@ -204,7 +201,7 @@ export class GoogleBigQueryV1 implements INodeType {
 					responseData = await googleApiRequest.call(
 						this,
 						'POST',
-						`/v2/projects/${projectId}/datasets/${datasetId}/tables/${tableId}/insertAll`,
+						requestPath`/v2/projects/${projectId}/datasets/${datasetId}/tables/${tableId}/insertAll`,
 						body,
 					);
 
@@ -241,7 +238,7 @@ export class GoogleBigQueryV1 implements INodeType {
 					const { schema } = await googleApiRequest.call(
 						this,
 						'GET',
-						`/v2/projects/${projectId}/datasets/${datasetId}/tables/${tableId}`,
+						requestPath`/v2/projects/${projectId}/datasets/${datasetId}/tables/${tableId}`,
 						{},
 					);
 					fields = (schema.fields || []).map((field: IDataObject) => field.name);
@@ -261,7 +258,7 @@ export class GoogleBigQueryV1 implements INodeType {
 								this,
 								'rows',
 								'GET',
-								`/v2/projects/${projectId}/datasets/${datasetId}/tables/${tableId}/data`,
+								requestPath`/v2/projects/${projectId}/datasets/${datasetId}/tables/${tableId}/data`,
 								{},
 								qs,
 							);
@@ -270,7 +267,7 @@ export class GoogleBigQueryV1 implements INodeType {
 							responseData = await googleApiRequest.call(
 								this,
 								'GET',
-								`/v2/projects/${projectId}/datasets/${datasetId}/tables/${tableId}/data`,
+								requestPath`/v2/projects/${projectId}/datasets/${datasetId}/tables/${tableId}/data`,
 								{},
 								qs,
 							);

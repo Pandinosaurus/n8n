@@ -5,13 +5,13 @@ export class CarbonBlackApi implements ICredentialType {
 
 	displayName = 'Carbon Black API';
 
-	icon = 'file:icons/vmware.svg';
+	icon = { light: 'file:icons/vmware.svg', dark: 'file:icons/vmware.dark.svg' } as const;
 
 	documentationUrl = 'carbonblack';
 
 	httpRequestNode = {
 		name: 'Carbon Black',
-		docsUrl: 'https://developer.carbonblack.com/reference',
+		docsUrl: 'https://developer.carbonblack.com/reference/carbon-black-cloud/',
 		apiBaseUrl: '',
 	};
 

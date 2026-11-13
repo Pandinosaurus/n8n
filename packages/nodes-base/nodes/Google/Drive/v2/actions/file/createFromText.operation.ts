@@ -4,12 +4,16 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath, requestUrl } from 'n8n-workflow';
 
-import { driveRLC, folderRLC, updateCommonOptions } from '../common.descriptions';
-import { googleApiRequest } from '../../transport';
+import { updateDisplayOptions } from '@utils/utilities';
+
 import { DRIVE } from '../../helpers/interfaces';
 import { setFileProperties, setParentFolder, setUpdateCommonParams } from '../../helpers/utils';
-import { updateDisplayOptions } from '@utils/utilities';
+import { googleApiRequest } from '../../transport';
+import { driveRLC, folderRLC, updateCommonOptions } from '../common.descriptions';
+
+import FormData from 'form-data';
 
 const properties: INodeProperties[] = [
 	{
@@ -47,7 +51,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			...updateCommonOptions,
@@ -87,16 +91,13 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		extractValue: true,
 	}) as string;
 
-	const bodyParameters = setFileProperties(
-		{
-			name,
-			parents: [setParentFolder(folderId, driveId)],
-			mimeType,
-		},
-		options,
-	);
+	const metadata = {
+		name,
+		parents: [setParentFolder(folderId, driveId)],
+		mimeType,
+	};
 
-	const boundary = 'XXXXXX';
+	const bodyParameters = setFileProperties(metadata, options);
 
 	const qs = setUpdateCommonParams(
 		{
@@ -113,7 +114,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		const document = await googleApiRequest.call(
 			this,
 			'POST',
-			'/drive/v3/files',
+			requestPath`/drive/v3/files`,
 			bodyParameters,
 			qs,
 		);
@@ -136,10 +137,10 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		const updateResponse = await googleApiRequest.call(
 			this,
 			'POST',
-			'',
+			requestPath``,
 			body,
 			undefined,
-			`https://docs.googleapis.com/v1/documents/${document.id}:batchUpdate`,
+			requestUrl`https://docs.googleapis.com/v1/documents/${document.id}:batchUpdate`,
 		);
 
 		response = { id: updateResponse.documentId };
@@ -147,32 +148,44 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		const content = Buffer.from(this.getNodeParameter('content', i, '') as string, 'utf8');
 		const contentLength = content.byteLength;
 
-		const body = `
-		\n--${boundary}\
-		\nContent-Type: application/json; charset=UTF-8\
-		\n\n${JSON.stringify(bodyParameters)}\
-		\n--${boundary}\
-		\nContent-Type: text/plain\
-		\nContent-Transfer-Encoding: base64\
-		\n\n${content}\
-		\n--${boundary}--`;
+		const multiPartBody = new FormData();
+		multiPartBody.append('metadata', JSON.stringify(metadata), {
+			contentType: 'application/json',
+		});
+		multiPartBody.append('data', content, {
+			contentType: mimeType,
+			knownLength: contentLength,
+		});
 
-		const responseData = await googleApiRequest.call(
+		const uploadData = await googleApiRequest.call(
 			this,
 			'POST',
-			'/upload/drive/v3/files',
-			body,
+			requestPath`/upload/drive/v3/files`,
+			multiPartBody.getBuffer(),
 			{
 				uploadType: 'multipart',
-				...qs,
+				supportsAllDrives: true,
 			},
 			undefined,
 			{
 				headers: {
-					'Content-Type': `multipart/related; boundary=${boundary}`,
-					'Content-Length': contentLength,
+					'Content-Type': `multipart/related; boundary=${multiPartBody.getBoundary()}`,
+					'Content-Length': multiPartBody.getLengthSync(),
 				},
 			},
+		);
+
+		const uploadId = uploadData.id;
+
+		qs.addParents = setParentFolder(folderId, driveId);
+		delete bodyParameters.parents;
+
+		const responseData = await googleApiRequest.call(
+			this,
+			'PATCH',
+			requestPath`/drive/v3/files/${uploadId}`,
+			bodyParameters,
+			qs,
 		);
 
 		response = { id: responseData.id };

@@ -88,7 +88,7 @@ export const accountFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'The field to check to see if the account already exists. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'The field to check to see if the account already exists. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 	},
 	{
 		displayName: 'Value to Match',
@@ -159,7 +159,7 @@ export const accountFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'The source of the account record. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The source of the account record. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Billing City',
@@ -224,7 +224,7 @@ export const accountFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Value',
@@ -272,15 +272,38 @@ export const accountFields: INodeProperties[] = [
 				default: '',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'The owner of the account. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the account',
 			},
 			{
 				displayName: 'Parent ID',
@@ -301,7 +324,7 @@ export const accountFields: INodeProperties[] = [
 				name: 'recordTypeId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getRecordTypes',
 				},
@@ -324,7 +347,7 @@ export const accountFields: INodeProperties[] = [
 					loadOptionsMethod: 'getAccountTypes',
 				},
 				description:
-					'Type of account. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Type of account. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Shipping City',
@@ -423,7 +446,7 @@ export const accountFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'The source of the account record. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'The source of the account record. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Annual Revenue',
@@ -498,7 +521,7 @@ export const accountFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Value',
@@ -553,15 +576,38 @@ export const accountFields: INodeProperties[] = [
 				default: '',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'ownerId',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'The owner of the account. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the account',
 			},
 			{
 				displayName: 'Parent ID',
@@ -582,7 +628,7 @@ export const accountFields: INodeProperties[] = [
 				name: 'recordTypeId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getRecordTypes',
 				},
@@ -645,7 +691,7 @@ export const accountFields: INodeProperties[] = [
 					loadOptionsMethod: 'getAccountTypes',
 				},
 				description:
-					'Type of account. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Type of account. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Website',
@@ -771,7 +817,7 @@ export const accountFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'For date, number, or boolean, please use expressions. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'For date, number, or boolean, please use expressions. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Operation',
@@ -875,15 +921,38 @@ export const accountFields: INodeProperties[] = [
 					'Whether true, only the note owner or a user with the “Modify All Data” permission can view the note or query it via the API',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'ownerId',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'ID of the user who owns the note. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the note',
 			},
 		],
 	},

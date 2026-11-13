@@ -1,3 +1,4 @@
+import moment from 'moment-timezone';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -7,11 +8,10 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-
-import moment from 'moment-timezone';
-import { getresponseApiRequest, getResponseApiRequestAllItems } from './GenericFunctions';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import { contactFields, contactOperations } from './ContactDescription';
+import { getresponseApiRequest, getResponseApiRequestAllItems } from './GenericFunctions';
 
 export class GetResponse implements INodeType {
 	description: INodeTypeDescription = {
@@ -26,8 +26,9 @@ export class GetResponse implements INodeType {
 		defaults: {
 			name: 'GetResponse',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'getResponseApi',
@@ -89,7 +90,7 @@ export class GetResponse implements INodeType {
 			// select them easily
 			async getCampaigns(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const campaigns = await getresponseApiRequest.call(this, 'GET', '/campaigns');
+				const campaigns = await getresponseApiRequest.call(this, 'GET', requestPath`/campaigns`);
 				for (const campaign of campaigns) {
 					returnData.push({
 						name: campaign.name as string,
@@ -102,7 +103,7 @@ export class GetResponse implements INodeType {
 			// select them easily
 			async getTags(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const tags = await getresponseApiRequest.call(this, 'GET', '/tags');
+				const tags = await getresponseApiRequest.call(this, 'GET', requestPath`/tags`);
 				for (const tag of tags) {
 					returnData.push({
 						name: tag.name as string,
@@ -115,7 +116,11 @@ export class GetResponse implements INodeType {
 			// select them easily
 			async getCustomFields(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const customFields = await getresponseApiRequest.call(this, 'GET', '/custom-fields');
+				const customFields = await getresponseApiRequest.call(
+					this,
+					'GET',
+					requestPath`/custom-fields`,
+				);
 				for (const customField of customFields) {
 					returnData.push({
 						name: customField.name as string,
@@ -169,7 +174,12 @@ export class GetResponse implements INodeType {
 							}
 						}
 
-						responseData = await getresponseApiRequest.call(this, 'POST', '/contacts', body);
+						responseData = await getresponseApiRequest.call(
+							this,
+							'POST',
+							requestPath`/contacts`,
+							body,
+						);
 
 						responseData = { success: true };
 					}
@@ -184,7 +194,7 @@ export class GetResponse implements INodeType {
 						responseData = await getresponseApiRequest.call(
 							this,
 							'DELETE',
-							`/contacts/${contactId}`,
+							requestPath`/contacts/${contactId}`,
 							{},
 							qs,
 						);
@@ -202,7 +212,7 @@ export class GetResponse implements INodeType {
 						responseData = await getresponseApiRequest.call(
 							this,
 							'GET',
-							`/contacts/${contactId}`,
+							requestPath`/contacts/${contactId}`,
 							{},
 							qs,
 						);
@@ -254,13 +264,19 @@ export class GetResponse implements INodeType {
 							responseData = await getResponseApiRequestAllItems.call(
 								this,
 								'GET',
-								'/contacts',
+								requestPath`/contacts`,
 								{},
 								qs,
 							);
 						} else {
 							qs.perPage = this.getNodeParameter('limit', i);
-							responseData = await getresponseApiRequest.call(this, 'GET', '/contacts', {}, qs);
+							responseData = await getresponseApiRequest.call(
+								this,
+								'GET',
+								requestPath`/contacts`,
+								{},
+								qs,
+							);
 						}
 					}
 					//https://apireference.getresponse.com/?_ga=2.160836350.2102802044.1604719933-1897033509.1604598019#operation/updateContact
@@ -276,6 +292,11 @@ export class GetResponse implements INodeType {
 						if (updateFields.customFieldsUi) {
 							const customFieldValues = (updateFields.customFieldsUi as IDataObject)
 								.customFieldValues as IDataObject[];
+							customFieldValues.forEach((entry) => {
+								if (typeof entry.value === 'string') {
+									entry.value = entry.value.split(',').map((value) => value.trim());
+								}
+							});
 							if (customFieldValues) {
 								body.customFieldValues = customFieldValues;
 								delete body.customFieldsUi;
@@ -285,7 +306,7 @@ export class GetResponse implements INodeType {
 						responseData = await getresponseApiRequest.call(
 							this,
 							'POST',
-							`/contacts/${contactId}`,
+							requestPath`/contacts/${contactId}`,
 							body,
 						);
 					}

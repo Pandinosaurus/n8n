@@ -9,7 +9,17 @@ import type {
 	INodeTypeDescription,
 	NodeParameterValue,
 } from 'n8n-workflow';
-import { NodeConnectionType, NodeOperationError } from 'n8n-workflow';
+import {
+	NodeConnectionTypes,
+	NodeOperationError,
+	parseRegexLiteral,
+	safeRegex,
+} from 'n8n-workflow';
+
+export function matchesRegex(value1: NodeParameterValue, value2: NodeParameterValue): boolean {
+	const { source, flags } = parseRegexLiteral((value2 || '').toString());
+	return safeRegex.test(source, (value1 || '').toString(), flags);
+}
 
 export class SwitchV2 implements INodeType {
 	description: INodeTypeDescription;
@@ -22,7 +32,7 @@ export class SwitchV2 implements INodeType {
 				name: 'Switch',
 				color: '#506000',
 			},
-			inputs: ['main'],
+			inputs: [NodeConnectionTypes.Main],
 
 			outputs: `={{
 					((parameters) => {
@@ -33,13 +43,13 @@ export class SwitchV2 implements INodeType {
 							return Array
 								.from(
 									{ length: parameters.outputsAmount },
-									(_, i) => ({ type: "${NodeConnectionType.Main}", displayName: i.toString() })
+									(_, i) => ({ type: "${NodeConnectionTypes.Main}", displayName: i.toString() })
 								)
 						}
 
 
 						return rules.map(value => {
-							return { type: "${NodeConnectionType.Main}", displayName: value.outputKey }
+							return { type: "${NodeConnectionTypes.Main}", displayName: value.outputKey }
 						})
 					})($parameter)
 				}}`,
@@ -182,7 +192,7 @@ export class SwitchV2 implements INodeType {
 										},
 									],
 									default: 'equal',
-									description: 'Operation to decide where the the data should be mapped to',
+									description: 'Operation to decide where the data should be mapped to',
 								},
 								{
 									displayName: 'Value 2',
@@ -257,7 +267,7 @@ export class SwitchV2 implements INodeType {
 										},
 									],
 									default: 'after',
-									description: 'Operation to decide where the the data should be mapped to',
+									description: 'Operation to decide where the data should be mapped to',
 								},
 								{
 									displayName: 'Value 2',
@@ -348,7 +358,7 @@ export class SwitchV2 implements INodeType {
 										},
 									],
 									default: 'smaller',
-									description: 'Operation to decide where the the data should be mapped to',
+									description: 'Operation to decide where the data should be mapped to',
 								},
 								{
 									displayName: 'Value 2',
@@ -455,7 +465,7 @@ export class SwitchV2 implements INodeType {
 										},
 									],
 									default: 'equal',
-									description: 'Operation to decide where the the data should be mapped to',
+									description: 'Operation to decide where the data should be mapped to',
 								},
 								{
 									displayName: 'Value 2',
@@ -510,7 +520,7 @@ export class SwitchV2 implements INodeType {
 					},
 					default: -1,
 					description:
-						'The output to which to route all items which do not match any of the rules. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+						'The output to which to route all items which do not match any of the rules. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 				},
 			],
 		};
@@ -576,34 +586,9 @@ export class SwitchV2 implements INodeType {
 				(value1 as string).startsWith(value2 as string),
 			notStartsWith: (value1: NodeParameterValue, value2: NodeParameterValue) =>
 				!(value1 as string).startsWith(value2 as string),
-			regex: (value1: NodeParameterValue, value2: NodeParameterValue) => {
-				const regexMatch = (value2 || '').toString().match(new RegExp('^/(.*?)/([gimusy]*)$'));
-
-				let regex: RegExp;
-				if (!regexMatch) {
-					regex = new RegExp((value2 || '').toString());
-				} else if (regexMatch.length === 1) {
-					regex = new RegExp(regexMatch[1]);
-				} else {
-					regex = new RegExp(regexMatch[1], regexMatch[2]);
-				}
-
-				return !!(value1 || '').toString().match(regex);
-			},
-			notRegex: (value1: NodeParameterValue, value2: NodeParameterValue) => {
-				const regexMatch = (value2 || '').toString().match(new RegExp('^/(.*?)/([gimusy]*)$'));
-
-				let regex: RegExp;
-				if (!regexMatch) {
-					regex = new RegExp((value2 || '').toString());
-				} else if (regexMatch.length === 1) {
-					regex = new RegExp(regexMatch[1]);
-				} else {
-					regex = new RegExp(regexMatch[1], regexMatch[2]);
-				}
-
-				return !(value1 || '').toString().match(regex);
-			},
+			regex: matchesRegex,
+			notRegex: (value1: NodeParameterValue, value2: NodeParameterValue) =>
+				!matchesRegex(value1, value2),
 		};
 
 		// Converts the input data of a dateTime into a number for easy compare

@@ -1,17 +1,15 @@
+import jwt from 'jsonwebtoken';
+import moment from 'moment-timezone';
 import type {
 	ICredentialDataDecryptedObject,
 	ICredentialType,
 	IHttpRequestOptions,
 	INodeProperties,
+	Icon,
 } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
-
-import jwt from 'jsonwebtoken';
-
-import type { AxiosRequestConfig } from 'axios';
-
-import axios from 'axios';
+import { regions } from './common/google/regions';
+import { getTokenRequestClient, TOKEN_REQUEST_TIMEOUT } from './common/token-request';
 
 export class GoogleApi implements ICredentialType {
 	name = 'googleApi';
@@ -20,9 +18,29 @@ export class GoogleApi implements ICredentialType {
 
 	documentationUrl = 'google/service-account';
 
-	icon = 'file:icons/Google.svg';
+	icon: Icon = 'file:icons/Google.svg';
 
 	properties: INodeProperties[] = [
+		{
+			displayName: 'Region',
+			name: 'region',
+			type: 'options',
+			options: [
+				// Newer Gemini models (e.g. Gemini 3.x) are only served from `global` or the
+				// `eu`/`us` multi-region locations, not individual regions, so list them first.
+				{ name: 'Global (multi-region) - global', value: 'global' },
+				{ name: 'EU (multi-region) - eu', value: 'eu' },
+				{ name: 'US (multi-region) - us', value: 'us' },
+				...regions.map((r) => ({
+					name: `${r.displayName} (${r.location}) - ${r.name}`,
+					value: r.name,
+				})),
+			],
+			// Global is the only location that serves both Gemini 2.x and 3.x models.
+			default: 'global',
+			description:
+				'The region where the Google Cloud service is located. This applies only to specific nodes, like the Google Vertex Chat Model',
+		},
 		{
 			displayName: 'Service Account Email',
 			name: 'email',
@@ -129,28 +147,28 @@ export class GoogleApi implements ICredentialType {
 			{
 				algorithm: 'RS256',
 				header: {
-					kid: privateKey,
 					typ: 'JWT',
 					alg: 'RS256',
 				},
 			},
 		);
 
-		const axiosRequestConfig: AxiosRequestConfig = {
-			headers: {
-				'Content-Type': 'application/x-www-form-urlencoded',
-			},
+		// Fixed Google vendor host, independent of any n8n config, so SSRF protection is opted out.
+		const http = getTokenRequestClient('fixed-vendor');
+
+		const { access_token } = (await http.request({
+			url: 'https://oauth2.googleapis.com/token',
 			method: 'POST',
-			data: new URLSearchParams({
+			body: new URLSearchParams({
 				grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
 				assertion: signature,
 			}).toString(),
-			url: 'https://oauth2.googleapis.com/token',
-		};
-
-		const result = await axios(axiosRequestConfig);
-
-		const { access_token } = result.data;
+			headers: {
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			json: true,
+			timeout: TOKEN_REQUEST_TIMEOUT,
+		})) as { access_token: string };
 
 		const requestOptionsWithAuth: IHttpRequestOptions = {
 			...requestOptions,

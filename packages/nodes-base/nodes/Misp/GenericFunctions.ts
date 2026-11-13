@@ -1,4 +1,3 @@
-import { URL } from 'url';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -6,27 +5,28 @@ import type {
 	JsonObject,
 	IHttpRequestMethods,
 	IRequestOptions,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeOperationError, jsonParse, requestPath, requestUrl } from 'n8n-workflow';
+import { URL } from 'url';
 
 import type { MispCredentials } from './types';
 
 export async function mispApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
 ) {
-	const { baseUrl, allowUnauthorizedCerts } = (await this.getCredentials(
-		'mispApi',
-	)) as MispCredentials;
+	const { baseUrl, allowUnauthorizedCerts } = await this.getCredentials<MispCredentials>('mispApi');
 
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		method,
 		body,
 		qs,
-		uri: `${baseUrl}${endpoint}`,
+		uri: requestUrl`${baseUrl}${endpoint}`,
 		json: true,
 		rejectUnauthorized: !allowUnauthorizedCerts,
 	};
@@ -67,7 +67,7 @@ export async function mispApiRequest(
 	}
 }
 
-export async function mispApiRequestAllItems(this: IExecuteFunctions, endpoint: string) {
+export async function mispApiRequestAllItems(this: IExecuteFunctions, endpoint: RequestPath) {
 	const responseData = await mispApiRequest.call(this, 'GET', endpoint);
 	const returnAll = this.getNodeParameter('returnAll', 0);
 
@@ -77,6 +77,57 @@ export async function mispApiRequestAllItems(this: IExecuteFunctions, endpoint: 
 	}
 
 	return responseData;
+}
+
+export async function mispApiRestSearch(
+	this: IExecuteFunctions,
+	resource: 'attributes' | 'events' | 'objects',
+	itemIndex: number,
+) {
+	let body: IDataObject = {};
+	const useJson = this.getNodeParameter('useJson', itemIndex) as boolean;
+
+	if (useJson) {
+		const json = this.getNodeParameter('jsonOutput', itemIndex);
+		if (typeof json === 'string') {
+			body = jsonParse(json);
+		} else {
+			body = json as IDataObject;
+		}
+	} else {
+		const value = this.getNodeParameter('value', itemIndex) as string;
+		const additionalFields = this.getNodeParameter('additionalFields', itemIndex);
+
+		body.value = value;
+
+		if (Object.keys(additionalFields).length) {
+			if (additionalFields.tags) {
+				additionalFields.tags = (additionalFields.tags as string)
+					.split(',')
+					.map((tag) => tag.trim());
+			}
+			Object.assign(body, additionalFields);
+		}
+	}
+
+	const endpoint = requestPath`/${resource}/restSearch`;
+	const { response } = await mispApiRequest.call(this, 'POST', endpoint, body);
+
+	if (response) {
+		if (resource === 'attributes') {
+			return response.Attribute;
+		}
+
+		if (resource === 'events') {
+			return (response as IDataObject[]).map((event) => event.Event);
+		}
+
+		if (resource === 'objects') {
+			return (response as IDataObject[]).map((obj) => obj.Object);
+		}
+	} else {
+		return [];
+	}
 }
 
 export function throwOnEmptyUpdate(

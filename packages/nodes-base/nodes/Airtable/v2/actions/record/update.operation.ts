@@ -5,10 +5,17 @@ import type {
 	NodeApiError,
 	IExecuteFunctions,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions, wrapData } from '../../../../../utils/utilities';
-import { apiRequestAllItems, batchUpdate } from '../../transport';
-import { findMatches, processAirtableError, removeIgnored } from '../../helpers/utils';
 import type { UpdateRecord } from '../../helpers/interfaces';
+import {
+	coerceArrayTypeFields,
+	findMatches,
+	processAirtableError,
+	removeIgnored,
+} from '../../helpers/utils';
+import { apiRequestAllItems, batchUpdate } from '../../transport';
 import { insertUpdateOptions } from '../common.descriptions';
 
 const properties: INodeProperties[] = [
@@ -56,7 +63,7 @@ export async function execute(
 ): Promise<INodeExecutionData[]> {
 	const returnData: INodeExecutionData[] = [];
 
-	const endpoint = `${base}/${table}`;
+	const endpoint = requestPath`${base}/${table}`;
 
 	const dataMode = this.getNodeParameter('columns.mappingMode', 0) as string;
 
@@ -79,6 +86,7 @@ export async function execute(
 		try {
 			const records: UpdateRecord[] = [];
 			const options = this.getNodeParameter('options', i, {});
+			const typecast = options.typecast ? true : false;
 
 			if (dataMode === 'autoMapInputData') {
 				if (columnsToMatchOn.includes('id')) {
@@ -106,11 +114,28 @@ export async function execute(
 			}
 
 			if (dataMode === 'defineBelow') {
+				const getNodeParameterOptions = typecast ? { skipValidation: true } : undefined;
 				if (columnsToMatchOn.includes('id')) {
-					const { id, ...fields } = this.getNodeParameter('columns.value', i, []) as IDataObject;
+					const { id, ...fields } = this.getNodeParameter(
+						'columns.value',
+						i,
+						[],
+						getNodeParameterOptions,
+					) as IDataObject;
+					if (typecast) {
+						coerceArrayTypeFields(fields, this.getNode().parameters.columns);
+					}
 					records.push({ id: id as string, fields });
 				} else {
-					const fields = this.getNodeParameter('columns.value', i, []) as IDataObject;
+					const fields = this.getNodeParameter(
+						'columns.value',
+						i,
+						[],
+						getNodeParameterOptions,
+					) as IDataObject;
+					if (typecast) {
+						coerceArrayTypeFields(fields, this.getNode().parameters.columns);
+					}
 
 					const matches = findMatches(
 						tableData,
@@ -126,7 +151,7 @@ export async function execute(
 				}
 			}
 
-			const body: IDataObject = { typecast: options.typecast ? true : false };
+			const body: IDataObject = { typecast };
 
 			const responseData = await batchUpdate.call(this, endpoint, body, records);
 

@@ -4,6 +4,8 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions } from '../../../../../utils/utilities';
 import { parseDiscordError, prepareErrorData, setupChannelGetter } from '../../helpers/utils';
 import { discordApiRequest } from '../../transport';
@@ -24,7 +26,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -104,7 +106,7 @@ export const description = updateDisplayOptions(displayOptions, properties);
 
 export async function execute(
 	this: IExecuteFunctions,
-	guildId: string,
+	_guildId: string,
 	userGuilds: IDataObject[],
 ): Promise<INodeExecutionData[]> {
 	const returnData: INodeExecutionData[] = [];
@@ -129,7 +131,12 @@ export async function execute(
 				...options,
 			};
 
-			const response = await discordApiRequest.call(this, 'PATCH', `/channels/${channelId}`, body);
+			const response = await discordApiRequest.call(
+				this,
+				'PATCH',
+				requestPath`/channels/${channelId}`,
+				body,
+			);
 
 			const executionData = this.helpers.constructExecutionMetaData(
 				this.helpers.returnJsonArray(response),

@@ -1,5 +1,7 @@
 import type { INodeProperties } from 'n8n-workflow';
 
+import { simplifyMemoryNotice, threadSimplifyOutputShapeHint } from '../utils/descriptions';
+
 export const threadOperations: INodeProperties[] = [
 	{
 		displayName: 'Operation',
@@ -87,7 +89,7 @@ export const threadFields: INodeProperties[] = [
 		},
 		default: '',
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		displayOptions: {
 			show: {
 				resource: ['thread'],
@@ -137,7 +139,7 @@ export const threadFields: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		displayOptions: {
 			show: {
 				resource: ['thread'],
@@ -205,6 +207,23 @@ export const threadFields: INodeProperties[] = [
 				type: 'boolean',
 				default: false,
 				description: 'Whether to reply to the sender only or to the entire list of recipients',
+				displayOptions: {
+					hide: {
+						replyToRecipientsOnly: [true],
+					},
+				},
+			},
+			{
+				displayName: 'Reply to Recipients Only',
+				name: 'replyToRecipientsOnly',
+				type: 'boolean',
+				default: false,
+				description: 'Whether to exclude the sender from the reply',
+				displayOptions: {
+					hide: {
+						replyToSenderOnly: [true],
+					},
+				},
 			},
 		],
 	},
@@ -223,7 +242,13 @@ export const threadFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint: threadSimplifyOutputShapeHint,
+		},
 	},
+	simplifyMemoryNotice({
+		displayOptions: { show: { operation: ['get'], resource: ['thread'], simple: [false] } },
+	}),
 	{
 		displayName: 'Options',
 		name: 'options',
@@ -324,7 +349,7 @@ export const threadFields: INodeProperties[] = [
 				},
 				default: [],
 				description:
-					'Only return threads with labels that match all of the specified label IDs. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Only return threads with labels that match all of the specified label IDs. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Search',
@@ -410,6 +435,6 @@ export const threadFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 	},
 ];

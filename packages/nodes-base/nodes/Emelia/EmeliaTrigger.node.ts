@@ -1,12 +1,14 @@
-import type {
-	IDataObject,
-	IHookFunctions,
-	ILoadOptionsFunctions,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeDescription,
-	IWebhookFunctions,
-	IWebhookResponseData,
+import {
+	NodeConnectionTypes,
+	requestPath,
+	type IDataObject,
+	type IHookFunctions,
+	type ILoadOptionsFunctions,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeDescription,
+	type IWebhookFunctions,
+	type IWebhookResponseData,
 } from 'n8n-workflow';
 
 import { emeliaApiRequest, emeliaApiTest, emeliaGraphqlRequest } from './GenericFunctions';
@@ -29,7 +31,7 @@ export class EmeliaTrigger implements INodeType {
 			name: 'Emelia Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'emeliaApi',
@@ -51,7 +53,7 @@ export class EmeliaTrigger implements INodeType {
 				name: 'campaignId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'getCampaigns',
 				},
@@ -126,7 +128,7 @@ export class EmeliaTrigger implements INodeType {
 			async checkExists(this: IHookFunctions): Promise<boolean> {
 				const webhookUrl = this.getNodeWebhookUrl('default') as string;
 				const campaignId = this.getNodeParameter('campaignId') as string;
-				const { webhooks } = await emeliaApiRequest.call(this, 'GET', '/webhook');
+				const { webhooks } = await emeliaApiRequest.call(this, 'GET', requestPath`/webhook`);
 				for (const webhook of webhooks) {
 					if (webhook.url === webhookUrl && webhook.campaignId === campaignId) {
 						return true;
@@ -147,7 +149,12 @@ export class EmeliaTrigger implements INodeType {
 					campaignId,
 				};
 
-				const { webhookId } = await emeliaApiRequest.call(this, 'POST', '/webhook/webhook', body);
+				const { webhookId } = await emeliaApiRequest.call(
+					this,
+					'POST',
+					requestPath`/webhook/webhook`,
+					body,
+				);
 				webhookData.webhookId = webhookId;
 				return true;
 			},
@@ -161,7 +168,7 @@ export class EmeliaTrigger implements INodeType {
 						hookUrl: webhookUrl,
 						campaignId,
 					};
-					await emeliaApiRequest.call(this, 'DELETE', '/webhook/webhook', body);
+					await emeliaApiRequest.call(this, 'DELETE', requestPath`/webhook/webhook`, body);
 				} catch (error) {
 					return false;
 				}

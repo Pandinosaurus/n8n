@@ -4,9 +4,10 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
-
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import pgPromise from 'pg-promise';
+
+import { getDateAsStringTypeParsers } from '@utils/postgres';
 
 import { pgInsert, pgQueryV2 } from '../Postgres/v1/genericFunctions';
 
@@ -14,16 +15,17 @@ export class QuestDb implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'QuestDB',
 		name: 'questDb',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
+
 		icon: 'file:questdb.png',
 		group: ['input'],
-		version: 1,
+		version: [1, 1.1],
 		description: 'Get, add and update data in QuestDB',
 		defaults: {
 			name: 'QuestDB',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		parameterPane: 'wide',
 		credentials: [
 			{
@@ -212,7 +214,11 @@ export class QuestDb implements INodeType {
 			sslmode: (credentials.ssl as string) || 'disable',
 		};
 
-		const db = pgp(config);
+		const db = pgp({
+			...config,
+			// Return date/timestamp columns as strings so node output stays JSON-safe
+			...(this.getNode().typeVersion >= 1.1 ? { types: getDateAsStringTypeParsers(pgp) } : {}),
+		});
 
 		let returnItems: INodeExecutionData[] = [];
 

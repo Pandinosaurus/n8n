@@ -1,0 +1,1402 @@
+import { defineComponent, nextTick, reactive } from 'vue';
+import userEvent from '@testing-library/user-event';
+import { createTestingPinia } from '@pinia/testing';
+import { createComponentRenderer } from '@/__tests__/render';
+import {
+	getDropdownItems,
+	mockedStore,
+	type MockedStore,
+	useEmitters,
+	type Emitter,
+} from '@/__tests__/utils';
+import ProjectSettings from './ProjectSettings.vue';
+import { useProjectsStore } from '../projects.store';
+import { MODAL_CANCEL, MODAL_CLOSE, MODAL_CONFIRM, VIEWS } from '@/app/constants';
+import type { Project } from '../projects.types';
+import { ProjectTypes } from '../projects.types';
+import { createProjectListItem } from '../__tests__/utils';
+import { createUser } from '@/__tests__/data/users';
+import { useUsersStore } from '@n8n/stores/users.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import { useRolesStore } from '@n8n/stores/roles.store';
+import { useRBACStore } from '@n8n/stores/rbac.store';
+import type { FrontendSettings } from '@n8n/api-types';
+
+const mockTrack = vi.fn();
+const mockShowMessage = vi.fn();
+const mockShowError = vi.fn();
+const mockRouterPush = vi.fn();
+type RouteLeaveGuard = (to: unknown, from: unknown, next: (arg?: unknown) => void) => unknown;
+let routeLeaveGuard: RouteLeaveGuard | undefined;
+const { emitters, addEmitter } = useEmitters<
+	'projectMembersTable' | 'n8nUserSelect' | 'n8nIconPicker'
+>();
+
+vi.mock('@n8n/composables/useTelemetry', () => ({
+	useTelemetry: () => ({
+		track: mockTrack,
+	}),
+}));
+
+vi.mock('@n8n/composables/useToast', () => ({
+	useToast: () => ({
+		showMessage: mockShowMessage,
+		showError: mockShowError,
+	}),
+}));
+
+const mockConfirm = vi.fn();
+vi.mock('@/app/composables/useMessage', () => ({
+	useMessage: () => ({ confirm: mockConfirm }),
+}));
+
+vi.mock('vue-router', async () => {
+	const actual = await vi.importActual('vue-router');
+	return {
+		...actual,
+		useRouter: vi.fn(() => ({
+			currentRoute: {
+				value: {
+					params: {},
+				},
+			},
+			push: mockRouterPush,
+		})),
+		useRoute: () =>
+			reactive({
+				params: {},
+				query: {},
+			}),
+		onBeforeRouteLeave: (guard: RouteLeaveGuard) => {
+			routeLeaveGuard = guard;
+		},
+	};
+});
+
+// Stub child components to simplify event-driven testing
+vi.mock('../components/ProjectMembersTable.vue', () => ({
+	default: defineComponent({
+		name: 'ProjectMembersTableStub',
+		props: {
+			data: { type: Object, required: true },
+			currentUserId: { type: String, required: false },
+			projectRoles: { type: Array, required: true },
+			actions: { type: Array, required: false },
+			canEditRole: { type: Boolean, required: false },
+			tableOptions: { type: Object, required: false },
+		},
+		emits: ['update:options', 'update:role', 'action', 'show-upgrade-dialog'],
+		setup(_, { emit }) {
+			addEmitter('projectMembersTable', emit as unknown as Emitter);
+			return {};
+		},
+		template:
+			'<div data-test-id="project-members-table" :data-can-edit-role="canEditRole" :data-actions-count="actions?.length">' +
+			'<div data-test-id="members-count">{{ data.items.length }}</div>' +
+			'<div data-test-id="members-total">{{ data.count }}</div>' +
+			'<div data-test-id="members-ids">{{ data.items.map((item) => item.id).join(",") }}</div>' +
+			'<div data-test-id="members-page">{{ tableOptions?.page }}</div>' +
+			'</div>',
+	}),
+}));
+
+vi.mock('@n8n/design-system', async (importOriginal) => {
+	const original = await importOriginal<object>();
+	return {
+		...original,
+		N8nInput: defineComponent({
+			name: 'N8nInputStub',
+			props: { modelValue: { type: String, required: false } },
+			emits: ['update:model-value', 'blur'],
+			template:
+				'<div data-test-id="n8n-input-stub"><input :value="modelValue" @input="$emit(\'update:model-value\', $event.target.value)" @blur="$emit(\'blur\')" /></div>',
+		}),
+		N8nUserSelect: defineComponent({
+			name: 'N8nUserSelectStub',
+			props: {
+				users: { type: Array, required: true },
+				currentUserId: { type: String, required: false },
+				placeholder: { type: String, required: false },
+				disabled: { type: Boolean, required: false },
+			},
+			emits: ['update:model-value'],
+			setup(_, { emit }) {
+				addEmitter('n8nUserSelect', emit as unknown as Emitter);
+				return {};
+			},
+			template:
+				'<div data-test-id="project-members-select" :data-disabled="disabled" :data-user-ids="users.map((u) => u.id).join(\',\')"></div>',
+		}),
+		N8nIconPicker: defineComponent({
+			name: 'N8nIconPickerStub',
+			props: { modelValue: { type: Object, required: false } },
+			emits: ['update:model-value'],
+			setup(_, { emit }) {
+				addEmitter('n8nIconPicker', emit as unknown as Emitter);
+				return {};
+			},
+			template: '<div data-test-id="icon-picker"></div>',
+		}),
+	};
+});
+
+const renderComponent = createComponentRenderer(ProjectSettings);
+
+const getInput = (element: Element): HTMLInputElement => {
+	const input = element.querySelector('input');
+	if (!input) throw new Error('Input element not found');
+	return input;
+};
+
+const getTextarea = (element: Element): HTMLTextAreaElement => {
+	const textarea = element.querySelector('textarea');
+	if (!textarea) throw new Error('Textarea element not found');
+	return textarea;
+};
+
+const projects = [
+	ProjectTypes.Personal,
+	ProjectTypes.Personal,
+	ProjectTypes.Team,
+	ProjectTypes.Team,
+].map(createProjectListItem);
+
+let projectsStore: MockedStore<typeof useProjectsStore>;
+let usersStore: MockedStore<typeof useUsersStore>;
+let settingsStore: MockedStore<typeof useSettingsStore>;
+let rolesStore: MockedStore<typeof useRolesStore>;
+
+describe('ProjectSettings', () => {
+	beforeEach(() => {
+		mockTrack.mockClear();
+		mockShowMessage.mockClear();
+		mockShowError.mockClear();
+		mockRouterPush.mockClear();
+		routeLeaveGuard = undefined;
+		mockConfirm.mockReset();
+
+		mockShowMessage.mockReturnValue({ id: 'test', close: vi.fn() });
+		createTestingPinia();
+
+		projectsStore = mockedStore(useProjectsStore);
+		projectsStore.searchProjects.mockResolvedValue({ count: projects.length, data: projects });
+		projectsStore.fetchProjectPoolSettings.mockResolvedValue(undefined);
+		projectsStore.globalProjectPermissions = { list: true };
+		usersStore = mockedStore(useUsersStore);
+		settingsStore = mockedStore(useSettingsStore);
+		rolesStore = mockedStore(useRolesStore);
+
+		settingsStore.settings = {
+			enterprise: {
+				projects: {
+					team: { limit: -1 },
+				},
+			},
+			folders: { enabled: false },
+		} as FrontendSettings;
+
+		rolesStore.processedProjectRoles = [
+			{
+				slug: 'project:admin',
+				displayName: 'Admin',
+				description: null,
+				systemRole: false,
+				roleType: 'project' as const,
+				scopes: [],
+				licensed: true,
+			},
+			{
+				slug: 'project:editor',
+				displayName: 'Editor',
+				description: null,
+				systemRole: false,
+				roleType: 'project' as const,
+				scopes: [],
+				licensed: true,
+			},
+			{
+				slug: 'project:viewer',
+				displayName: 'Viewer',
+				description: null,
+				systemRole: false,
+				roleType: 'project' as const,
+				scopes: [],
+				licensed: true,
+			},
+		];
+
+		const mockProject: Project = {
+			id: '123',
+			name: 'Test Project',
+			description: '',
+			type: 'team',
+			icon: { type: 'icon', value: 'layers' },
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+			relations: [
+				{
+					id: '1',
+					firstName: 'John',
+					lastName: 'Doe',
+					email: 'john@example.com',
+					role: 'project:admin',
+				},
+			],
+			scopes: ['project:read', 'project:update', 'project:manageMembers'],
+			rolesManaged: false,
+		};
+
+		projectsStore.currentProject = mockProject;
+		projectsStore.currentProjectId = mockProject.id;
+		projectsStore.availableProjects = projects;
+
+		usersStore.allUsers = [
+			createUser({ id: '1', firstName: 'John', lastName: 'Doe', email: 'john@example.com' }),
+			createUser({ id: '2', firstName: 'Jane', lastName: 'Roe', email: 'jane@example.com' }),
+			createUser({
+				id: 'current-user',
+				firstName: 'Current',
+				lastName: 'User',
+				email: 'current@example.com',
+			}),
+		];
+		usersStore.usersById = Object.fromEntries(usersStore.allUsers.map((u) => [u.id, u]));
+
+		usersStore.currentUser = {
+			id: 'current-user',
+			firstName: 'Current',
+			lastName: 'User',
+			email: 'current@example.com',
+			isDefaultUser: false,
+			isPending: false,
+			isPendingUser: false,
+			mfaEnabled: false,
+			signInType: 'email',
+		};
+	});
+
+	it('deletes project with transfer or wipe based on modal selection', async () => {
+		projectsStore.deleteProject.mockResolvedValue();
+		projectsStore.getResourceCounts.mockResolvedValue({
+			credentials: 0,
+			workflows: 1,
+			dataTables: 0,
+		});
+
+		const r1 = renderComponent();
+		const deleteButton = r1.getByTestId('project-settings-delete-button');
+
+		// Case 1: Non-empty project, transfer to another project
+		await userEvent.click(deleteButton);
+		await nextTick();
+		expect(r1.getByTestId('project-settings-delete-confirm-button')).toBeInTheDocument();
+
+		const [transferRadio] = r1.getAllByRole('radio');
+		await userEvent.click(transferRadio);
+		await nextTick();
+
+		const transferSelect = r1.getByTestId('project-sharing-select');
+		const transferOptions = await getDropdownItems(transferSelect);
+		await userEvent.click(transferOptions[0]);
+		await nextTick();
+
+		await userEvent.click(r1.getByTestId('project-settings-delete-confirm-button'));
+		await nextTick();
+		expect(projectsStore.deleteProject).toHaveBeenCalledWith('123', expect.any(String));
+		expect(mockRouterPush).toHaveBeenCalledWith({ name: VIEWS.HOMEPAGE });
+
+		// Case 2: Empty project, wiping directly (no transfer)
+		projectsStore.deleteProject.mockClear();
+		projectsStore.getResourceCounts.mockResolvedValue({
+			credentials: 0,
+			workflows: 0,
+			dataTables: 0,
+		});
+
+		// unmount previous instance and re-render to reset dialog internal state
+		r1.unmount();
+		const r2 = renderComponent();
+		const deleteButton2 = r2.getByTestId('project-settings-delete-button');
+		await userEvent.click(deleteButton2);
+		await nextTick();
+		await userEvent.click(r2.getByTestId('project-settings-delete-confirm-button'));
+		await nextTick();
+		expect(projectsStore.deleteProject).toHaveBeenCalledWith('123', undefined);
+	});
+
+	it('renders core form elements and initializes state', async () => {
+		const { getByTestId } = renderComponent();
+		await nextTick();
+		expect(getByTestId('project-settings-container')).toBeInTheDocument();
+		const nameInput = getByTestId('project-settings-name-input');
+		const descriptionInput = getByTestId('project-settings-description-input');
+		expect(nameInput).toBeInTheDocument();
+		expect(descriptionInput).toBeInTheDocument();
+		// Save/Cancel are always rendered but disabled when clean
+		expect(getByTestId('project-settings-save-button')).toBeDisabled();
+		expect(getByTestId('project-settings-cancel-button')).toBeDisabled();
+		const actualName = getInput(nameInput);
+		const actualDesc = getTextarea(descriptionInput);
+		expect(actualName.value).toBe('Test Project');
+		expect(actualDesc.value).toBe('');
+	});
+
+	describe('Managed project roles', () => {
+		it('disables member management and shows notice when roles are managed', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				rolesManaged: true,
+			};
+
+			const { getByTestId, queryByTestId } = renderComponent();
+			await nextTick();
+
+			expect(queryByTestId('project-roles-managed-notice')).toBeInTheDocument();
+			expect(getByTestId('project-members-select')).toHaveAttribute('data-disabled', 'true');
+			expect(getByTestId('project-members-table')).toHaveAttribute('data-can-edit-role', 'false');
+			// remove action is suppressed -> empty actions array
+			expect(getByTestId('project-members-table')).toHaveAttribute('data-actions-count', '0');
+		});
+
+		it('allows member management and hides notice when roles are not managed', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				rolesManaged: false,
+			};
+
+			const { getByTestId, queryByTestId } = renderComponent();
+			await nextTick();
+
+			expect(queryByTestId('project-roles-managed-notice')).not.toBeInTheDocument();
+			expect(getByTestId('project-members-select')).toHaveAttribute('data-disabled', 'false');
+			expect(getByTestId('project-members-table')).toHaveAttribute('data-can-edit-role', 'true');
+			// remove action is available -> non-empty actions array
+			expect(getByTestId('project-members-table')).toHaveAttribute('data-actions-count', '1');
+		});
+
+		it('blocks member management when the project role lacks project:manageMembers', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				scopes: ['project:read', 'project:update'],
+				rolesManaged: false,
+			};
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('project-members-select')).toHaveAttribute('data-disabled', 'true');
+			expect(getByTestId('project-members-table')).toHaveAttribute('data-can-edit-role', 'false');
+			// removing a member needs the same scope -> no actions offered
+			expect(getByTestId('project-members-table')).toHaveAttribute('data-actions-count', '0');
+		});
+
+		it('still shows member management when the role has project:manageMembers but not project:update', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				scopes: ['project:read', 'project:manageMembers'],
+				rolesManaged: false,
+			};
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('project-members-select')).toHaveAttribute('data-disabled', 'false');
+			expect(getByTestId('project-members-table')).toHaveAttribute('data-can-edit-role', 'true');
+			expect(getByTestId('project-members-table')).toHaveAttribute('data-actions-count', '1');
+		});
+
+		it('exposes only member management to a project:manageMembers role, not project editing', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				scopes: ['project:read', 'project:manageMembers'],
+				rolesManaged: false,
+			};
+
+			const { getByTestId, queryByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('project-members-table')).toBeInTheDocument();
+			// Editing project details and deleting the project both need project:update
+			expect(queryByTestId('project-settings-name-input')).not.toBeInTheDocument();
+			expect(queryByTestId('project-settings-description-input')).not.toBeInTheDocument();
+			expect(queryByTestId('project-settings-save-button')).not.toBeInTheDocument();
+			expect(queryByTestId('project-settings-cancel-button')).not.toBeInTheDocument();
+			expect(queryByTestId('project-settings-delete-button')).not.toBeInTheDocument();
+		});
+	});
+
+	describe('Form interactions', () => {
+		it('marks dirty, cancels reset, and saves via Enter and button', async () => {
+			const updateSpy = vi.spyOn(projectsStore, 'updateProject').mockResolvedValue(undefined);
+			const { getByTestId } = renderComponent();
+			const nameInput = getByTestId('project-settings-name-input');
+			const actualInput = getInput(nameInput);
+
+			// Dirty then cancel
+			await userEvent.type(actualInput, ' Extra');
+			const cancelBtn1 = getByTestId('project-settings-cancel-button');
+			expect(cancelBtn1).toBeEnabled();
+			await userEvent.click(cancelBtn1);
+			expect(actualInput.value).toBe('Test Project');
+			// Buttons are disabled when clean
+			expect(getByTestId('project-settings-cancel-button')).toBeDisabled();
+			expect(getByTestId('project-settings-save-button')).toBeDisabled();
+
+			// Save via Enter
+			await userEvent.type(actualInput, ' - Updated');
+			await userEvent.type(actualInput, '{enter}');
+			await nextTick();
+			expect(updateSpy).toHaveBeenCalledWith(
+				'123',
+				expect.objectContaining({ name: 'Test Project - Updated', description: '' }),
+			);
+			expect(mockShowMessage).toHaveBeenCalled();
+			expect(mockTrack).toHaveBeenCalledWith(
+				'User changed project name',
+				expect.objectContaining({ project_id: '123', name: 'Test Project - Updated' }),
+			);
+
+			// Save via button
+			await userEvent.type(actualInput, ' Again');
+			const saveBtn = getByTestId('project-settings-save-button');
+			expect(saveBtn).toBeEnabled();
+			await userEvent.click(saveBtn);
+			await nextTick();
+			expect(updateSpy).toHaveBeenCalledTimes(2);
+			expect(mockShowMessage).toHaveBeenCalledTimes(2);
+		});
+	});
+
+	describe('Validation and error handling', () => {
+		it('prevents invalid save and shows error on failed save', async () => {
+			const error = new Error('Save failed');
+			projectsStore.updateProject.mockRejectedValue(error);
+			const { getByTestId } = renderComponent();
+			const nameInput = getByTestId('project-settings-name-input');
+			const actualInput = getInput(nameInput);
+
+			await userEvent.type(actualInput, ' Updated');
+			await userEvent.type(actualInput, '{enter}');
+			await nextTick();
+			expect(projectsStore.updateProject).toHaveBeenCalled();
+			expect(mockShowError).toHaveBeenCalledWith(error, expect.any(String));
+			expect(mockShowMessage).not.toHaveBeenCalled();
+
+			projectsStore.updateProject.mockClear();
+			await userEvent.clear(actualInput);
+			const saveButton2 = getByTestId('project-settings-save-button');
+			expect(saveButton2).toBeDisabled();
+			await userEvent.click(saveButton2);
+			expect(projectsStore.updateProject).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('Save state and validation', () => {
+		it('maintains state after save and validation toggles', async () => {
+			const updateSpy = vi.spyOn(projectsStore, 'updateProject').mockResolvedValue(undefined);
+			const { getByTestId } = renderComponent();
+			const nameInput = getByTestId('project-settings-name-input');
+			const actualInput = getInput(nameInput);
+
+			await userEvent.clear(actualInput);
+			const saveButton = getByTestId('project-settings-save-button');
+			expect(saveButton).toBeDisabled();
+			await userEvent.type(actualInput, 'Valid Project Name');
+			expect(saveButton).toBeEnabled();
+			expect(getByTestId('project-settings-cancel-button')).toBeEnabled();
+			await userEvent.click(saveButton);
+			await nextTick();
+			expect(updateSpy).toHaveBeenCalled();
+			// Buttons disabled when clean again
+			expect(getByTestId('project-settings-cancel-button')).toBeDisabled();
+			expect(getByTestId('project-settings-save-button')).toBeDisabled();
+		});
+	});
+
+	describe('Members table and role updates', () => {
+		it('adds a member immediately and emits telemetry', async () => {
+			const addSpy = vi.spyOn(projectsStore, 'addMember').mockResolvedValue(undefined);
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			// Initially one member
+			expect(getByTestId('members-count').textContent).toBe('1');
+
+			// Add member via user select
+			emitters.n8nUserSelect.emit('update:model-value', '2');
+			await nextTick();
+			expect(getByTestId('members-count').textContent).toBe('2');
+			expect(addSpy).toHaveBeenCalledWith('123', expect.objectContaining({ userId: '2' }));
+			expect(mockShowMessage).toHaveBeenCalled();
+			expect(mockTrack).toHaveBeenCalledWith(
+				'User added member to project',
+				expect.objectContaining({ project_id: '123', target_user_id: '2' }),
+			);
+		});
+		it('filters members by search term', async () => {
+			// Set up project with 10+ members to make search visible
+			const mockProjectWith10Members: Project = {
+				...projectsStore.currentProject!,
+				relations: [
+					{
+						id: '1',
+						firstName: 'Alice',
+						lastName: 'Smith',
+						email: 'alice@example.com',
+						role: 'project:editor',
+					},
+					{
+						id: '2',
+						firstName: 'Bob',
+						lastName: 'Johnson',
+						email: 'bob@example.com',
+						role: 'project:editor',
+					},
+					{
+						id: '3',
+						firstName: 'Charlie',
+						lastName: 'Williams',
+						email: 'charlie@example.com',
+						role: 'project:editor',
+					},
+					...Array.from({ length: 7 }, (_, i) => ({
+						id: String(i + 4),
+						firstName: `User${i + 4}`,
+						lastName: 'Test',
+						email: `user${i + 4}@example.com`,
+						role: 'project:editor',
+					})),
+				],
+			};
+			// Also add these users to usersById so relationUsers computed can find them
+			usersStore.allUsers = [
+				createUser({ id: '1', firstName: 'Alice', lastName: 'Smith', email: 'alice@example.com' }),
+				createUser({ id: '2', firstName: 'Bob', lastName: 'Johnson', email: 'bob@example.com' }),
+				createUser({
+					id: '3',
+					firstName: 'Charlie',
+					lastName: 'Williams',
+					email: 'charlie@example.com',
+				}),
+				...Array.from({ length: 7 }, (_, i) =>
+					createUser({
+						id: String(i + 4),
+						firstName: `User${i + 4}`,
+						lastName: 'Test',
+						email: `user${i + 4}@example.com`,
+					}),
+				),
+			];
+			usersStore.usersById = Object.fromEntries(usersStore.allUsers.map((u) => [u.id, u]));
+			projectsStore.currentProject = mockProjectWith10Members;
+
+			const wrapper = renderComponent();
+			await nextTick();
+
+			// Search input should be visible with 10+ members
+			const searchContainer = wrapper.getByTestId('project-members-search');
+			const searchInput = searchContainer.querySelector('input')!;
+
+			// Initially should show all 10 members
+			expect(wrapper.getByTestId('members-count').textContent).toBe('10');
+
+			// Search for "Alice"
+			await userEvent.type(searchInput, 'Alice');
+			await nextTick();
+
+			// Should now show only 1 member (Alice)
+			expect(wrapper.getByTestId('members-count').textContent).toBe('1');
+
+			// Clear search
+			await userEvent.clear(searchInput);
+			await nextTick();
+
+			// Should show all 10 members again
+			expect(wrapper.getByTestId('members-count').textContent).toBe('10');
+
+			// Search by email domain
+			await userEvent.type(searchInput, 'bob@');
+			await nextTick();
+
+			// Should show only Bob
+			expect(wrapper.getByTestId('members-count').textContent).toBe('1');
+		});
+
+		it('inline role change saves immediately with telemetry', async () => {
+			const roleSpy = vi.spyOn(projectsStore, 'updateMemberRole').mockResolvedValue(undefined);
+			renderComponent();
+			await nextTick();
+
+			emitters.projectMembersTable.emit('update:role', { userId: '1', role: 'project:editor' });
+			await nextTick();
+			expect(roleSpy).toHaveBeenCalledWith('123', '1', 'project:editor');
+			expect(mockShowMessage).toHaveBeenCalled();
+			expect(mockTrack).toHaveBeenCalledWith(
+				'User changed member role on project',
+				expect.objectContaining({ project_id: '123', target_user_id: '1', role: 'project:editor' }),
+			);
+		});
+
+		it('rolls back role on save error', async () => {
+			// First, inline update fails and rolls back
+			vi.spyOn(projectsStore, 'updateMemberRole').mockRejectedValueOnce(new Error('fail'));
+			const wrapper = renderComponent();
+			await nextTick();
+			emitters.projectMembersTable.emit('update:role', { userId: '1', role: 'project:viewer' });
+			await nextTick();
+			expect(mockShowError).toHaveBeenCalled();
+
+			// Next form save persists only name/description and succeeds
+			const nameInput = wrapper.getByTestId('project-settings-name-input');
+			await userEvent.type(getInput(nameInput), ' touch');
+			await userEvent.click(wrapper.getByTestId('project-settings-save-button'));
+			await nextTick();
+			const lastCall = projectsStore.updateProject.mock.calls.pop();
+			const payload = lastCall?.[1];
+			expect(payload).toEqual(
+				expect.objectContaining({ name: expect.any(String), description: expect.any(String) }),
+			);
+			expect(payload).not.toHaveProperty('relations');
+		});
+
+		it('removes member immediately and shows success toast with telemetry', async () => {
+			const removeSpy = vi.spyOn(projectsStore, 'removeMember').mockResolvedValue(undefined);
+			const { getByTestId, queryByTestId } = renderComponent();
+			await nextTick();
+			expect(getByTestId('members-count').textContent).toBe('1');
+
+			// Remove member via inline action
+			emitters.projectMembersTable.emit('action', { action: 'remove', userId: '1' });
+			await nextTick();
+
+			// Members list container should now be hidden
+			expect(queryByTestId('members-count')).toBeNull();
+			expect(removeSpy).toHaveBeenCalledWith('123', '1');
+			expect(mockShowMessage).toHaveBeenCalled();
+			expect(mockTrack).toHaveBeenCalledWith(
+				'User removed member from project',
+				expect.objectContaining({ project_id: '123', target_user_id: '1' }),
+			);
+
+			// Buttons disabled when no form edits
+			expect(queryByTestId('project-settings-save-button')).toBeDisabled();
+			expect(queryByTestId('project-settings-cancel-button')).toBeDisabled();
+		});
+
+		it('saves only name and description with Save button', async () => {
+			const wrapper = renderComponent();
+			await nextTick();
+
+			// Edit name and description
+			const nameInput = wrapper.getByTestId('project-settings-name-input');
+			await userEvent.type(nameInput.querySelector('input')!, ' New');
+			const descInput = wrapper.getByTestId('project-settings-description-input');
+			await userEvent.type(descInput.querySelector('textarea')!, 'New description');
+
+			// Save
+			await userEvent.click(wrapper.getByTestId('project-settings-save-button'));
+			await nextTick();
+
+			expect(projectsStore.updateProject).toHaveBeenCalled();
+			const lastCall = projectsStore.updateProject.mock.calls.pop();
+			const [id, payload] = lastCall as unknown as [string, Record<string, unknown>];
+			expect(id).toBe('123');
+			expect(payload).toEqual(
+				expect.objectContaining({ name: expect.any(String), description: expect.any(String) }),
+			);
+			expect(payload).not.toHaveProperty('relations');
+			expect(payload).not.toHaveProperty('icon');
+			expect(mockShowMessage).toHaveBeenCalled();
+		});
+
+		it('clears search when member count drops below threshold', async () => {
+			const removeSpy = vi.spyOn(projectsStore, 'removeMember').mockResolvedValue(undefined);
+
+			// Start with 10+ members
+			const mockProjectWith10Members: Project = {
+				...projectsStore.currentProject!,
+				relations: Array.from({ length: 10 }, (_, i) => ({
+					id: String(i + 1),
+					firstName: `User${i + 1}`,
+					lastName: 'Test',
+					email: `user${i + 1}@example.com`,
+					role: 'project:editor',
+				})),
+			};
+			projectsStore.currentProject = mockProjectWith10Members;
+
+			const wrapper = renderComponent();
+			await nextTick();
+
+			// Search input should be visible
+			const searchContainer = wrapper.getByTestId('project-members-search');
+			const searchInput = searchContainer.querySelector('input')!;
+
+			// Type search term and verify it filters
+			await userEvent.type(searchInput, 'User1');
+			await nextTick();
+			expect(searchInput.value).toBe('User1');
+
+			// Remove member via inline action to drop below threshold
+			emitters.projectMembersTable.emit('action', { action: 'remove', userId: '10' });
+			await nextTick();
+
+			// Search input should be hidden and search cleared
+			expect(wrapper.queryByTestId('project-members-search')).toBeNull();
+			// Members table should show all 9 members (not filtered by "User1")
+			expect(wrapper.getByTestId('members-count').textContent).toBe('9');
+			expect(removeSpy).toHaveBeenCalledWith('123', '10');
+		});
+	});
+
+	describe('User search for member invitation', () => {
+		it('preloads all users without projectId filter on mount when user has project:manageMembers scope', async () => {
+			renderComponent();
+			await nextTick();
+
+			expect(usersStore.fetchUsers).toHaveBeenCalledWith({ take: 50, filter: {} });
+		});
+
+		it('preloads all users when the role has project:manageMembers but not project:update', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				scopes: ['project:read', 'project:manageMembers'],
+			};
+
+			renderComponent();
+			await nextTick();
+
+			expect(usersStore.fetchUsers).toHaveBeenCalledWith({ take: 50, filter: {} });
+		});
+
+		it('skips user preloading on mount when user cannot manage members', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				scopes: ['project:read'],
+			};
+
+			renderComponent();
+			await nextTick();
+
+			expect(usersStore.fetchUsers).not.toHaveBeenCalled();
+		});
+
+		it('skips user preloading when the role has project:update but not project:manageMembers', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				scopes: ['project:read', 'project:update'],
+			};
+
+			renderComponent();
+			await nextTick();
+
+			expect(usersStore.fetchUsers).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('Icon updates', () => {
+		it('updates project icon and shows success toast', async () => {
+			const updateSpy = vi.spyOn(projectsStore, 'updateProject').mockResolvedValue(undefined);
+			renderComponent();
+			await nextTick();
+			emitters.n8nIconPicker.emit('update:model-value', { type: 'icon', value: 'zap' });
+			await nextTick();
+			expect(updateSpy).toHaveBeenCalled();
+			expect(mockShowMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+		});
+	});
+
+	describe('Unsaved changes', () => {
+		// The icon saves on change, but name and description need "Save".
+		// Leaving the page must not silently drop the typed name and description.
+		const editNameDescriptionAndIcon = async (getByTestId: (id: string) => HTMLElement) => {
+			projectsStore.updateProject.mockResolvedValue(undefined);
+			await userEvent.type(getInput(getByTestId('project-settings-name-input')), ' Renamed');
+			await userEvent.type(
+				getTextarea(getByTestId('project-settings-description-input')),
+				'Typed description',
+			);
+			emitters.n8nIconPicker.emit('update:model-value', { type: 'icon', value: 'zap' });
+			await nextTick();
+
+			// The icon is persisted on its own, the name and description are still pending
+			expect(projectsStore.updateProject).toHaveBeenCalledTimes(1);
+			expect(projectsStore.updateProject).toHaveBeenCalledWith('123', {
+				icon: { type: 'icon', value: 'zap' },
+			});
+			expect(getByTestId('project-settings-save-button')).toBeEnabled();
+		};
+
+		const leave = async (response?: string) => {
+			mockConfirm.mockResolvedValue(response);
+			const next = vi.fn();
+			await routeLeaveGuard?.({ name: VIEWS.HOMEPAGE }, { name: VIEWS.PROJECT_SETTINGS }, next);
+			return next;
+		};
+
+		it('blocks navigation when the user closes the dialog', async () => {
+			const { getByTestId } = renderComponent();
+			await nextTick();
+			await editNameDescriptionAndIcon(getByTestId);
+
+			const next = await leave(MODAL_CLOSE);
+
+			expect(mockConfirm).toHaveBeenCalledTimes(1);
+			expect(next).toHaveBeenCalledExactlyOnceWith(false);
+		});
+
+		it('discards the changes and leaves when the user does not save', async () => {
+			const { getByTestId } = renderComponent();
+			await nextTick();
+			await editNameDescriptionAndIcon(getByTestId);
+
+			const next = await leave(MODAL_CANCEL);
+
+			expect(next).toHaveBeenCalledExactlyOnceWith();
+			expect(projectsStore.updateProject).toHaveBeenCalledTimes(1);
+			expect(getInput(getByTestId('project-settings-name-input'))).toHaveValue('Test Project');
+			expect(getTextarea(getByTestId('project-settings-description-input'))).toHaveValue('');
+		});
+
+		it('saves and then leaves when the user confirms', async () => {
+			const { getByTestId } = renderComponent();
+			await nextTick();
+			await editNameDescriptionAndIcon(getByTestId);
+
+			const next = await leave(MODAL_CONFIRM);
+
+			expect(projectsStore.updateProject).toHaveBeenCalledTimes(2);
+			expect(projectsStore.updateProject).toHaveBeenLastCalledWith(
+				'123',
+				expect.objectContaining({
+					name: 'Test Project Renamed',
+					description: 'Typed description',
+				}),
+			);
+			expect(next).toHaveBeenCalledExactlyOnceWith(true);
+		});
+
+		it('stays on the page when saving fails', async () => {
+			const { getByTestId } = renderComponent();
+			await nextTick();
+			await editNameDescriptionAndIcon(getByTestId);
+
+			const error = new Error('Save failed');
+			projectsStore.updateProject.mockRejectedValue(error);
+			const next = await leave(MODAL_CONFIRM);
+
+			expect(mockShowError).toHaveBeenCalledWith(error, expect.any(String));
+			expect(next).toHaveBeenCalledExactlyOnceWith(false);
+			expect(getByTestId('project-settings-save-button')).toBeEnabled();
+		});
+
+		it('does not ask when there are no unsaved changes', async () => {
+			renderComponent();
+			await nextTick();
+
+			const next = await leave();
+
+			expect(mockConfirm).not.toHaveBeenCalled();
+			expect(next).toHaveBeenCalledExactlyOnceWith();
+		});
+
+		it('warns before the browser tab closes when name and description are not saved', async () => {
+			const { getByTestId } = renderComponent();
+			await nextTick();
+			await editNameDescriptionAndIcon(getByTestId);
+
+			const event = new Event('beforeunload', { cancelable: true });
+			window.dispatchEvent(event);
+
+			expect(event.defaultPrevented).toBe(true);
+		});
+	});
+
+	describe('Lifecycle', () => {
+		it('reacts to project change and keeps inputs bound', async () => {
+			const { getByTestId } = renderComponent();
+			const nameInput = getByTestId('project-settings-name-input');
+			const descInput = getByTestId('project-settings-description-input');
+			const actualName = getInput(nameInput);
+			const actualDesc = descInput.querySelector('textarea')!;
+			expect(actualName.value).toBe('Test Project');
+			expect(actualDesc.value).toBe('');
+			const updatedProject = {
+				...projectsStore.currentProject!,
+				name: 'Updated Project',
+				description: 'Updated description',
+			};
+			projectsStore.setCurrentProject(updatedProject);
+			await nextTick();
+			expect(nameInput).toBeInTheDocument();
+			expect(descInput).toBeInTheDocument();
+			expect(getByTestId('project-members-select')).toBeInTheDocument();
+		});
+	});
+
+	describe('Custom span attributes', () => {
+		beforeEach(() => {
+			settingsStore.isOtelCustomSpanAttributesEnabled = true;
+			projectsStore.updateProject.mockResolvedValue(undefined);
+		});
+
+		it('should not render telemetry tags section when OTel is disabled', () => {
+			settingsStore.isOtelCustomSpanAttributesEnabled = false;
+			const { queryByTestId } = renderComponent();
+			expect(queryByTestId('project-telemetry-tag-add')).not.toBeInTheDocument();
+		});
+
+		it('should render telemetry tags section when OTel is enabled', () => {
+			const { getByTestId } = renderComponent();
+			expect(getByTestId('project-telemetry-tag-add')).toBeInTheDocument();
+		});
+
+		it('should have no tags by default', async () => {
+			const { queryAllByTestId } = renderComponent();
+			expect(queryAllByTestId('project-telemetry-tag-key')).toHaveLength(0);
+		});
+
+		it('should add a new attribute row when clicking Add attribute', async () => {
+			const { getByTestId, getAllByTestId } = renderComponent();
+			await userEvent.click(getByTestId('project-telemetry-tag-add'));
+			await nextTick();
+			expect(getAllByTestId('project-telemetry-tag-key')).toHaveLength(1);
+		});
+
+		it('should remove a tag row when clicking Remove', async () => {
+			const { getByTestId, queryAllByTestId } = renderComponent();
+			await userEvent.click(getByTestId('project-telemetry-tag-add'));
+			await nextTick();
+			await userEvent.click(getByTestId('project-telemetry-tag-remove'));
+			await nextTick();
+			expect(queryAllByTestId('project-telemetry-tag-key')).toHaveLength(0);
+		});
+
+		it('should show empty key error after blur', async () => {
+			const { getByTestId, queryByTestId } = renderComponent();
+			await userEvent.click(getByTestId('project-telemetry-tag-add'));
+			await nextTick();
+
+			expect(queryByTestId('project-telemetry-tag-key-error')).not.toBeInTheDocument();
+
+			const keyInput = getByTestId('project-telemetry-tag-key').querySelector('input')!;
+			await userEvent.click(keyInput); // focus
+			await userEvent.tab(); // moves focus away, triggering blur
+			await nextTick();
+
+			expect(getByTestId('project-telemetry-tag-key-error')).toBeInTheDocument();
+			expect(getByTestId('project-telemetry-tag-key-error').textContent).toContain(
+				'Key must not be empty',
+			);
+		});
+
+		it('should hide key error after clicking Cancel', async () => {
+			const { getByTestId, queryByTestId } = renderComponent();
+			await userEvent.click(getByTestId('project-telemetry-tag-add'));
+			await nextTick();
+
+			const keyInput = getByTestId('project-telemetry-tag-key').querySelector('input')!;
+			await userEvent.click(keyInput);
+			await userEvent.tab();
+			await nextTick();
+
+			expect(getByTestId('project-telemetry-tag-key-error')).toBeInTheDocument();
+
+			await userEvent.click(getByTestId('project-settings-cancel-button'));
+			await nextTick();
+
+			expect(queryByTestId('project-telemetry-tag-key-error')).not.toBeInTheDocument();
+		});
+
+		it('should show duplicate key error after blur', async () => {
+			const { getByTestId, getAllByTestId } = renderComponent();
+
+			await userEvent.click(getByTestId('project-telemetry-tag-add'));
+			await userEvent.click(getByTestId('project-telemetry-tag-add'));
+			await nextTick();
+
+			const [firstKeyWrapper, secondKeyWrapper] = getAllByTestId('project-telemetry-tag-key');
+
+			await userEvent.type(firstKeyWrapper.querySelector('input')!, 'env');
+			await userEvent.tab();
+			await userEvent.type(secondKeyWrapper.querySelector('input')!, 'env');
+			await userEvent.tab();
+			await nextTick();
+
+			const errors = getAllByTestId('project-telemetry-tag-key-error');
+			expect(errors[0].textContent).toContain('Duplicate keys are not allowed');
+		});
+
+		it('should disable Save button when a tag has an empty key', async () => {
+			const { getByTestId } = renderComponent();
+			await userEvent.click(getByTestId('project-telemetry-tag-add'));
+			await nextTick();
+
+			expect(getByTestId('project-settings-save-button')).toBeDisabled();
+		});
+
+		it('should not include customTelemetryTags in payload when OTel is disabled', async () => {
+			settingsStore.isOtelCustomSpanAttributesEnabled = false;
+			const updateSpy = vi.spyOn(projectsStore, 'updateProject').mockResolvedValue(undefined);
+			const { getByTestId } = renderComponent();
+
+			const nameInput = getByTestId('project-settings-name-input');
+			await userEvent.type(getInput(nameInput), ' Updated');
+			await userEvent.click(getByTestId('project-settings-save-button'));
+			await nextTick();
+
+			expect(updateSpy).toHaveBeenCalledWith(
+				'123',
+				expect.not.objectContaining({ customTelemetryTags: expect.anything() }),
+			);
+		});
+
+		it('should load existing tags from currentProject on mount and not show errors before blur', async () => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				customTelemetryTags: [{ key: 'env', value: 'prod' }],
+			};
+			const { getAllByTestId, queryAllByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getAllByTestId('project-telemetry-tag-key')).toHaveLength(1);
+			expect(queryAllByTestId('project-telemetry-tag-key-error')).toHaveLength(0);
+		});
+
+		it('should submit with customTelemetryTags when tags are valid', async () => {
+			const updateSpy = vi.spyOn(projectsStore, 'updateProject').mockResolvedValue(undefined);
+			const { getByTestId } = renderComponent();
+
+			await userEvent.click(getByTestId('project-telemetry-tag-add'));
+			await nextTick();
+
+			const keyInput = getByTestId('project-telemetry-tag-key').querySelector('input')!;
+			const valueInput = getByTestId('project-telemetry-tag-value').querySelector('input')!;
+			await userEvent.type(keyInput, 'env');
+			await userEvent.type(valueInput, 'production');
+			await nextTick();
+
+			await userEvent.click(getByTestId('project-settings-save-button'));
+			await nextTick();
+
+			expect(updateSpy).toHaveBeenCalledWith(
+				'123',
+				expect.objectContaining({
+					customTelemetryTags: [{ key: 'env', value: 'production' }],
+				}),
+			);
+		});
+	});
+
+	describe('External secrets permission (no project:update)', () => {
+		beforeEach(() => {
+			projectsStore.currentProject = {
+				...projectsStore.currentProject!,
+				scopes: ['project:read', 'externalSecretsProvider:read', 'externalSecretsProvider:list'],
+			};
+			settingsStore.moduleSettings = {
+				'external-secrets': {
+					multipleConnections: false,
+					forProjects: true,
+					roleBasedAccess: false,
+					systemRolesEnabled: false,
+				},
+			};
+			const rbacStore = mockedStore(useRBACStore);
+			rbacStore.hasScope.mockReturnValue(false);
+			projectsStore.getProjectSecretProviders.mockResolvedValue([]);
+		});
+
+		it('hides name, description, members, and danger zone sections', async () => {
+			const { queryByTestId } = renderComponent();
+			await nextTick();
+
+			expect(queryByTestId('project-settings-name-input')).not.toBeInTheDocument();
+			expect(queryByTestId('project-settings-description-input')).not.toBeInTheDocument();
+			expect(queryByTestId('project-members-select')).not.toBeInTheDocument();
+			expect(queryByTestId('project-settings-delete-button')).not.toBeInTheDocument();
+		});
+
+		it('hides the save and cancel buttons', async () => {
+			const { queryByTestId } = renderComponent();
+			await nextTick();
+
+			expect(queryByTestId('project-settings-save-button')).not.toBeInTheDocument();
+			expect(queryByTestId('project-settings-cancel-button')).not.toBeInTheDocument();
+		});
+
+		it('renders the external secrets section', async () => {
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('external-secrets-section')).toBeInTheDocument();
+		});
+	});
+	describe('member order and pagination', () => {
+		const member = (id: string, firstName: string | null, lastName: string | null) => ({
+			id,
+			firstName,
+			lastName,
+			email: `${id}@example.com`,
+			role: 'project:editor',
+		});
+		const currentUserRelation = member('current-user', 'Current', 'User');
+		const others = (count: number) =>
+			Array.from({ length: count }, (_, i) =>
+				member(`user-${String(i).padStart(2, '0')}`, `User${String(i).padStart(2, '0')}`, 'Test'),
+			);
+
+		const setProject = (relations: Project['relations'], creatorId: string | null) => {
+			projectsStore.currentProject = {
+				...(projectsStore.currentProject as Project),
+				relations,
+				creatorId,
+			};
+		};
+
+		it('lists the creator first, then the current user, then the rest by name', async () => {
+			setProject(
+				[
+					member('zoe', 'Zoe', 'Zed'),
+					currentUserRelation,
+					member('pending', null, null),
+					member('creator', 'Yuri', 'Creator'),
+					member('adam', 'Adam', 'Able'),
+				],
+				'creator',
+			);
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			// The pending user has no name, so their email sorts them.
+			expect(getByTestId('members-ids').textContent).toBe('creator,current-user,adam,pending,zoe');
+		});
+
+		it('sorts names without regard to case or accents', async () => {
+			setProject(
+				[
+					member('zoe', 'Zoe', 'Zed'),
+					member('emile', 'émile', 'Dupont'),
+					member('bea', 'bea', 'Brown'),
+				],
+				null,
+			);
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('members-ids').textContent).toBe('bea,emile,zoe');
+		});
+
+		it('pins only the current user when the project has no creator', async () => {
+			setProject(
+				[member('zoe', 'Zoe', 'Zed'), member('adam', 'Adam', 'Able'), currentUserRelation],
+				null,
+			);
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('members-ids').textContent).toBe('current-user,adam,zoe');
+		});
+
+		it('shows 10 members for each page', async () => {
+			setProject([currentUserRelation, ...others(11)], null);
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('members-count').textContent).toBe('10');
+			expect(getByTestId('members-total').textContent).toBe('12');
+
+			emitters.projectMembersTable.emit('update:options', {
+				page: 1,
+				itemsPerPage: 10,
+				sortBy: [],
+			});
+			await nextTick();
+
+			expect(getByTestId('members-count').textContent).toBe('2');
+			expect(getByTestId('members-ids').textContent).toBe('user-09,user-10');
+		});
+
+		it('keeps the pinned order while searching and resets to the first page', async () => {
+			setProject(
+				[
+					...others(10),
+					member('creator', 'Zed', 'Creator'),
+					currentUserRelation,
+					member('bob', 'Bob', 'Smith'),
+				],
+				'creator',
+			);
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			emitters.projectMembersTable.emit('update:options', {
+				page: 1,
+				itemsPerPage: 10,
+				sortBy: [],
+			});
+			await nextTick();
+			expect(getByTestId('members-page').textContent).toBe('1');
+
+			// Bob is the only member without an "r" in the name or email.
+			await userEvent.type(getInput(getByTestId('project-members-search')), 'r');
+
+			await vi.waitFor(() => expect(getByTestId('members-page').textContent).toBe('0'));
+			expect(getByTestId('members-total').textContent).toBe('12');
+			expect(getByTestId('members-ids').textContent?.split(',').slice(0, 2)).toEqual([
+				'creator',
+				'current-user',
+			]);
+		});
+
+		it('steps back one page when a removal empties the last page', async () => {
+			vi.spyOn(projectsStore, 'removeMember').mockResolvedValue(undefined);
+			setProject([currentUserRelation, ...others(10)], null);
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			emitters.projectMembersTable.emit('update:options', {
+				page: 1,
+				itemsPerPage: 10,
+				sortBy: [],
+			});
+			await nextTick();
+			expect(getByTestId('members-ids').textContent).toBe('user-09');
+
+			emitters.projectMembersTable.emit('action', { action: 'remove', userId: 'user-09' });
+			await nextTick();
+
+			expect(getByTestId('members-page').textContent).toBe('0');
+			expect(getByTestId('members-count').textContent).toBe('10');
+		});
+	});
+	describe('members with access from a global role', () => {
+		const ownerImplicitMember = {
+			id: 'owner-1',
+			email: 'olive@example.com',
+			firstName: 'Olive',
+			lastName: 'Owner',
+			globalRole: { slug: 'global:owner', displayName: 'Owner' },
+		};
+
+		it('adds implicit members to the table alongside the real relations', async () => {
+			projectsStore.currentProject = {
+				...(projectsStore.currentProject as Project),
+				implicitMembers: [ownerImplicitMember],
+			};
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('members-count').textContent).toBe('2');
+		});
+
+		it('shows one row for a user who is both a relation and an implicit member', async () => {
+			projectsStore.currentProject = {
+				...(projectsStore.currentProject as Project),
+				implicitMembers: [
+					{
+						id: '1',
+						email: 'john@example.com',
+						firstName: 'John',
+						lastName: 'Doe',
+						globalRole: { slug: 'global:admin', displayName: 'Admin' },
+					},
+				],
+			};
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('members-count').textContent).toBe('1');
+		});
+
+		it('renders the table for a project whose only members are implicit', async () => {
+			projectsStore.currentProject = {
+				...(projectsStore.currentProject as Project),
+				relations: [],
+				implicitMembers: [ownerImplicitMember],
+			};
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('members-count').textContent).toBe('1');
+		});
+
+		it('leaves implicit members out of the add-member dropdown', async () => {
+			projectsStore.currentProject = {
+				...(projectsStore.currentProject as Project),
+				implicitMembers: [
+					{
+						id: '2',
+						email: 'jane@example.com',
+						firstName: 'Jane',
+						lastName: 'Roe',
+						globalRole: { slug: 'global:admin', displayName: 'Admin' },
+					},
+				],
+			};
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			// Jane already has access, and the merged row offers no way to undo an add.
+			expect(getByTestId('project-members-select').getAttribute('data-user-ids')).toBe(
+				'current-user',
+			);
+		});
+
+		it('ignores a remove action for a member who has no relation', async () => {
+			projectsStore.currentProject = {
+				...(projectsStore.currentProject as Project),
+				implicitMembers: [ownerImplicitMember],
+			};
+			const removeSpy = vi.spyOn(projectsStore, 'removeMember').mockResolvedValue(undefined);
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			emitters.projectMembersTable.emit('action', {
+				action: 'remove',
+				userId: ownerImplicitMember.id,
+			});
+			await nextTick();
+
+			expect(removeSpy).not.toHaveBeenCalled();
+			expect(getByTestId('members-count').textContent).toBe('2');
+		});
+
+		it('counts implicit members towards the search threshold and filters them', async () => {
+			const relations = Array.from({ length: 9 }, (_, i) => ({
+				id: `relation-${i}`,
+				firstName: `Member${i}`,
+				lastName: 'Relation',
+				email: `member${i}@example.com`,
+				role: 'project:editor',
+			}));
+			projectsStore.currentProject = {
+				...(projectsStore.currentProject as Project),
+				relations,
+				implicitMembers: [ownerImplicitMember],
+			};
+
+			const { getByTestId } = renderComponent();
+			await nextTick();
+
+			expect(getByTestId('members-count').textContent).toBe('10');
+
+			const search = getByTestId('project-members-search');
+			await userEvent.type(getInput(search), 'Olive');
+			await nextTick();
+
+			expect(getByTestId('members-count').textContent).toBe('1');
+		});
+	});
+});

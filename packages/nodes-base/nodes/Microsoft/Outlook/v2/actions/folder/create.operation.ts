@@ -1,8 +1,11 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
-import { microsoftApiRequest } from '../../transport';
+import { requestPath } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
+
 import { folderRLC } from '../../descriptions';
 import { decodeOutlookId } from '../../helpers/utils';
-import { updateDisplayOptions } from '@utils/utilities';
+import { microsoftApiRequest } from '../../transport';
 
 export const properties: INodeProperties[] = [
 	{
@@ -18,7 +21,7 @@ export const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [{ ...folderRLC, displayName: 'Parent Folder', required: false }],
 	},
@@ -49,12 +52,12 @@ export async function execute(this: IExecuteFunctions, index: number) {
 	let endpoint;
 
 	if (folderId) {
-		endpoint = `/mailFolders/${folderId}/childFolders`;
+		endpoint = requestPath`/mailFolders/${folderId}/childFolders`;
 	} else {
-		endpoint = '/mailFolders';
+		endpoint = requestPath`/mailFolders`;
 	}
 
-	const responseData = await microsoftApiRequest.call(this, 'POST', endpoint, body);
+	const responseData = await microsoftApiRequest.call(this, 'POST', endpoint, index, body);
 
 	const executionData = this.helpers.constructExecutionMetaData(
 		this.helpers.returnJsonArray(responseData as IDataObject[]),

@@ -1,17 +1,14 @@
 /* eslint-disable n8n-nodes-base/node-filename-against-convention */
-import type { INodeTypeDescription } from 'n8n-workflow';
-import { databaseFields, databaseOperations } from '../shared/descriptions/DatabaseDescription';
-
-import { userFields, userOperations } from '../shared/descriptions/UserDescription';
-
-import { pageFields, pageOperations } from '../shared/descriptions/PageDescription';
+import { NodeConnectionTypes, type INodeTypeDescription } from 'n8n-workflow';
 
 import { blockFields, blockOperations } from '../shared/descriptions/BlockDescription';
-
+import { databaseFields, databaseOperations } from '../shared/descriptions/DatabaseDescription';
 import {
 	databasePageFields,
 	databasePageOperations,
 } from '../shared/descriptions/DatabasePageDescription';
+import { pageFields, pageOperations } from '../shared/descriptions/PageDescription';
+import { userFields, userOperations } from '../shared/descriptions/UserDescription';
 
 export const versionDescription: INodeTypeDescription = {
 	displayName: 'Notion',
@@ -24,8 +21,8 @@ export const versionDescription: INodeTypeDescription = {
 	defaults: {
 		name: 'Notion',
 	},
-	inputs: ['main'],
-	outputs: ['main'],
+	inputs: [NodeConnectionTypes.Main],
+	outputs: [NodeConnectionTypes.Main],
 	credentials: [
 		{
 			name: 'notionApi',
@@ -70,7 +67,7 @@ export const versionDescription: INodeTypeDescription = {
 		// },
 		{
 			displayName:
-				'In Notion, make sure to <a href="https://www.notion.so/help/add-and-manage-connections-with-the-api" target="_blank">add your connection</a> to the pages you want to access.',
+				'In Notion, make sure to <a href="https://www.notion.com/help/add-and-manage-connections-with-the-api" target="_blank">add your connection</a> to the pages you want to access.',
 			name: 'notionNotice',
 			type: 'notice',
 			default: '',

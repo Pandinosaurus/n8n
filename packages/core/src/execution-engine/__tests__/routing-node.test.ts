@@ -1,0 +1,3213 @@
+import { AxiosError, AxiosHeaders } from 'axios';
+import get from 'lodash/get';
+import {
+	NodeApiError,
+	NodeOperationError,
+	Workflow,
+	createEmptyRunExecutionData,
+} from 'n8n-workflow';
+import type {
+	DeclarativeRestApiSettings,
+	ICredentialDataDecryptedObject,
+	IExecuteData,
+	IExecuteSingleFunctions,
+	IHttpRequestOptions,
+	IN8nHttpFullResponse,
+	IN8nHttpResponse,
+	IN8nRequestOperations,
+	INode,
+	INodeCredentialDescription,
+	INodeExecutionData,
+	INodeParameters,
+	INodeProperties,
+	INodeType,
+	INodeTypeDescription,
+	IRunExecutionData,
+	ITaskDataConnections,
+	IWorkflowExecuteAdditionalData,
+	ICredentialsDecrypted,
+} from 'n8n-workflow';
+import { mock } from 'vitest-mock-extended';
+
+import * as executionContexts from '@/execution-engine/node-execution-context';
+import { DirectoryLoader } from '@/nodes-loader';
+import { NodeTypes } from '@test/helpers';
+
+import { RoutingNode } from '../routing-node';
+
+const postReceiveFunction1 = async function (
+	this: IExecuteSingleFunctions,
+	items: INodeExecutionData[],
+): Promise<INodeExecutionData[]> {
+	items.forEach((item) => (item.json1 = { success: true }));
+	return items;
+};
+
+const preSendFunction1 = async function (
+	this: IExecuteSingleFunctions,
+	requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+	requestOptions.headers = requestOptions.headers || {};
+	requestOptions.headers.addedIn = 'preSendFunction1';
+	return requestOptions;
+};
+
+const getExecuteSingleFunctions = (
+	workflow: Workflow,
+	runExecutionData: IRunExecutionData,
+	runIndex: number,
+	node: INode,
+	itemIndex: number,
+) =>
+	mock<executionContexts.ExecuteSingleContext>({
+		getItemIndex: () => itemIndex,
+		getNodeParameter: (parameterName: string) =>
+			workflow.expression.getParameterValue(
+				get(node.parameters, parameterName),
+				runExecutionData,
+				runIndex,
+				itemIndex,
+				node.name,
+				[],
+				'internal',
+				{},
+			),
+		getWorkflow: () => ({
+			id: workflow.id,
+			name: workflow.name,
+			active: workflow.active,
+		}),
+		helpers: mock<IExecuteSingleFunctions['helpers']>({
+			async httpRequest(
+				requestOptions: IHttpRequestOptions,
+			): Promise<IN8nHttpFullResponse | IN8nHttpResponse> {
+				return {
+					body: {
+						headers: {},
+						statusCode: 200,
+						requestOptions,
+					},
+				};
+			},
+			async httpRequestWithAuthentication(
+				_credentialType: string,
+				requestOptions: IHttpRequestOptions,
+			): Promise<IN8nHttpFullResponse | IN8nHttpResponse> {
+				return {
+					body: {
+						headers: {},
+						statusCode: 200,
+						requestOptions,
+					},
+				};
+			},
+		}),
+	});
+
+describe('RoutingNode', () => {
+	const nodeTypes = NodeTypes();
+	const additionalData = mock<IWorkflowExecuteAdditionalData>({
+		executionId: 'test-exec-123',
+		webhookWaitingBaseUrl: 'http://localhost:5678/webhook-waiting',
+		formWaitingBaseUrl: 'http://localhost:5678/form-waiting',
+	});
+
+	describe('getRequestOptionsFromParameters', () => {
+		const tests: Array<{
+			description: string;
+			input: {
+				nodeParameters: INodeParameters;
+				nodeTypeProperties: INodeProperties;
+			};
+			output: DeclarativeRestApiSettings.ResultOptions | undefined;
+		}> = [
+			{
+				description: 'single parameter, only send defined, fixed value',
+				input: {
+					nodeParameters: {},
+					nodeTypeProperties: {
+						displayName: 'Email',
+						name: 'email',
+						type: 'string',
+						routing: {
+							send: {
+								property: 'toEmail',
+								type: 'body',
+								value: 'fixedValue',
+							},
+						},
+						default: '',
+					},
+				},
+				output: {
+					options: {
+						qs: {},
+						body: {
+							toEmail: 'fixedValue',
+						},
+						headers: {},
+					},
+					preSend: [],
+					postReceive: [],
+					requestOperations: {},
+				},
+			},
+			{
+				description: 'single parameter, only send defined, using expression',
+				input: {
+					nodeParameters: {
+						email: 'test@test.com',
+					},
+					nodeTypeProperties: {
+						displayName: 'Email',
+						name: 'email',
+						type: 'string',
+						routing: {
+							send: {
+								property: 'toEmail',
+								type: 'body',
+								value: '={{$value.toUpperCase()}}',
+							},
+						},
+						default: '',
+					},
+				},
+				output: {
+					options: {
+						qs: {},
+						body: {
+							toEmail: 'TEST@TEST.COM',
+						},
+						headers: {},
+					},
+					preSend: [],
+					postReceive: [],
+					requestOperations: {},
+				},
+			},
+			{
+				description: 'single parameter, send and operations defined, fixed value',
+				input: {
+					nodeParameters: {},
+					nodeTypeProperties: {
+						displayName: 'Email',
+						name: 'email',
+						type: 'string',
+						routing: {
+							send: {
+								property: 'toEmail',
+								type: 'body',
+								value: 'fixedValue',
+							},
+							operations: {
+								pagination: {
+									type: 'offset',
+									properties: {
+										limitParameter: 'limit',
+										offsetParameter: 'offset',
+										pageSize: 10,
+										rootProperty: 'data',
+										type: 'body',
+									},
+								},
+							},
+						},
+						default: '',
+					},
+				},
+				output: {
+					options: {
+						qs: {},
+						body: {
+							toEmail: 'fixedValue',
+						},
+						headers: {},
+					},
+					preSend: [],
+					postReceive: [],
+					requestOperations: {
+						pagination: {
+							type: 'offset',
+							properties: {
+								limitParameter: 'limit',
+								offsetParameter: 'offset',
+								pageSize: 10,
+								rootProperty: 'data',
+								type: 'body',
+							},
+						},
+					},
+				},
+			},
+			{
+				description: 'multiple parameters, complex example with everything',
+				input: {
+					nodeParameters: {
+						multipleFields: {
+							value1: 'v1',
+							value2: 'v2',
+							value3: 'v3',
+							value4: 4,
+							value6: 'value1,value2',
+							value7: 'value3,value4',
+							lowerLevel: {
+								lowLevelValue1: 1,
+								lowLevelValue2: 'llv2',
+							},
+							customPropertiesSingle1: {
+								property: {
+									name: 'cSName1',
+									value: 'cSValue1',
+								},
+							},
+							customPropertiesMulti: {
+								property0: [
+									{
+										name: 'cM0Name1',
+										value: 'cM0Value1',
+									},
+									{
+										name: 'cM0Name2',
+										value: 'cM0Value2',
+									},
+								],
+								property1: [
+									{
+										name: 'cM1Name2',
+										value: 'cM1Value2',
+									},
+									{
+										name: 'cM1Name2',
+										value: 'cM1Value2',
+									},
+								],
+							},
+						},
+					},
+					nodeTypeProperties: {
+						displayName: 'Multiple Fields',
+						name: 'multipleFields',
+						type: 'collection',
+						placeholder: 'Add Field',
+						routing: {
+							request: {
+								method: 'GET',
+								url: '/destination1',
+							},
+							operations: {
+								pagination: {
+									type: 'offset',
+									properties: {
+										limitParameter: 'limit1',
+										offsetParameter: 'offset1',
+										pageSize: 1,
+										rootProperty: 'data1',
+										type: 'body',
+									},
+								},
+							},
+							output: {
+								maxResults: 10,
+								postReceive: [postReceiveFunction1],
+							},
+						},
+						default: {},
+						options: [
+							{
+								displayName: 'Value 1',
+								name: 'value1',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'value1',
+										type: 'body',
+									},
+								},
+								default: '',
+							},
+							{
+								displayName: 'Value 2',
+								name: 'value2',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'topLevel.value2',
+										propertyInDotNotation: false,
+										type: 'body',
+										preSend: [preSendFunction1],
+									},
+								},
+								default: '',
+							},
+							{
+								displayName: 'Value 3',
+								name: 'value3',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'lowerLevel.value3',
+										type: 'body',
+									},
+								},
+								default: '',
+							},
+							{
+								displayName: 'Value 4',
+								name: 'value4',
+								type: 'number',
+								default: 0,
+								routing: {
+									send: {
+										property: 'value4',
+										type: 'query',
+									},
+									output: {
+										maxResults: '={{$value}}',
+									},
+									operations: {
+										pagination: {
+											type: 'offset',
+											properties: {
+												limitParameter: 'limit100',
+												offsetParameter: 'offset100',
+												pageSize: 100,
+												rootProperty: 'data100',
+												type: 'query',
+											},
+										},
+									},
+								},
+							},
+							// This one should not be included
+							{
+								displayName: 'Value 5',
+								name: 'value5',
+								type: 'number',
+								displayOptions: {
+									show: {
+										value4: [1],
+									},
+								},
+								default: 5,
+								routing: {
+									send: {
+										property: 'value5',
+										type: 'query',
+									},
+									operations: {
+										pagination: {
+											type: 'offset',
+											properties: {
+												limitParameter: 'limit10',
+												offsetParameter: 'offset10',
+												pageSize: 10,
+												rootProperty: 'data10',
+												type: 'body',
+											},
+										},
+									},
+								},
+							},
+
+							// Test resolve of value and properties including as objects
+							{
+								displayName: 'Value 6',
+								name: 'value6',
+								type: 'string',
+								routing: {
+									send: {
+										// eslint-disable-next-line n8n-local-rules/no-interpolation-in-regular-string
+										property: '={{ `value${5+1}A` }}',
+										type: 'query',
+										value: '={{$value.toUpperCase()}}',
+									},
+								},
+								default: '',
+							},
+							{
+								displayName: 'Value 7',
+								name: 'value7',
+								type: 'string',
+								routing: {
+									send: {
+										// eslint-disable-next-line n8n-local-rules/no-interpolation-in-regular-string
+										property: '={{ `value${6+1}B` }}',
+										type: 'body',
+										value: "={{$value.split(',')}}",
+									},
+								},
+								default: '',
+							},
+
+							{
+								displayName: 'Lower Level',
+								name: 'lowerLevel',
+								type: 'collection',
+								placeholder: 'Add Field',
+								default: {},
+								options: [
+									{
+										displayName: 'Low Level Value1',
+										name: 'lowLevelValue1',
+										type: 'number',
+										default: 0,
+										routing: {
+											send: {
+												property: 'llvalue1',
+												type: 'query',
+											},
+										},
+									},
+									{
+										displayName: 'Low Level Value2',
+										name: 'lowLevelValue2',
+										type: 'string',
+										default: '',
+										routing: {
+											send: {
+												property: 'llvalue2',
+												type: 'query',
+												preSend: [preSendFunction1],
+											},
+											output: {
+												postReceive: [
+													{
+														type: 'rootProperty',
+														properties: {
+															property: 'data',
+														},
+													},
+												],
+											},
+										},
+									},
+								],
+							},
+							// Test fixed collection1: multipleValues=false
+							{
+								displayName: 'Custom Properties1 (single)',
+								name: 'customPropertiesSingle1',
+								placeholder: 'Add Custom Property',
+								type: 'fixedCollection',
+								default: {},
+								options: [
+									{
+										name: 'property',
+										displayName: 'Property',
+										values: [
+											// To set: { single-customValues: { name: 'name', value: 'value'} }
+											{
+												displayName: 'Property Name',
+												name: 'name',
+												type: 'string',
+												default: '',
+												routing: {
+													request: {
+														method: 'POST',
+														url: '=/{{$value}}',
+													},
+													send: {
+														property: 'single-customValues.name',
+													},
+												},
+											},
+											{
+												displayName: 'Property Value',
+												name: 'value',
+												type: 'string',
+												default: '',
+												routing: {
+													send: {
+														property: 'single-customValues.value',
+													},
+												},
+											},
+										],
+									},
+								],
+							},
+							// Test fixed collection: multipleValues=true
+							{
+								displayName: 'Custom Properties (multi)',
+								name: 'customPropertiesMulti',
+								placeholder: 'Add Custom Property',
+								type: 'fixedCollection',
+								typeOptions: {
+									multipleValues: true,
+								},
+								default: {},
+								options: [
+									{
+										name: 'property0',
+										displayName: 'Property0',
+										values: [
+											// To set: { name0: 'value0', name1: 'value1' }
+											{
+												displayName: 'Property Name',
+												name: 'name',
+												type: 'string',
+												default: '',
+												description: 'Name of the property to set.',
+											},
+											{
+												displayName: 'Property Value',
+												name: 'value',
+												type: 'string',
+												default: '',
+												routing: {
+													send: {
+														property: '=customMulti0.{{$parent.name}}',
+														type: 'body',
+													},
+												},
+												description: 'Value of the property to set.',
+											},
+										],
+									},
+
+									{
+										name: 'property1',
+										displayName: 'Property1',
+										values: [
+											// To set: { customValues: [ { name: 'name0', value: 'value0'}, { name: 'name1', value: 'value1'} ]}
+											{
+												displayName: 'Property Name',
+												name: 'name',
+												type: 'string',
+												default: '',
+												routing: {
+													send: {
+														property: '=customMulti1[{{$index}}].name',
+														type: 'body',
+													},
+												},
+											},
+											{
+												displayName: 'Property Value',
+												name: 'value',
+												type: 'string',
+												default: '',
+												routing: {
+													send: {
+														property: '=customMulti1[{{$index}}].value',
+														type: 'body',
+													},
+												},
+											},
+										],
+									},
+								],
+							},
+						],
+					},
+				},
+				output: {
+					maxResults: 4,
+					options: {
+						method: 'POST',
+						url: '/cSName1',
+						qs: {
+							value4: 4,
+							llvalue1: 1,
+							llvalue2: 'llv2',
+							'single-customValues': {
+								name: 'cSName1',
+								value: 'cSValue1',
+							},
+							value6A: 'VALUE1,VALUE2',
+						},
+						body: {
+							value1: 'v1',
+							'topLevel.value2': 'v2',
+							value7B: ['value3', 'value4'],
+							lowerLevel: {
+								value3: 'v3',
+							},
+							customMulti0: {
+								cM0Name1: 'cM0Value1',
+								cM0Name2: 'cM0Value2',
+							},
+							customMulti1: [
+								{
+									name: 'cM1Name2',
+									value: 'cM1Value2',
+								},
+								{
+									name: 'cM1Name2',
+									value: 'cM1Value2',
+								},
+							],
+						},
+						headers: {},
+					},
+					preSend: [preSendFunction1, preSendFunction1],
+					postReceive: [
+						{
+							actions: [postReceiveFunction1],
+							data: {
+								parameterValue: {
+									value1: 'v1',
+									value2: 'v2',
+									value3: 'v3',
+									value4: 4,
+									value6: 'value1,value2',
+									value7: 'value3,value4',
+									lowerLevel: {
+										lowLevelValue1: 1,
+										lowLevelValue2: 'llv2',
+									},
+									customPropertiesSingle1: {
+										property: {
+											name: 'cSName1',
+											value: 'cSValue1',
+										},
+									},
+									customPropertiesMulti: {
+										property0: [
+											{
+												name: 'cM0Name1',
+												value: 'cM0Value1',
+											},
+											{
+												name: 'cM0Name2',
+												value: 'cM0Value2',
+											},
+										],
+										property1: [
+											{
+												name: 'cM1Name2',
+												value: 'cM1Value2',
+											},
+											{
+												name: 'cM1Name2',
+												value: 'cM1Value2',
+											},
+										],
+									},
+								},
+							},
+						},
+						{
+							actions: [
+								{
+									type: 'rootProperty',
+									properties: {
+										property: 'data',
+									},
+								},
+							],
+							data: {
+								parameterValue: 'llv2',
+							},
+						},
+					],
+					requestOperations: {
+						pagination: {
+							type: 'offset',
+							properties: {
+								limitParameter: 'limit100',
+								offsetParameter: 'offset100',
+								pageSize: 100,
+								rootProperty: 'data100',
+								type: 'query',
+							},
+						},
+					},
+				},
+			},
+		];
+
+		const nodeTypes = NodeTypes();
+		const node: INode = {
+			parameters: {},
+			name: 'test',
+			type: 'test.set',
+			typeVersion: 1,
+			id: 'uuid-1234',
+			position: [0, 0],
+		};
+
+		const mode = 'internal';
+		const runIndex = 0;
+		const itemIndex = 0;
+		const connectionInputData: INodeExecutionData[] = [];
+		const runExecutionData: IRunExecutionData = createEmptyRunExecutionData();
+		const path = '';
+		const nodeType = nodeTypes.getByNameAndVersion(node.type);
+
+		const workflowData = {
+			nodes: [node],
+			connections: {},
+		};
+
+		for (const testData of tests) {
+			test(testData.description, async () => {
+				node.parameters = testData.input.nodeParameters;
+				nodeType.description.properties = [testData.input.nodeTypeProperties];
+
+				const workflow = new Workflow({
+					nodes: workflowData.nodes,
+					connections: workflowData.connections,
+					active: false,
+					nodeTypes,
+				});
+
+				const executeFunctions = mock<executionContexts.ExecuteContext>();
+				Object.assign(executeFunctions, {
+					runIndex,
+					additionalData,
+					workflow,
+					node,
+					mode,
+					connectionInputData,
+					runExecutionData,
+					nodeType,
+				});
+				const routingNode = new RoutingNode(executeFunctions, nodeType);
+
+				const executeSingleFunctions = getExecuteSingleFunctions(
+					workflow,
+					runExecutionData,
+					runIndex,
+					node,
+					itemIndex,
+				);
+
+				const result = routingNode.getRequestOptionsFromParameters(
+					executeSingleFunctions,
+					testData.input.nodeTypeProperties,
+					itemIndex,
+					runIndex,
+					path,
+					{},
+				);
+
+				expect(result).toEqual(testData.output);
+			});
+		}
+
+		describe('when a routed property name is an inherited object member', () => {
+			// Guard the shared prototype so a regression here cannot cascade to other tests.
+			const hadOwnCall = Object.prototype.hasOwnProperty.call(Object.prototype.toString, 'call');
+			afterEach(() => {
+				if (!hadOwnCall) {
+					delete (Object.prototype.toString as unknown as { call?: unknown }).call;
+				}
+			});
+
+			it('keeps built-in object prototypes intact', () => {
+				const nodeTypeProperties: INodeProperties = {
+					displayName: 'Value',
+					name: 'value',
+					type: 'string',
+					routing: {
+						send: {
+							property: 'toString.call',
+							type: 'body',
+							value: 'x',
+						},
+					},
+					default: '',
+				};
+				node.parameters = {};
+				nodeType.description.properties = [nodeTypeProperties];
+
+				const workflow = new Workflow({
+					nodes: workflowData.nodes,
+					connections: workflowData.connections,
+					active: false,
+					nodeTypes,
+				});
+
+				const executeFunctions = mock<executionContexts.ExecuteContext>();
+				Object.assign(executeFunctions, {
+					runIndex,
+					additionalData,
+					workflow,
+					node,
+					mode,
+					connectionInputData,
+					runExecutionData,
+					nodeType,
+				});
+				const routingNode = new RoutingNode(executeFunctions, nodeType);
+
+				const executeSingleFunctions = getExecuteSingleFunctions(
+					workflow,
+					runExecutionData,
+					runIndex,
+					node,
+					itemIndex,
+				);
+
+				const result = routingNode.getRequestOptionsFromParameters(
+					executeSingleFunctions,
+					nodeTypeProperties,
+					itemIndex,
+					runIndex,
+					path,
+					{},
+				);
+
+				// Prototype untouched; the value lands as an own property on the request body.
+				expect(Object.prototype.hasOwnProperty.call(Object.prototype.toString, 'call')).toBe(false);
+				expect(Object.prototype.toString.call([])).toBe('[object Array]');
+				expect((result!.options.body as { toString?: { call?: unknown } }).toString?.call).toBe(
+					'x',
+				);
+			});
+		});
+	});
+
+	describe('runNode', () => {
+		const tests: Array<{
+			description: string;
+			input: {
+				specialTestOptions?: {
+					applyDeclarativeNodeOptionParameters?: boolean;
+					numberOfItems?: number;
+					sleepCalls?: number[][];
+				};
+				nodeType: {
+					properties?: INodeProperties[];
+					credentials?: INodeCredentialDescription[];
+					requestDefaults?: DeclarativeRestApiSettings.HttpRequestOptions;
+					requestOperations?: IN8nRequestOperations;
+				};
+				node: {
+					parameters: INodeParameters;
+				};
+			};
+			output?: INodeExecutionData[][];
+			error?: string;
+		}> = [
+			{
+				description: 'single parameter, only send defined, fixed value, using requestDefaults',
+				input: {
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'Email',
+								name: 'email',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'toEmail',
+										type: 'body',
+										value: 'fixedValue',
+									},
+								},
+								default: '',
+							},
+						],
+					},
+					node: {
+						parameters: {},
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									url: '/test-url',
+									headers: {},
+									qs: {},
+									body: {
+										toEmail: 'fixedValue',
+									},
+									baseURL: 'http://127.0.0.1:5678',
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'single parameter, only send defined, fixed value, using requestDefaults',
+				input: {
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'Email',
+								name: 'email',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'toEmail',
+										type: 'body',
+										value: 'fixedValue',
+									},
+								},
+								default: '',
+							},
+						],
+					},
+					node: {
+						parameters: {},
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									url: '/test-url',
+									headers: {},
+									qs: {},
+									body: {
+										toEmail: 'fixedValue',
+									},
+									baseURL: 'http://127.0.0.1:5678',
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description:
+					'single parameter, only send defined, using expression, using requestDefaults with overwrite',
+				input: {
+					node: {
+						parameters: {
+							email: 'test@test.com',
+						},
+					},
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'Email',
+								name: 'email',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'toEmail',
+										type: 'body',
+										value: '={{$value.toUpperCase()}}',
+									},
+									request: {
+										url: '/overwritten',
+									},
+								},
+								default: '',
+							},
+						],
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									url: '/overwritten',
+									headers: {},
+									qs: {},
+									body: {
+										toEmail: 'TEST@TEST.COM',
+									},
+									baseURL: 'http://127.0.0.1:5678',
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description:
+					'single parameter, only send defined, using expression, using requestDefaults with overwrite and expressions',
+				input: {
+					node: {
+						parameters: {
+							endpoint: 'custom-overwritten',
+						},
+					},
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'Endpoint',
+								name: 'endpoint',
+								type: 'string',
+								routing: {
+									send: {
+										property: '={{"theProperty"}}',
+										type: 'body',
+										value: '={{$value}}',
+									},
+									request: {
+										url: '=/{{$value}}',
+									},
+								},
+								default: '',
+							},
+						],
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									url: '/custom-overwritten',
+									headers: {},
+									qs: {},
+									body: {
+										theProperty: 'custom-overwritten',
+									},
+									baseURL: 'http://127.0.0.1:5678',
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'single parameter, send and operations defined, fixed value with pagination',
+				input: {
+					node: {
+						parameters: {},
+					},
+					nodeType: {
+						properties: [
+							{
+								displayName: 'Email',
+								name: 'email',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'toEmail',
+										type: 'body',
+										value: 'fixedValue',
+										paginate: true,
+									},
+									operations: {
+										pagination: {
+											type: 'offset',
+											properties: {
+												limitParameter: 'limit',
+												offsetParameter: 'offset',
+												pageSize: 10,
+												type: 'body',
+											},
+										},
+									},
+								},
+								default: '',
+							},
+						],
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									qs: {},
+									headers: {},
+									body: {
+										toEmail: 'fixedValue',
+										limit: 10,
+										offset: 10,
+									},
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'multiple parameters, from applyDeclarativeNodeOptionParameters',
+				input: {
+					specialTestOptions: {
+						applyDeclarativeNodeOptionParameters: true,
+						numberOfItems: 5,
+						sleepCalls: [[500], [500]],
+					},
+					node: {
+						parameters: {
+							requestOptions: {
+								allowUnauthorizedCerts: true,
+								batching: {
+									batch: {
+										batchSize: 2,
+										batchInterval: 500,
+									},
+								},
+								proxy: 'http://user:password@127.0.0.1:8080',
+								timeout: 123,
+							},
+						},
+					},
+					nodeType: {
+						properties: [],
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									qs: {},
+									headers: {},
+									proxy: {
+										auth: {
+											username: 'user',
+											password: 'password',
+										},
+										host: '127.0.0.1',
+										protocol: 'http',
+										port: 8080,
+									},
+									body: {},
+									returnFullResponse: true,
+									skipSslCertificateValidation: true,
+									timeout: 123,
+								},
+							},
+						},
+						{
+							pairedItem: { item: 1 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									qs: {},
+									headers: {},
+									proxy: {
+										auth: {
+											username: 'user',
+											password: 'password',
+										},
+										host: '127.0.0.1',
+										protocol: 'http',
+										port: 8080,
+									},
+									body: {},
+									returnFullResponse: true,
+									skipSslCertificateValidation: true,
+									timeout: 123,
+								},
+							},
+						},
+						{
+							pairedItem: { item: 2 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									qs: {},
+									headers: {},
+									proxy: {
+										auth: {
+											username: 'user',
+											password: 'password',
+										},
+										host: '127.0.0.1',
+										protocol: 'http',
+										port: 8080,
+									},
+									body: {},
+									returnFullResponse: true,
+									skipSslCertificateValidation: true,
+									timeout: 123,
+								},
+							},
+						},
+						{
+							pairedItem: { item: 3 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									qs: {},
+									headers: {},
+									proxy: {
+										auth: {
+											username: 'user',
+											password: 'password',
+										},
+										host: '127.0.0.1',
+										protocol: 'http',
+										port: 8080,
+									},
+									body: {},
+									returnFullResponse: true,
+									skipSslCertificateValidation: true,
+									timeout: 123,
+								},
+							},
+						},
+						{
+							pairedItem: { item: 4 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									qs: {},
+									headers: {},
+									proxy: {
+										auth: {
+											username: 'user',
+											password: 'password',
+										},
+										host: '127.0.0.1',
+										protocol: 'http',
+										port: 8080,
+									},
+									body: {},
+									returnFullResponse: true,
+									skipSslCertificateValidation: true,
+									timeout: 123,
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'preserves an explicit default proxy port',
+				input: {
+					node: {
+						parameters: {
+							requestOptions: { proxy: 'http://127.0.0.1:80' },
+						},
+					},
+					nodeType: { properties: [] },
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									body: {},
+									headers: {},
+									proxy: { host: '127.0.0.1', port: 80, protocol: 'http' },
+									qs: {},
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'rejects a malformed proxy URL',
+				input: {
+					node: { parameters: { requestOptions: { proxy: 'http://[invalid' } } },
+					nodeType: { properties: [] },
+				},
+				error: 'The proxy is not valid',
+			},
+			{
+				description: 'multiple parameters, complex example with everything',
+				input: {
+					node: {
+						parameters: {
+							value1: '={{"test"}}',
+							multipleFields: {
+								value1: 'v1',
+								value2: 'v2',
+								value3: 'v3',
+								value4: 4,
+								lowerLevel: {
+									lowLevelValue1: 1,
+									lowLevelValue2: 'llv2',
+								},
+								customPropertiesSingle1: {
+									property: {
+										name: 'cSName1',
+										value: 'cSValue1',
+									},
+								},
+								customPropertiesMulti: {
+									property0: [
+										{
+											name: 'cM0Name1',
+											value: 'cM0Value1',
+										},
+										{
+											name: 'cM0Name2',
+											value: 'cM0Value2',
+										},
+									],
+									property1: [
+										{
+											name: 'cM1Name2',
+											value: 'cM1Value2',
+										},
+										{
+											name: 'cM1Name2',
+											value: 'cM1Value2',
+										},
+									],
+								},
+								customPropertiesMultiExp: {
+									property0: [
+										{
+											name: '={{$parameter["value1"]}}N',
+											value: '={{$parameter["value1"]}}V',
+										},
+									],
+								},
+							},
+						},
+					},
+					nodeType: {
+						properties: [
+							{
+								displayName: 'Value 1',
+								name: 'value1',
+								type: 'string',
+								default: '',
+							},
+							{
+								displayName: 'Multiple Fields',
+								name: 'multipleFields',
+								type: 'collection',
+								placeholder: 'Add Field',
+								routing: {
+									request: {
+										method: 'GET',
+										url: '/destination1',
+									},
+									operations: {
+										pagination: {
+											type: 'offset',
+											properties: {
+												limitParameter: 'limit1',
+												offsetParameter: 'offset1',
+												pageSize: 1,
+												rootProperty: 'data1',
+												type: 'body',
+											},
+										},
+									},
+									output: {
+										maxResults: 10,
+										postReceive: [postReceiveFunction1],
+									},
+								},
+								default: {},
+								options: [
+									{
+										displayName: 'Value 1',
+										name: 'value1',
+										type: 'string',
+										routing: {
+											send: {
+												property: 'value1',
+												type: 'body',
+											},
+										},
+										default: '',
+									},
+									{
+										displayName: 'Value 2',
+										name: 'value2',
+										type: 'string',
+										routing: {
+											send: {
+												property: 'topLevel.value2',
+												propertyInDotNotation: false,
+												type: 'body',
+												preSend: [preSendFunction1],
+											},
+										},
+										default: '',
+									},
+									{
+										displayName: 'Value 3',
+										name: 'value3',
+										type: 'string',
+										routing: {
+											send: {
+												property: 'lowerLevel.value3',
+												type: 'body',
+											},
+										},
+										default: '',
+									},
+									{
+										displayName: 'Value 4',
+										name: 'value4',
+										type: 'number',
+										default: 0,
+										routing: {
+											send: {
+												property: 'value4',
+												type: 'query',
+											},
+											output: {
+												maxResults: '={{$value}}',
+											},
+											operations: {
+												pagination: {
+													type: 'offset',
+													properties: {
+														limitParameter: 'limit100',
+														offsetParameter: 'offset100',
+														pageSize: 100,
+														rootProperty: 'data100',
+														type: 'query',
+													},
+												},
+											},
+										},
+									},
+									// This one should not be included
+									{
+										displayName: 'Value 5',
+										name: 'value5',
+										type: 'number',
+										displayOptions: {
+											show: {
+												value4: [1],
+											},
+										},
+										default: 5,
+										routing: {
+											send: {
+												property: 'value5',
+												type: 'query',
+											},
+											operations: {
+												pagination: {
+													type: 'offset',
+													properties: {
+														limitParameter: 'limit10',
+														offsetParameter: 'offset10',
+														pageSize: 10,
+														rootProperty: 'data10',
+														type: 'body',
+													},
+												},
+											},
+										},
+									},
+									{
+										displayName: 'Lower Level',
+										name: 'lowerLevel',
+										type: 'collection',
+										placeholder: 'Add Field',
+										default: {},
+										options: [
+											{
+												displayName: 'Low Level Value1',
+												name: 'lowLevelValue1',
+												type: 'number',
+												default: 0,
+												routing: {
+													send: {
+														property: 'llvalue1',
+														type: 'query',
+													},
+												},
+											},
+											{
+												displayName: 'Low Level Value2',
+												name: 'lowLevelValue2',
+												type: 'string',
+												default: '',
+												routing: {
+													send: {
+														property: 'llvalue2',
+														type: 'query',
+														preSend: [preSendFunction1],
+													},
+													output: {
+														postReceive: [
+															{
+																type: 'rootProperty',
+																properties: {
+																	property: 'requestOptions',
+																},
+															},
+														],
+													},
+												},
+											},
+										],
+									},
+									// Test fixed collection1: multipleValues=false
+									{
+										displayName: 'Custom Properties1 (single)',
+										name: 'customPropertiesSingle1',
+										placeholder: 'Add Custom Property',
+										type: 'fixedCollection',
+										default: {},
+										options: [
+											{
+												name: 'property',
+												displayName: 'Property',
+												values: [
+													// To set: { single-customValues: { name: 'name', value: 'value'} }
+													{
+														displayName: 'Property Name',
+														name: 'name',
+														type: 'string',
+														default: '',
+														routing: {
+															request: {
+																method: 'POST',
+																url: '=/{{$value}}',
+															},
+															send: {
+																property: 'single-customValues.name',
+															},
+														},
+													},
+													{
+														displayName: 'Property Value',
+														name: 'value',
+														type: 'string',
+														default: '',
+														routing: {
+															send: {
+																property: 'single-customValues.value',
+															},
+														},
+													},
+												],
+											},
+										],
+									},
+									// Test fixed collection: multipleValues=true
+									{
+										displayName: 'Custom Properties (multi)',
+										name: 'customPropertiesMulti',
+										placeholder: 'Add Custom Property',
+										type: 'fixedCollection',
+										typeOptions: {
+											multipleValues: true,
+										},
+										default: {},
+										options: [
+											{
+												name: 'property0',
+												displayName: 'Property0',
+												values: [
+													// To set: { name0: 'value0', name1: 'value1' }
+													{
+														displayName: 'Property Name',
+														name: 'name',
+														type: 'string',
+														default: '',
+														description: 'Name of the property to set.',
+													},
+													{
+														displayName: 'Property Value',
+														name: 'value',
+														type: 'string',
+														default: '',
+														routing: {
+															send: {
+																property: '=customMulti0.{{$parent.name}}',
+																type: 'body',
+															},
+														},
+														description: 'Value of the property to set.',
+													},
+												],
+											},
+											{
+												name: 'property1',
+												displayName: 'Property1',
+												values: [
+													// To set: { customValues: [ { name: 'name0', value: 'value0'}, { name: 'name1', value: 'value1'} ]}
+													{
+														displayName: 'Property Name',
+														name: 'name',
+														type: 'string',
+														default: '',
+														routing: {
+															send: {
+																property: '=customMulti1[{{$index}}].name',
+																type: 'body',
+															},
+														},
+													},
+													{
+														displayName: 'Property Value',
+														name: 'value',
+														type: 'string',
+														default: '',
+														routing: {
+															send: {
+																property: '=customMulti1[{{$index}}].value',
+																type: 'body',
+															},
+														},
+													},
+												],
+											},
+										],
+									},
+									// Test fixed collection: multipleValues=true with expression which references an expression
+									{
+										displayName: 'Custom Properties (multi)',
+										name: 'customPropertiesMultiExp',
+										placeholder: 'Add Custom Property',
+										type: 'fixedCollection',
+										typeOptions: {
+											multipleValues: true,
+										},
+										default: {},
+										options: [
+											{
+												name: 'property0',
+												displayName: 'Property0',
+												values: [
+													// To set: { name0: 'value0', name1: 'value1' }
+													{
+														displayName: 'Property Name',
+														name: 'name',
+														type: 'string',
+														default: '',
+														description: 'Name of the property to set.',
+													},
+													{
+														displayName: 'Property Value',
+														name: 'value',
+														type: 'string',
+														default: '',
+														routing: {
+															send: {
+																property: '={{$parent.name}}',
+																type: 'body',
+															},
+														},
+														description: 'Value of the property to set.',
+													},
+												],
+											},
+										],
+									},
+								],
+							},
+						],
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								url: '/cSName1',
+								qs: {
+									value4: 4,
+									llvalue1: 1,
+									llvalue2: 'llv2',
+									'single-customValues': {
+										name: 'cSName1',
+										value: 'cSValue1',
+									},
+								},
+								body: {
+									value1: 'v1',
+									'topLevel.value2': 'v2',
+									lowerLevel: {
+										value3: 'v3',
+									},
+									customMulti0: {
+										cM0Name1: 'cM0Value1',
+										cM0Name2: 'cM0Value2',
+									},
+									customMulti1: [
+										{
+											name: 'cM1Name2',
+											value: 'cM1Value2',
+										},
+										{
+											name: 'cM1Name2',
+											value: 'cM1Value2',
+										},
+									],
+									testN: 'testV',
+								},
+								method: 'POST',
+								headers: {
+									addedIn: 'preSendFunction1',
+								},
+								returnFullResponse: true,
+								timeout: 300000,
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'single parameter, postReceive: set',
+				input: {
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'JSON Data',
+								name: 'jsonData',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'jsonData',
+										type: 'body',
+									},
+									output: {
+										postReceive: [
+											{
+												type: 'set',
+												properties: {
+													value: '={{ { "value": $value, "response": $response } }}',
+												},
+											},
+										],
+									},
+								},
+								default: '',
+							},
+						],
+					},
+					node: {
+						parameters: {
+							jsonData: {
+								root: [
+									{
+										name: 'Jim',
+										age: 34,
+									},
+									{
+										name: 'James',
+										age: 44,
+									},
+								],
+							},
+						},
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								value: {
+									root: [
+										{
+											name: 'Jim',
+											age: 34,
+										},
+										{
+											name: 'James',
+											age: 44,
+										},
+									],
+								},
+								response: {
+									body: {
+										headers: {},
+										statusCode: 200,
+										requestOptions: {
+											headers: {},
+											qs: {},
+											body: {
+												jsonData: {
+													root: [
+														{
+															name: 'Jim',
+															age: 34,
+														},
+														{
+															name: 'James',
+															age: 44,
+														},
+													],
+												},
+											},
+											baseURL: 'http://127.0.0.1:5678',
+											url: '/test-url',
+											returnFullResponse: true,
+											timeout: 300000,
+										},
+									},
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'single parameter, postReceive: rootProperty',
+				input: {
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'JSON Data',
+								name: 'jsonData',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'jsonData',
+										type: 'body',
+									},
+									output: {
+										postReceive: [
+											{
+												type: 'rootProperty',
+												properties: {
+													property: 'requestOptions',
+												},
+											},
+											{
+												type: 'rootProperty',
+												properties: {
+													property: 'body.jsonData.root',
+												},
+											},
+										],
+									},
+								},
+								default: '',
+							},
+						],
+					},
+					node: {
+						parameters: {
+							jsonData: {
+								root: [
+									{
+										name: 'Jim',
+										age: 34,
+									},
+									{
+										name: 'James',
+										age: 44,
+									},
+								],
+							},
+						},
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								name: 'Jim',
+								age: 34,
+							},
+						},
+						{
+							pairedItem: { item: 0 },
+							json: {
+								name: 'James',
+								age: 44,
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'single parameter, postReceive: rootProperty, filter',
+				input: {
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'JSON Data',
+								name: 'jsonData',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'jsonData',
+										type: 'body',
+									},
+									output: {
+										postReceive: [
+											{
+												type: 'rootProperty',
+												properties: {
+													property: 'requestOptions',
+												},
+											},
+											{
+												type: 'rootProperty',
+												properties: {
+													property: 'body.jsonData.root',
+												},
+											},
+											{
+												type: 'filter',
+												properties: {
+													pass: '={{ $responseItem.age > 40 }}',
+												},
+											},
+										],
+									},
+								},
+								default: '',
+							},
+						],
+					},
+					node: {
+						parameters: {
+							jsonData: {
+								root: [
+									{
+										name: 'Jim',
+										age: 34,
+									},
+									{
+										name: 'James',
+										age: 44,
+									},
+								],
+							},
+						},
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								name: 'James',
+								age: 44,
+							},
+						},
+					],
+				],
+			},
+			{
+				description:
+					'single parameter, postReceive: rootProperty, filter with expression containing $credentials',
+				input: {
+					nodeType: {
+						credentials: [
+							{
+								name: 'testCredentials',
+								required: true,
+							},
+						],
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'JSON Data',
+								name: 'jsonData',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'jsonData',
+										type: 'body',
+									},
+									output: {
+										postReceive: [
+											{
+												type: 'rootProperty',
+												properties: {
+													property: 'requestOptions',
+												},
+											},
+											{
+												type: 'rootProperty',
+												properties: {
+													property: 'body.jsonData.root',
+												},
+											},
+											{
+												type: 'filter',
+												properties: {
+													pass: "={{ $credentials.baseUrl.startsWith('https://example.com') && $responseItem.age > 40 }}",
+												},
+											},
+										],
+									},
+								},
+								default: '',
+							},
+						],
+					},
+					node: {
+						parameters: {
+							jsonData: {
+								root: [
+									{
+										name: 'Jim',
+										age: 34,
+									},
+									{
+										name: 'James',
+										age: 44,
+									},
+								],
+							},
+						},
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								name: 'James',
+								age: 44,
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'single parameter, multiple postReceive: rootProperty, setKeyValue, sort',
+				input: {
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'JSON Data',
+								name: 'jsonData',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'jsonData',
+										type: 'body',
+									},
+									output: {
+										postReceive: [
+											{
+												type: 'rootProperty',
+												properties: {
+													property: 'requestOptions.body.jsonData.root',
+												},
+											},
+											{
+												type: 'setKeyValue',
+												properties: {
+													display1: '={{$responseItem.name}} ({{$responseItem.age}})',
+													display2: '={{$responseItem.name}} is {{$responseItem.age}}',
+												},
+											},
+											{
+												type: 'sort',
+												properties: {
+													key: 'display1',
+												},
+											},
+										],
+									},
+								},
+								default: '',
+							},
+						],
+					},
+					node: {
+						parameters: {
+							jsonData: {
+								root: [
+									{
+										name: 'Jim',
+										age: 34,
+									},
+									{
+										name: 'James',
+										age: 44,
+									},
+								],
+							},
+						},
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								display1: 'James (44)',
+								display2: 'James is 44',
+							},
+						},
+						{
+							pairedItem: { item: 0 },
+							json: {
+								display1: 'Jim (34)',
+								display2: 'Jim is 34',
+							},
+						},
+					],
+				],
+			},
+			{
+				description: 'single parameter, routing.request.url resolves $execution.id',
+				input: {
+					node: {
+						parameters: {
+							resource: 'executions',
+						},
+					},
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+						},
+						properties: [
+							{
+								displayName: 'Resource',
+								name: 'resource',
+								type: 'string',
+								routing: {
+									request: {
+										method: 'GET',
+										url: '=/{{$value}}/{{ $execution.id }}',
+									},
+								},
+								default: '',
+							},
+						],
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									url: '/executions/test-exec-123',
+									method: 'GET',
+									headers: {},
+									qs: {},
+									body: {},
+									baseURL: 'http://127.0.0.1:5678',
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+			{
+				description:
+					'options parameter with routing.request.url on selected option resolves $execution.id via $parameter',
+				input: {
+					node: {
+						parameters: {
+							operation: 'get',
+							executionId: '={{ $execution.id }}',
+						},
+					},
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+						},
+						properties: [
+							{
+								displayName: 'Operation',
+								name: 'operation',
+								type: 'options',
+								noDataExpression: true,
+								default: 'get',
+								options: [
+									{
+										name: 'Get',
+										value: 'get',
+										routing: {
+											request: {
+												method: 'GET',
+												url: '=/executions/{{ $parameter.executionId }}',
+											},
+										},
+									},
+								],
+							},
+							{
+								displayName: 'Execution ID',
+								name: 'executionId',
+								type: 'string',
+								default: '',
+								displayOptions: {
+									show: {
+										operation: ['get'],
+									},
+								},
+							},
+						],
+					},
+				},
+				output: [
+					[
+						{
+							pairedItem: { item: 0 },
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									url: '/executions/test-exec-123',
+									method: 'GET',
+									headers: {},
+									qs: {},
+									body: {},
+									baseURL: 'http://127.0.0.1:5678',
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+		];
+
+		const baseNode: INode = {
+			parameters: {},
+			name: 'test',
+			type: 'test.set',
+			typeVersion: 1,
+			id: 'uuid-1234',
+			position: [0, 0],
+		};
+
+		const mode = 'internal';
+		const runIndex = 0;
+		const itemIndex = 0;
+		const connectionInputData: INodeExecutionData[] = [];
+		const runExecutionData: IRunExecutionData = createEmptyRunExecutionData();
+		const nodeType = nodeTypes.getByNameAndVersion(baseNode.type);
+		DirectoryLoader.applyDeclarativeNodeOptionParameters(nodeType);
+
+		const propertiesOriginal = nodeType.description.properties;
+
+		const inputData: ITaskDataConnections = {
+			main: [[]],
+		};
+
+		for (const testData of tests) {
+			test(testData.description, async () => {
+				const node: INode = { ...baseNode, ...testData.input.node };
+
+				const workflowData = {
+					nodes: [node],
+					connections: {},
+				};
+
+				nodeType.description = { ...testData.input.nodeType } as INodeTypeDescription;
+				if (testData.input.specialTestOptions?.applyDeclarativeNodeOptionParameters) {
+					nodeType.description.properties = propertiesOriginal;
+				}
+
+				const workflow = new Workflow({
+					nodes: workflowData.nodes,
+					connections: workflowData.connections,
+					active: false,
+					nodeTypes,
+				});
+
+				const executeData = {
+					data: {},
+					node,
+					source: null,
+				} as IExecuteData;
+
+				const executeFunctions = mock<executionContexts.ExecuteContext>();
+				Object.assign(executeFunctions, {
+					executeData,
+					inputData,
+					runIndex,
+					additionalData,
+					workflow,
+					node,
+					mode,
+					connectionInputData,
+					runExecutionData,
+				});
+
+				const executeSingleFunctions = getExecuteSingleFunctions(
+					workflow,
+					runExecutionData,
+					runIndex,
+					node,
+					itemIndex,
+				);
+
+				vi.spyOn(executionContexts, 'ExecuteSingleContext').mockImplementation(function (
+					this: executionContexts.ExecuteSingleContext,
+				) {
+					return executeSingleFunctions as never;
+				} as never);
+
+				const numberOfItems = testData.input.specialTestOptions?.numberOfItems ?? 1;
+				if (!inputData.main[0] || inputData.main[0].length !== numberOfItems) {
+					inputData.main[0] = [];
+					for (let i = 0; i < numberOfItems; i++) {
+						inputData.main[0].push({ json: {} });
+					}
+				}
+
+				const sleepModule = await import('@n8n/utils/sleep');
+				const spy = vi.spyOn(sleepModule, 'sleep').mockReturnValue(
+					new Promise((resolve) => {
+						resolve();
+					}),
+				);
+
+				spy.mockClear();
+
+				executeFunctions.getNodeParameter.mockImplementation(
+					(parameterName: string) => testData.input.node.parameters[parameterName] || {},
+				);
+
+				const getNodeParameter = executeSingleFunctions.getNodeParameter;
+				// @ts-expect-error overwriting a method
+				executeSingleFunctions.getNodeParameter = (parameterName: string) =>
+					parameterName in testData.input.node.parameters
+						? testData.input.node.parameters[parameterName]
+						: (getNodeParameter(parameterName) ?? {});
+
+				const mockCredentials = mock<ICredentialsDecrypted>({
+					data: {
+						apiKey: 'testApiKey',
+						baseUrl: 'https://example.com',
+					},
+				});
+
+				const routingNode = nodeType.description.credentials
+					? new RoutingNode(executeFunctions, nodeType, mockCredentials)
+					: new RoutingNode(executeFunctions, nodeType);
+
+				if (testData.error) {
+					await expect(routingNode.runNode()).rejects.toThrow(testData.error);
+					return;
+				}
+
+				const result = await routingNode.runNode();
+
+				if (testData.input.specialTestOptions?.sleepCalls) {
+					expect(spy.mock.calls).toEqual(testData.input.specialTestOptions?.sleepCalls);
+				} else {
+					expect(spy).toHaveBeenCalledTimes(0);
+				}
+
+				expect(result).toEqual(testData.output);
+			});
+		}
+	});
+
+	describe('per-item errors', () => {
+		const createRoutingNode = ({
+			continueOnFail,
+			requestErrorUrl,
+			requestError = new Error('Request failed'),
+			arrayResponseUrl,
+		}: {
+			continueOnFail: boolean;
+			requestErrorUrl?: string;
+			requestError?: Error;
+			arrayResponseUrl?: string;
+		}) => {
+			const items: INodeExecutionData[] = [
+				{ json: { id: 'first' } },
+				{ json: requestErrorUrl ? { id: 'second' } : {} },
+				{ json: { id: 'third' } },
+			];
+			const node: INode = {
+				parameters: {},
+				name: 'test',
+				type: 'test.set',
+				typeVersion: 1,
+				id: 'uuid-1234',
+				position: [0, 0],
+			};
+			const nodeType = mock<INodeType>();
+			nodeType.description = {
+				requestDefaults: {
+					baseURL: 'http://127.0.0.1:5678',
+					url: '=/items/{{ toPathSegment($json.id) }}',
+				},
+				properties: [],
+			} as unknown as INodeTypeDescription;
+			const runExecutionData = createEmptyRunExecutionData();
+			const workflow = new Workflow({
+				nodes: [node],
+				connections: {},
+				active: false,
+				nodeTypes,
+			});
+			const executeFunctions = mock<executionContexts.ExecuteContext>();
+			Object.assign(executeFunctions, {
+				executeData: { data: {}, node, source: null } as IExecuteData,
+				inputData: { main: [items] } as ITaskDataConnections,
+				runIndex: 0,
+				additionalData,
+				workflow,
+				node,
+				mode: 'internal',
+				connectionInputData: items,
+				runExecutionData,
+			});
+			executeFunctions.getNodeParameter.mockReturnValue({});
+
+			const requestUrls: string[] = [];
+			const contexts = items.map((_, itemIndex) => {
+				const context = getExecuteSingleFunctions(workflow, runExecutionData, 0, node, itemIndex);
+				// @ts-expect-error overwriting a method
+				context.getNodeParameter = () => ({});
+				context.continueOnFail.mockReturnValue(continueOnFail);
+				context.helpers.httpRequest = vi.fn(async (requestOptions: IHttpRequestOptions) => {
+					requestUrls.push(requestOptions.url);
+					if (requestOptions.url === requestErrorUrl) {
+						throw requestError;
+					}
+					if (requestOptions.url === arrayResponseUrl) {
+						return {
+							body: [
+								{ url: requestOptions.url, part: 1 },
+								{ url: requestOptions.url, part: 2 },
+							],
+						};
+					}
+					return { body: { url: requestOptions.url } };
+				});
+				return context;
+			});
+			let contextIndex = 0;
+			vi.spyOn(executionContexts, 'ExecuteSingleContext').mockImplementation(function (
+				this: executionContexts.ExecuteSingleContext,
+			) {
+				return contexts[contextIndex++] as never;
+			} as never);
+
+			return {
+				requestUrls,
+				run: new RoutingNode(executeFunctions, nodeType).runNode(),
+			};
+		};
+
+		test('returns a preparation error and processes later items when continue on fail is enabled', async () => {
+			const { requestUrls, run } = createRoutingNode({ continueOnFail: true });
+
+			const result = await run;
+
+			expect(requestUrls).toEqual(['/items/first', '/items/third']);
+			expect(result?.[0]?.[0]?.json).toEqual({ url: '/items/first' });
+			expect(result?.[0]?.[1]?.error).toMatchObject({
+				name: 'NodeOperationError',
+				message: 'Invalid identifier: a value is required',
+				context: { itemIndex: 1, runIndex: 0 },
+			});
+			expect(result?.[0]?.[2]?.json).toEqual({ url: '/items/third' });
+		});
+
+		test('throws a preparation error and does not process later items when continue on fail is disabled', async () => {
+			const { requestUrls, run } = createRoutingNode({ continueOnFail: false });
+
+			await expect(run).rejects.toMatchObject({
+				name: 'NodeOperationError',
+				message: 'Invalid identifier: a value is required',
+				context: { itemIndex: 1, runIndex: 0 },
+			});
+			expect(requestUrls).toEqual(['/items/first']);
+		});
+
+		test('returns a request error and processes later items when continue on fail is enabled', async () => {
+			const { requestUrls, run } = createRoutingNode({
+				continueOnFail: true,
+				requestErrorUrl: '/items/second',
+			});
+
+			const result = await run;
+
+			expect(requestUrls).toEqual(['/items/first', '/items/second', '/items/third']);
+			expect(result?.[0]?.[0]?.json).toEqual({ url: '/items/first' });
+			expect(result?.[0]?.[1]?.error).toMatchObject({ message: 'Request failed' });
+			expect(result?.[0]?.[2]?.json).toEqual({ url: '/items/third' });
+		});
+
+		test('returns a request error without request headers when continue on fail is enabled', async () => {
+			const requestError = new AxiosError(
+				'Request failed with status code 500',
+				'ERR_BAD_RESPONSE',
+				{ headers: new AxiosHeaders({ Authorization: 'Bearer secret-token' }) },
+			);
+			const { run } = createRoutingNode({
+				continueOnFail: true,
+				requestErrorUrl: '/items/second',
+				requestError,
+			});
+
+			const result = await run;
+			const error = result?.[0]?.[1]?.error;
+
+			expect(error).toBeInstanceOf(NodeApiError);
+			expect(error).toMatchObject({ context: { itemIndex: 1, runIndex: 0 } });
+			expect(JSON.stringify(error)).not.toContain('secret-token');
+		});
+
+		test('pairs every success and error item with its input item', async () => {
+			// Three inputs produce four outputs: an array response for the first input,
+			// an error item for the second, and one item for the third.
+			const { run } = createRoutingNode({
+				continueOnFail: true,
+				arrayResponseUrl: '/items/first',
+				requestErrorUrl: '/items/second',
+			});
+
+			const result = await run;
+
+			expect(result?.[0]?.map((item) => item.pairedItem)).toEqual([
+				{ item: 0 },
+				{ item: 0 },
+				{ item: 1 },
+				{ item: 2 },
+			]);
+			expect(result?.[0]?.map((item) => item.json)).toEqual([
+				{ url: '/items/first', part: 1 },
+				{ url: '/items/first', part: 2 },
+				{},
+				{ url: '/items/third' },
+			]);
+		});
+
+		test('keeps a node operation error when continue on fail is enabled', async () => {
+			const requestError = new NodeOperationError(mock<INode>(), 'Post-receive action failed');
+			const { run } = createRoutingNode({
+				continueOnFail: true,
+				requestErrorUrl: '/items/second',
+				requestError,
+			});
+
+			const result = await run;
+			const error = result?.[0]?.[1]?.error;
+
+			expect(error).toBe(requestError);
+			expect(error).toMatchObject({ context: { itemIndex: 1, runIndex: 0 } });
+		});
+	});
+
+	describe('itemIndex', () => {
+		const tests: Array<{
+			description: string;
+			input: {
+				nodeType: Partial<INodeTypeDescription>;
+				node: {
+					parameters: INodeParameters;
+				};
+			};
+			output: INodeExecutionData[][] | undefined;
+		}> = [
+			{
+				description: 'single parameter, only send defined, fixed value, using requestDefaults',
+				input: {
+					nodeType: {
+						requestDefaults: {
+							baseURL: 'http://127.0.0.1:5678',
+							url: '/test-url',
+						},
+						properties: [
+							{
+								displayName: 'Email',
+								name: 'email',
+								type: 'string',
+								routing: {
+									send: {
+										property: 'toEmail',
+										type: 'body',
+										value: 'fixedValue',
+									},
+								},
+								default: '',
+							},
+						],
+					},
+					node: {
+						parameters: {},
+					},
+				},
+				output: [
+					[
+						{
+							json: {
+								headers: {},
+								statusCode: 200,
+								requestOptions: {
+									url: '/test-url',
+									qs: {},
+									body: {
+										toEmail: 'fixedValue',
+									},
+									baseURL: 'http://127.0.0.1:5678',
+									returnFullResponse: true,
+									timeout: 300000,
+								},
+							},
+						},
+					],
+				],
+			},
+		];
+
+		const baseNode: INode = {
+			parameters: {},
+			name: 'test',
+			type: 'test.set',
+			typeVersion: 1,
+			id: 'uuid-1234',
+			position: [0, 0],
+		};
+
+		const runIndex = 0;
+		const itemIndex = 0;
+		const runExecutionData: IRunExecutionData = createEmptyRunExecutionData();
+		const nodeType = mock<INodeType>();
+
+		const inputData: ITaskDataConnections = {
+			main: [
+				[
+					{
+						json: {},
+					},
+					{
+						json: {},
+					},
+					{
+						json: {},
+					},
+				],
+			],
+		};
+
+		for (const testData of tests) {
+			test(testData.description, async () => {
+				const node: INode = { ...baseNode, ...testData.input.node };
+
+				const workflowData = {
+					nodes: [node],
+					connections: {},
+				};
+
+				nodeType.description = { ...testData.input.nodeType } as INodeTypeDescription;
+
+				const workflow = new Workflow({
+					nodes: workflowData.nodes,
+					connections: workflowData.connections,
+					active: false,
+					nodeTypes,
+				});
+
+				let currentItemIndex = 0;
+				for (let iteration = 0; iteration < inputData.main[0]!.length; iteration++) {
+					const context = getExecuteSingleFunctions(
+						workflow,
+						runExecutionData,
+						runIndex,
+						node,
+						itemIndex + iteration,
+					);
+					vi.spyOn(executionContexts, 'ExecuteSingleContext').mockImplementation(function (
+						this: executionContexts.ExecuteSingleContext,
+					) {
+						return context as never;
+					} as never);
+					currentItemIndex = context.getItemIndex();
+				}
+
+				const expectedItemIndex = inputData.main[0]!.length - 1;
+
+				expect(currentItemIndex).toEqual(expectedItemIndex);
+			});
+		}
+	});
+
+	describe('credential allowedDomains', () => {
+		const mode = 'internal';
+		const runIndex = 0;
+		const itemIndex = 0;
+		const connectionInputData: INodeExecutionData[] = [];
+		const runExecutionData: IRunExecutionData = createEmptyRunExecutionData();
+
+		const baseNode: INode = {
+			parameters: {},
+			name: 'test',
+			type: 'test.set',
+			typeVersion: 1,
+			id: 'uuid-1234',
+			position: [0, 0],
+		};
+
+		// `null` means the node declares no base URL; a default parameter cannot express that,
+		// since an explicit `undefined` triggers the default.
+		const buildNodeType = (
+			baseURL: string | null = 'https://api.example.com',
+			routedUrl = '/path',
+			propertyBaseURL?: string,
+		): INodeType => {
+			const routingNodeType = nodeTypes.getByNameAndVersion(baseNode.type);
+			routingNodeType.description = {
+				credentials: [{ name: 'testCredential', required: true }],
+				requestDefaults: { baseURL: baseURL ?? undefined },
+				properties: [
+					{
+						displayName: 'Endpoint',
+						name: 'endpoint',
+						type: 'string',
+						default: '',
+						routing: {
+							request: {
+								url: routedUrl,
+								...(propertyBaseURL ? { baseURL: propertyBaseURL } : {}),
+							},
+						},
+					},
+					// Declared so the Workflow constructor's parameter reconciliation keeps
+					// `options.baseURL` instead of dropping it as an undeclared parameter.
+					{
+						displayName: 'Options',
+						name: 'options',
+						type: 'collection',
+						placeholder: 'Add option',
+						default: {},
+						options: [{ displayName: 'Base URL', name: 'baseURL', type: 'string', default: '' }],
+					},
+				],
+			} as unknown as INodeTypeDescription;
+			return routingNodeType;
+		};
+
+		const runWithCredential = async (
+			data: Record<string, unknown>,
+			options: {
+				baseURL?: string | null;
+				routedUrl?: string;
+				nodeParameters?: INodeParameters;
+				propertyBaseURL?: string;
+			} = {},
+		) => {
+			const credentialData = data as unknown as ICredentialDataDecryptedObject;
+			const nodeType = buildNodeType(options.baseURL, options.routedUrl, options.propertyBaseURL);
+			const node: INode = { ...baseNode, parameters: options.nodeParameters ?? {} };
+			const workflow = new Workflow({
+				nodes: [node],
+				connections: {},
+				active: false,
+				nodeTypes,
+			});
+
+			const executeFunctions = mock<executionContexts.ExecuteContext>();
+			Object.assign(executeFunctions, {
+				executeData: { data: {}, node, source: null } as IExecuteData,
+				inputData: { main: [[{ json: {} }]] } as ITaskDataConnections,
+				runIndex,
+				additionalData,
+				workflow,
+				node,
+				mode,
+				connectionInputData,
+				runExecutionData,
+			});
+			executeFunctions.getNodeParameter.mockImplementation(() => ({}));
+
+			const executeSingleFunctions = getExecuteSingleFunctions(
+				workflow,
+				runExecutionData,
+				runIndex,
+				node,
+				itemIndex,
+			);
+			const originalGetNodeParameter = executeSingleFunctions.getNodeParameter;
+			// @ts-expect-error overwriting a method
+			executeSingleFunctions.getNodeParameter = (parameterName: string) =>
+				originalGetNodeParameter(parameterName) ?? {};
+			vi.spyOn(executionContexts, 'ExecuteSingleContext').mockImplementation(function (
+				this: executionContexts.ExecuteSingleContext,
+			) {
+				return executeSingleFunctions as never;
+			} as never);
+
+			const mockCredentials = mock<ICredentialsDecrypted>({
+				id: 'cred-1',
+				name: 'Test Credential',
+				type: 'testCredential',
+				data: credentialData,
+			});
+
+			const routingNode = new RoutingNode(executeFunctions, nodeType, mockCredentials);
+			return await routingNode.runNode();
+		};
+		const getRequestOptions = (result: Awaited<ReturnType<typeof runWithCredential>>) =>
+			(result![0]![0]!.json as { requestOptions: IHttpRequestOptions }).requestOptions;
+
+		test("propagates credential allowedDomains when mode is 'domains'", async () => {
+			const result = await runWithCredential({
+				apiKey: 'testApiKey',
+				allowedHttpRequestDomains: 'domains',
+				allowedDomains: 'api.example.com',
+			});
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.allowedDomains).toBe('api.example.com');
+		});
+
+		test("does not set allowedDomains when mode is 'all'", async () => {
+			const result = await runWithCredential({
+				apiKey: 'testApiKey',
+				allowedHttpRequestDomains: 'all',
+			});
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.allowedDomains).toBeUndefined();
+		});
+
+		test("adds the node's own host when mode is 'domains' and the list omits it", async () => {
+			const result = await runWithCredential({
+				apiKey: 'testApiKey',
+				allowedHttpRequestDomains: 'domains',
+				allowedDomains: 'other.example.com',
+			});
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.allowedDomains).toBe('api.example.com, other.example.com');
+		});
+
+		test.each([
+			['the node declares no base URL', null],
+			['the base URL resolves to an empty string', ''],
+		])('does not widen the allowlist from the routed URL when %s', async (_label, baseURL) => {
+			// The routed URL can interpolate a node parameter, so its host is the user's choice.
+			const result = await runWithCredential(
+				{
+					apiKey: 'testApiKey',
+					allowedHttpRequestDomains: 'domains',
+					allowedDomains: 'other.example.com',
+				},
+				{ baseURL, routedUrl: 'https://user-chosen.example.net/path' },
+			);
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.allowedDomains).toBe('other.example.com');
+		});
+
+		test("does not block a declarative node when mode is 'none'", async () => {
+			const result = await runWithCredential({
+				apiKey: 'testApiKey',
+				allowedHttpRequestDomains: 'none',
+			});
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.allowedDomains).toBeUndefined();
+		});
+
+		test("falls back to the node's own host when the 'domains' list is empty", async () => {
+			const result = await runWithCredential({
+				apiKey: 'testApiKey',
+				allowedHttpRequestDomains: 'domains',
+				allowedDomains: '   ',
+			});
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.allowedDomains).toBe('api.example.com');
+		});
+
+		test("falls back to the node's own host when the 'domains' list is missing", async () => {
+			const result = await runWithCredential({
+				apiKey: 'testApiKey',
+				allowedHttpRequestDomains: 'domains',
+			});
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.allowedDomains).toBe('api.example.com');
+		});
+
+		test('does not set allowedDomains when restriction field is absent', async () => {
+			const result = await runWithCredential({ apiKey: 'testApiKey' });
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.allowedDomains).toBeUndefined();
+		});
+
+		test('prepares a dynamic path segment when the base URL is static', async () => {
+			// Regression test for NODE-6014.
+			const result = await runWithCredential(
+				{ apiKey: 'testApiKey' },
+				{
+					routedUrl: '=/tests/{{toPathSegment($parameter["endpoint"])}}',
+					nodeParameters: { endpoint: 'project-123' },
+				},
+			);
+
+			const requestOptions = getRequestOptions(result);
+			expect(requestOptions.url).toBe('/tests/project-123');
+		});
+
+		describe('when the routed url starts with a node parameter', () => {
+			const baseURL = 'https://graph.example.com/v13.0/';
+			const routedUrl = '={{$value}}/messages';
+
+			test("blocks a declarative node when mode is 'none' and the parameter is an absolute url", async () => {
+				await expect(
+					runWithCredential(
+						{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+						{ baseURL, routedUrl, nodeParameters: { endpoint: 'http://other.example.net' } },
+					),
+				).rejects.toThrow('This credential is configured to prevent use within an');
+			});
+
+			test("does not widen the 'domains' allowlist with the host from the parameter", async () => {
+				const result = await runWithCredential(
+					{
+						apiKey: 'testApiKey',
+						allowedHttpRequestDomains: 'domains',
+						allowedDomains: 'other.example.com',
+					},
+					{ baseURL, routedUrl, nodeParameters: { endpoint: 'http://other.example.net' } },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBe('other.example.com');
+			});
+
+			test("does not block a declarative node when mode is 'none' and the parameter is an identifier", async () => {
+				const result = await runWithCredential(
+					{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+					{ baseURL, routedUrl, nodeParameters: { endpoint: '1234567890' } },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBeUndefined();
+			});
+		});
+
+		describe('when the routed url is absolute', () => {
+			test("does not block a declarative node when mode is 'none' and the node declares no base URL", async () => {
+				const result = await runWithCredential(
+					{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+					{ baseURL: null, routedUrl: '=https://reader.example.com/{{$parameter["endpoint"]}}' },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBeUndefined();
+			});
+
+			test("does not widen the 'domains' allowlist with a caller-supplied base URL override", async () => {
+				const result = await runWithCredential(
+					{
+						apiKey: 'testApiKey',
+						allowedHttpRequestDomains: 'domains',
+						allowedDomains: 'other.example.com',
+					},
+					{
+						baseURL: '={{ $parameter.options?.baseURL || "https://api.example.com" }}',
+						routedUrl: 'https://api.example.com/path',
+						nodeParameters: { options: { baseURL: 'http://override.example.com' } },
+					},
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBe('api.example.com, other.example.com');
+			});
+
+			test("does not block a declarative node when mode is 'none' and the host matches the base URL", async () => {
+				const result = await runWithCredential(
+					{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+					{ routedUrl: 'https://api.example.com/other' },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBeUndefined();
+			});
+		});
+
+		describe('when requestDefaults.baseURL reads an optional override parameter', () => {
+			// Mirrors LmChatOpenAi/LmOpenAi/OpenAiAssistant/EmbeddingsOpenAi's
+			// `$parameter.options?.baseURL || <credential-owned default>` pattern.
+			const parameterizedBaseUrl =
+				'={{ $parameter.options?.baseURL || "https://api.example.com" }}';
+
+			test("does not widen the 'domains' allowlist with a caller-supplied override", async () => {
+				const result = await runWithCredential(
+					{
+						apiKey: 'testApiKey',
+						allowedHttpRequestDomains: 'domains',
+						allowedDomains: 'api.example.com',
+					},
+					{
+						baseURL: parameterizedBaseUrl,
+						nodeParameters: { options: { baseURL: 'http://override.example.com' } },
+					},
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBe('api.example.com');
+			});
+
+			test("blocks a declarative node when mode is 'none' and the caller supplies an override", async () => {
+				await expect(
+					runWithCredential(
+						{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+						{
+							baseURL: parameterizedBaseUrl,
+							nodeParameters: { options: { baseURL: 'http://override.example.com' } },
+						},
+					),
+				).rejects.toThrow('This credential is configured to prevent use within an');
+			});
+
+			test("still trusts the credential-owned default when mode is 'none' and no override is supplied", async () => {
+				const result = await runWithCredential(
+					{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+					{ baseURL: parameterizedBaseUrl, nodeParameters: {} },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBeUndefined();
+			});
+
+			test("still widens the 'domains' allowlist with the node's own host when no override is supplied", async () => {
+				const result = await runWithCredential(
+					{
+						apiKey: 'testApiKey',
+						allowedHttpRequestDomains: 'domains',
+						allowedDomains: 'other.example.com',
+					},
+					{ baseURL: parameterizedBaseUrl, nodeParameters: {} },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBe('api.example.com, other.example.com');
+			});
+		});
+
+		describe("when a property's routing overrides requestDefaults.baseURL with a node-owned literal", () => {
+			// Mirrors Google Cloud Storage's object-upload operations, whose `routing.request`
+			// hardcodes a different `baseURL` than `requestDefaults.baseURL` - a node-owned
+			// change, not one driven by any caller-supplied parameter.
+
+			test("still widens the 'domains' allowlist with the overriding host, not just requestDefaults' host", async () => {
+				const result = await runWithCredential(
+					{
+						apiKey: 'testApiKey',
+						allowedHttpRequestDomains: 'domains',
+						allowedDomains: 'api.example.com',
+					},
+					{ propertyBaseURL: 'https://upload.example.com' },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBe('upload.example.com, api.example.com');
+			});
+
+			test("does not block a declarative node when mode is 'none'", async () => {
+				const result = await runWithCredential(
+					{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+					{ propertyBaseURL: 'https://upload.example.com' },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBeUndefined();
+			});
+		});
+
+		describe("when a property's routing overrides requestDefaults.baseURL with a caller-supplied parameter", () => {
+			// Same shape as Google Cloud Storage's own override, but the property's `baseURL`
+			// itself reads an optional override parameter instead of a fixed literal.
+			const parameterizedPropertyBaseUrl =
+				'={{ $parameter.options?.baseURL || "https://storage.googleapis.com/upload/storage/v1" }}';
+
+			test("does not widen the 'domains' allowlist with a caller-supplied override", async () => {
+				const result = await runWithCredential(
+					{
+						apiKey: 'testApiKey',
+						allowedHttpRequestDomains: 'domains',
+						allowedDomains: 'api.example.com',
+					},
+					{
+						propertyBaseURL: parameterizedPropertyBaseUrl,
+						nodeParameters: { options: { baseURL: 'http://override.example.com' } },
+					},
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBe('api.example.com');
+			});
+
+			test("blocks a declarative node when mode is 'none' and the caller supplies an override", async () => {
+				await expect(
+					runWithCredential(
+						{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+						{
+							propertyBaseURL: parameterizedPropertyBaseUrl,
+							nodeParameters: { options: { baseURL: 'http://override.example.com' } },
+						},
+					),
+				).rejects.toThrow('This credential is configured to prevent use within an');
+			});
+
+			test("still trusts the node-owned default when mode is 'none' and no override is supplied", async () => {
+				const result = await runWithCredential(
+					{ apiKey: 'testApiKey', allowedHttpRequestDomains: 'none' },
+					{ propertyBaseURL: parameterizedPropertyBaseUrl, nodeParameters: {} },
+				);
+
+				const requestOptions = getRequestOptions(result);
+				expect(requestOptions.allowedDomains).toBeUndefined();
+			});
+		});
+	});
+});

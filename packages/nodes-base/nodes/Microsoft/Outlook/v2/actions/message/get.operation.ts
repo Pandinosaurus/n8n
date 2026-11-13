@@ -5,10 +5,13 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
+
+import { messageRLC } from '../../descriptions';
 import { messageFields, simplifyOutputMessages } from '../../helpers/utils';
 import { downloadAttachments, getMimeContent, microsoftApiRequest } from '../../transport';
-import { messageRLC } from '../../descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 export const properties: INodeProperties[] = [
 	messageRLC,
@@ -49,7 +52,7 @@ export const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -139,7 +142,8 @@ export async function execute(this: IExecuteFunctions, index: number) {
 	responseData = await microsoftApiRequest.call(
 		this,
 		'GET',
-		`/messages/${messageId}`,
+		requestPath`/messages/${messageId}`,
+		index,
 		undefined,
 		qs,
 	);
@@ -152,7 +156,12 @@ export async function execute(this: IExecuteFunctions, index: number) {
 
 	if (options.downloadAttachments) {
 		const prefix = (options.attachmentsPrefix as string) || 'attachment_';
-		executionData = await downloadAttachments.call(this, responseData as IDataObject, prefix);
+		executionData = await downloadAttachments.call(
+			this,
+			responseData as IDataObject,
+			prefix,
+			index,
+		);
 	} else {
 		executionData = this.helpers.constructExecutionMetaData(
 			this.helpers.returnJsonArray(responseData as IDataObject),
@@ -168,6 +177,7 @@ export async function execute(this: IExecuteFunctions, index: number) {
 			this,
 			messageId,
 			binaryPropertyName as string,
+			index,
 			outputFileName as string,
 		);
 

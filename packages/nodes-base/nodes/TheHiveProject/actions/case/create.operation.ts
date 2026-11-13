@@ -1,15 +1,16 @@
+import set from 'lodash/set';
 import type {
 	IDataObject,
 	IExecuteFunctions,
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
-import set from 'lodash/set';
-import { theHiveApiRequest } from '../../transport';
+import { updateDisplayOptions, wrapData } from '@utils/utilities';
 
 import { fixFieldType, prepareInputItem } from '../../helpers/utils';
-import { updateDisplayOptions, wrapData } from '@utils/utilities';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	{
@@ -71,7 +72,7 @@ export async function execute(
 		set(body, field, inputData[field]);
 	}
 
-	responseData = await theHiveApiRequest.call(this, 'POST', '/v1/case' as string, body);
+	responseData = await theHiveApiRequest.call(this, 'POST', requestPath`/v1/case`, body);
 
 	const executionData = this.helpers.constructExecutionMetaData(wrapData(responseData), {
 		itemData: { item: i },

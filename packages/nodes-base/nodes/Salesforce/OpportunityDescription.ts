@@ -1,5 +1,7 @@
 import type { INodeProperties } from 'n8n-workflow';
 
+import { accountResourceLocator } from './SharedDescriptions';
+
 export const opportunityOperations: INodeProperties[] = [
 	{
 		displayName: 'Operation',
@@ -88,7 +90,7 @@ export const opportunityFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'The field to check to see if the opportunity already exists. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'The field to check to see if the opportunity already exists. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 	},
 	{
 		displayName: 'Value to Match',
@@ -149,7 +151,7 @@ export const opportunityFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'Required. Date when the opportunity is expected to close. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'Required. Date when the opportunity is expected to close. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 	},
 	{
 		displayName: 'Additional Fields',
@@ -164,17 +166,7 @@ export const opportunityFields: INodeProperties[] = [
 			},
 		},
 		options: [
-			{
-				displayName: 'Account Name or ID',
-				name: 'accountId',
-				type: 'options',
-				default: '',
-				typeOptions: {
-					loadOptionsMethod: 'getAccounts',
-				},
-				description:
-					'ID of the account associated with this opportunity. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
-			},
+			accountResourceLocator('accountId', 'The account associated with this opportunity'),
 			{
 				displayName: 'Amount',
 				name: 'amount',
@@ -194,7 +186,7 @@ export const opportunityFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'ID of the campaign that needs to be fetched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'ID of the campaign that needs to be fetched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Custom Fields',
@@ -220,7 +212,7 @@ export const opportunityFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Value',
@@ -257,7 +249,7 @@ export const opportunityFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Next Step',
@@ -267,15 +259,38 @@ export const opportunityFields: INodeProperties[] = [
 				description: 'Description of next task in closing opportunity. Limit: 255 characters.',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'The owner of the opportunity. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the opportunity',
 			},
 			{
 				displayName: 'Phone',
@@ -352,17 +367,7 @@ export const opportunityFields: INodeProperties[] = [
 			},
 		},
 		options: [
-			{
-				displayName: 'Account Name or ID',
-				name: 'accountId',
-				type: 'options',
-				default: '',
-				typeOptions: {
-					loadOptionsMethod: 'getAccounts',
-				},
-				description:
-					'ID of the account associated with this opportunity. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
-			},
+			accountResourceLocator('accountId', 'The account associated with this opportunity'),
 			{
 				displayName: 'Amount',
 				name: 'amount',
@@ -382,7 +387,7 @@ export const opportunityFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'ID of the campaign that needs to be fetched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'ID of the campaign that needs to be fetched. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Close Date',
@@ -415,7 +420,7 @@ export const opportunityFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The ID of the field to add custom field to. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Value',
@@ -452,7 +457,7 @@ export const opportunityFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Source from which the lead was obtained. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Name',
@@ -469,15 +474,38 @@ export const opportunityFields: INodeProperties[] = [
 				description: 'Description of next task in closing opportunity. Limit: 255 characters.',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'The owner of the opportunity. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the opportunity',
 			},
 			{
 				displayName: 'Phone',
@@ -512,7 +540,7 @@ export const opportunityFields: INodeProperties[] = [
 				},
 				default: '',
 				description:
-					'Required. Date when the opportunity is expected to close. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Required. Date when the opportunity is expected to close. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Type',
@@ -642,7 +670,7 @@ export const opportunityFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'For date, number, or boolean, please use expressions. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'For date, number, or boolean, please use expressions. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							// eslint-disable-next-line n8n-nodes-base/node-param-operation-without-no-data-expression
 							{
@@ -753,15 +781,38 @@ export const opportunityFields: INodeProperties[] = [
 					'Whether true, only the note owner or a user with the “Modify All Data” permission can view the note or query it via the API',
 			},
 			{
-				displayName: 'Owner Name or ID',
+				displayName: 'Owner',
 				name: 'owner',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getUsers',
-				},
-				default: '',
-				description:
-					'ID of the user who owns the note. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						placeholder: 'Select a user...',
+						typeOptions: {
+							searchListMethod: 'searchUsers',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: '0051700000ABCDE',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^(?:[a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})$',
+									errorMessage: 'User ID must be 15 or 18 alphanumeric characters',
+								},
+							},
+						],
+					},
+				],
+				description: 'The user who owns the note',
 			},
 		],
 	},

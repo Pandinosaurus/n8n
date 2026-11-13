@@ -4,11 +4,13 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
+
+import { messageRLC } from '../../descriptions';
 import { createMessage } from '../../helpers/utils';
 import { microsoftApiRequest } from '../../transport';
-import { messageRLC } from '../../descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 export const properties: INodeProperties[] = [
 	messageRLC,
@@ -218,7 +220,7 @@ const displayOptions = {
 
 export const description = updateDisplayOptions(displayOptions, properties);
 
-export async function execute(this: IExecuteFunctions, index: number, items: INodeExecutionData[]) {
+export async function execute(this: IExecuteFunctions, index: number, _: INodeExecutionData[]) {
 	const messageId = this.getNodeParameter('messageId', index, undefined, {
 		extractValue: true,
 	}) as string;
@@ -246,7 +248,8 @@ export async function execute(this: IExecuteFunctions, index: number, items: INo
 	const responseData = await microsoftApiRequest.call(
 		this,
 		'POST',
-		`/messages/${messageId}/${action}`,
+		requestPath`/messages/${messageId}/${action}`,
+		index,
 		body,
 	);
 
@@ -257,23 +260,6 @@ export async function execute(this: IExecuteFunctions, index: number, items: INo
 
 		for (const attachment of attachments) {
 			const binaryPropertyName = attachment.binaryPropertyName as string;
-
-			if (items[index].binary === undefined) {
-				throw new NodeOperationError(this.getNode(), 'No binary data exists on item!', {
-					itemIndex: index,
-				});
-			}
-
-			if (
-				items[index].binary &&
-				(items[index].binary as IDataObject)[binaryPropertyName] === undefined
-			) {
-				throw new NodeOperationError(
-					this.getNode(),
-					`No binary data property "${binaryPropertyName}" does not exists on item!`,
-					{ itemIndex: index },
-				);
-			}
 
 			const binaryData = this.helpers.assertBinaryData(index, binaryPropertyName);
 
@@ -298,7 +284,8 @@ export async function execute(this: IExecuteFunctions, index: number, items: INo
 			await microsoftApiRequest.call(
 				this,
 				'POST',
-				`/messages/${responseData.id}/attachments`,
+				requestPath`/messages/${responseData.id}/attachments`,
+				index,
 				attachment,
 				{},
 			);
@@ -306,7 +293,12 @@ export async function execute(this: IExecuteFunctions, index: number, items: INo
 	}
 
 	if (!saveAsDraft) {
-		await microsoftApiRequest.call(this, 'POST', `/messages/${responseData.id}/send`);
+		await microsoftApiRequest.call(
+			this,
+			'POST',
+			requestPath`/messages/${responseData.id}/send`,
+			index,
+		);
 	}
 
 	const executionData = this.helpers.constructExecutionMetaData(

@@ -1,0 +1,245 @@
+import { Logger } from '@n8n/backend-common';
+import { GlobalConfig } from '@n8n/config';
+import { Service } from '@n8n/di';
+import { InstanceSettings } from 'n8n-core';
+
+type EnvVarName = string;
+
+type Deprecation = {
+	/** Name of the deprecated env var. */
+	envVar: EnvVarName;
+
+	/** Message to display when the deprecated env var is currently in use. */
+	message: string;
+
+	/** Function to identify the specific value in the env var that is deprecated. */
+	checkValue?: (value?: string) => boolean;
+
+	/** Whether to show a deprecation warning if the env var is missing. */
+	warnIfMissing?: boolean;
+
+	/** Whether a config value is required to trigger a deprecation warning. */
+	matchConfig?: boolean;
+
+	/** Function to run to check whether to disable this deprecation warning. */
+	disableIf?: () => boolean;
+};
+
+const SAFE_TO_REMOVE = 'Remove this environment variable; it is no longer needed.';
+
+/** Responsible for warning about deprecations related to env vars. */
+@Service()
+export class DeprecationService {
+	private readonly deprecations: Deprecation[] = [
+		{
+			envVar: 'N8N_BINARY_DATA_STORAGE_PATH',
+			message: 'Use N8N_STORAGE_PATH instead.',
+		},
+		{ envVar: 'N8N_BINARY_DATA_TTL', message: SAFE_TO_REMOVE },
+		{ envVar: 'N8N_PERSISTED_BINARY_DATA_TTL', message: SAFE_TO_REMOVE },
+		{ envVar: 'EXECUTIONS_DATA_PRUNE_TIMEOUT', message: SAFE_TO_REMOVE },
+		{ envVar: 'N8N_AVAILABLE_BINARY_DATA_MODES', message: SAFE_TO_REMOVE },
+		{ envVar: 'N8N_CONFIG_FILES', message: 'Please use .env files or *_FILE env vars instead.' },
+		{ envVar: 'N8N_RUNNERS_ENABLED', message: SAFE_TO_REMOVE },
+		{
+			envVar: 'N8N_DB_PING_TIMEOUT',
+			message: 'Use DB_PING_TIMEOUT_MS instead. This variable will be removed in a future version.',
+		},
+		{
+			envVar: 'N8N_SKIP_WEBHOOK_DEREGISTRATION_SHUTDOWN',
+			message: `n8n no longer deregisters webhooks at startup and shutdown. ${SAFE_TO_REMOVE}`,
+		},
+		{
+			envVar: 'OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS',
+			message:
+				'Running manual executions in the main instance in scaling mode is deprecated. Manual executions will be routed to workers in a future version. Please set `OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true` to offload manual executions to workers and avoid potential issues in the future. Consider increasing memory available to workers and reducing memory available to main.',
+			checkValue: (value?: string) => value?.toLowerCase() !== 'true' && value !== '1',
+			warnIfMissing: true,
+			matchConfig: this.globalConfig.executions.mode === 'queue',
+			disableIf: () => this.instanceSettings.instanceType !== 'main',
+		},
+		{
+			envVar: 'N8N_EXPRESSION_EVALUATOR',
+			message: `n8n has replaced \`tmpl\` with \`tournament\` as expression evaluator. ${SAFE_TO_REMOVE}`,
+		},
+		{
+			envVar: 'N8N_EXPRESSION_REPORT_DIFFERENCE',
+			message: `n8n has replaced \`tmpl\` with \`tournament\` as expression evaluator. ${SAFE_TO_REMOVE}`,
+		},
+		{
+			envVar: 'WEBHOOK_URL',
+			message:
+				'Use N8N_WEBHOOK_URL instead, which sets the base URL for both test and production webhooks.',
+		},
+		{
+			envVar: 'N8N_UNVERIFIED_PACKAGES_ENABLED',
+			message:
+				'The default for this variable will change to `false` in a future version. Set it to `true` explicitly to keep installing unverified community packages.',
+			checkValue: (value?: string) => value === undefined,
+		},
+		{
+			envVar: 'N8N_RUNNERS_MODE',
+			message:
+				'Internal task runner mode is deprecated and will be removed in a future version. For isolation and scaling, run the task runner launcher as a separate process, set this variable to `external` and share `N8N_RUNNERS_AUTH_TOKEN` with the launcher. See https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners',
+			// Unset means the default, which is still `internal`, so most instances are affected without knowing it.
+			checkValue: (value?: string) => (value ?? this.globalConfig.taskRunners.mode) === 'internal',
+		},
+		{
+			envVar: 'N8N_SSRF_PROTECTION_ENABLED',
+			message:
+				"The built-in blocked IP ranges will expand in a future version to include the shared address space (100.64.0.0/10) and IPv6 transition ranges. To keep the current list, set N8N_SSRF_BLOCKED_IP_RANGES to the literal ranges instead of the `default` keyword, which always expands to the running version's built-in list.",
+			checkValue: (value?: string) => ['true', '1'].includes(value?.toLowerCase() ?? ''),
+			// Literal block lists without the `default` keyword do not pick up the expanded built-in list.
+			disableIf: () => {
+				const ranges = process.env.N8N_SSRF_BLOCKED_IP_RANGES;
+				return (
+					ranges !== undefined &&
+					!ranges
+						.toLowerCase()
+						.split(',')
+						.some((r) => r.trim() === 'default')
+				);
+			},
+		},
+		{
+			envVar: 'N8N_RUNNERS_TASK_TIMEOUT',
+			message:
+				'The default for this variable will be reduced from 300 (5 minutes) to 60 (1 minute) in a future version. Set it explicitly to keep your current task timeout.',
+			checkValue: (value?: string) => value === undefined,
+		},
+		{
+			envVar: 'N8N_COMPRESSION_NODE_MAX_DECOMPRESSED_SIZE_BYTES',
+			message:
+				'The default for this variable will be reduced from 2 GiB to 256 MiB in a future version. Set it explicitly to keep your current limit.',
+			checkValue: (value?: string) => value === undefined,
+		},
+		{
+			envVar: 'N8N_COMPRESSION_NODE_MAX_ZIP_ENTRIES',
+			message:
+				'The default for this variable will be reduced from 5000 to 1000 in a future version. Set it explicitly to keep your current limit.',
+			checkValue: (value?: string) => value === undefined,
+		},
+		{
+			envVar: 'N8N_EXPRESSION_ENGINE',
+			message:
+				'The `legacy` expression engine runs expressions without isolation, is no longer considered secure, and will be removed in a future version. Remove this environment variable to use the default `vm` engine.',
+			checkValue: (value?: string) => value === 'legacy',
+		},
+		{
+			envVar: 'N8N_DEFAULT_BINARY_DATA_MODE',
+			message:
+				'In-memory binary data storage (`default` mode) will be removed in a future version. Switch to `filesystem`, `s3`, or `database`.',
+			checkValue: (value?: string) => value === 'default',
+		},
+		{
+			envVar: 'N8N_WORKFLOW_TAGS_DISABLED',
+			message:
+				'Disabling workflow tags is deprecated. Tags will always be enabled in a future version and this environment variable will be removed, so the tags feature will become visible again after upgrading.',
+			checkValue: (value?: string) =>
+				value !== undefined && ['true', '1'].includes(value.toLowerCase()),
+		},
+		{
+			envVar: 'N8N_OUTBOUND_PROXY_MODE',
+			message:
+				'This variable exists only for backward compatibility and will be removed in a future version. Remove it and list every internal endpoint that must be reached directly in NO_PROXY. Until that is in place, `main-only` keeps the historical behavior where only the main process routes its default outbound HTTP through the proxy environment variables (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY).',
+			checkValue: (value?: string) => value === 'main-only',
+		},
+		{
+			envVar: 'N8N_AI_ALLOW_SENDING_PARAMETER_VALUES',
+			message:
+				'This variable is deprecated and will be removed in v4. While it is set to `false`, n8n Assistant cannot create or edit workflows.',
+			checkValue: (value?: string) =>
+				value !== undefined && ['false', '0'].includes(value.toLowerCase()),
+		},
+		{
+			envVar: 'N8N_SCHEDULER_ENABLED',
+			message: `The durable scheduler is now on by default. ${SAFE_TO_REMOVE}`,
+			checkValue: (value?: string) =>
+				value !== undefined && !['false', '0'].includes(value.toLowerCase()),
+		},
+		{
+			envVar: 'N8N_SCHEDULER_ENABLED',
+			message:
+				'The in-memory scheduler is deprecated and will be removed in a future version, together with this variable. Remove this variable to run your schedules on the durable scheduler, which is the default. It keeps scheduled runs across restarts and runs each one only once across instances.',
+			checkValue: (value?: string) =>
+				value !== undefined && ['false', '0'].includes(value.toLowerCase()),
+		},
+		{
+			envVar: 'N8N_SCHEDULER_TRIGGER_NODE_MODE',
+			message: `The \`new\` mode is now the default. ${SAFE_TO_REMOVE}`,
+			checkValue: (value?: string) => value === 'new',
+		},
+		{
+			envVar: 'N8N_SCHEDULER_TRIGGER_NODE_MODE',
+			message:
+				'The `legacy` mode is deprecated and will be removed in a future version, together with this variable. Today it keeps "every N seconds/minutes" schedules aligned to the clock (on the minute, on the hour). Remove this variable to use the default `new` mode, which spaces runs a steady N apart, timed from when the workflow was activated.',
+			checkValue: (value?: string) => value === 'legacy',
+		},
+		{
+			envVar: 'N8N_ENV_FEAT_SKIP_DURABLE_SCHEDULER',
+			message: `The "Skip Durable Scheduler" option of the Schedule Trigger node no longer exists. Schedule Triggers use the durable scheduler only when the workflow publication service is enabled; otherwise they remain on the in-memory scheduler. To run all schedules on the in-memory scheduler when the workflow publication service is enabled, set N8N_SCHEDULER_ENABLED=false. ${SAFE_TO_REMOVE}`,
+		},
+		{
+			envVar: 'EXECUTIONS_PROCESS',
+			message: SAFE_TO_REMOVE,
+			checkValue: (value: string | undefined) => value !== undefined && value !== 'own',
+		},
+		{
+			envVar: 'EXECUTIONS_PROCESS',
+			message:
+				'n8n does not support `own` mode since May 2023. Please remove this environment variable to allow n8n to start. If you need the isolation and performance gains, please consider queue mode: https://docs.n8n.io/hosting/scaling/queue-mode/',
+			checkValue: (value: string | undefined): value is 'own' => value === 'own',
+		},
+	];
+
+	/** Runtime state of deprecation-related env vars. */
+	private readonly state: Map<Deprecation, { mustWarn: boolean }> = new Map();
+
+	constructor(
+		private readonly logger: Logger,
+		private readonly globalConfig: GlobalConfig,
+		private readonly instanceSettings: InstanceSettings,
+	) {}
+
+	warn() {
+		this.deprecations.forEach((d) => {
+			if (d.disableIf?.()) {
+				this.state.set(d, { mustWarn: false });
+				return;
+			}
+
+			const envValue = process.env[d.envVar];
+
+			const matchConfig = d.matchConfig === true || d.matchConfig === undefined;
+			const warnIfMissing = d.warnIfMissing !== undefined && envValue === undefined;
+			const checkValue = d.checkValue ? d.checkValue(envValue) : envValue !== undefined;
+
+			this.state.set(d, {
+				mustWarn: matchConfig && (warnIfMissing || checkValue),
+			});
+		});
+
+		const mustWarn: string[] = [];
+		for (const [deprecation, metadata] of this.state.entries()) {
+			if (!metadata.mustWarn) {
+				continue;
+			}
+
+			mustWarn.push(` - ${deprecation.envVar} -> ${deprecation.message}\n`);
+		}
+
+		if (!this.instanceSettings.isDocker) {
+			mustWarn.push(
+				' - Running n8n outside a container is deprecated. Future versions will require running n8n via the official Docker image. See https://docs.n8n.io/deploy/host-n8n\n',
+			);
+		}
+
+		if (mustWarn.length === 0) return;
+
+		const header = `There ${
+			mustWarn.length === 1 ? 'is a deprecation' : 'are deprecations'
+		} related to your n8n setup. Please take the recommended actions to update your configuration`;
+
+		this.logger.warn(`\n${header}:\n${mustWarn.join('')}`);
+	}
+}

@@ -1,14 +1,13 @@
 import type { IDataObject, IExecuteFunctions, INodeExecutionData } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeOperationError, SEND_AND_WAIT_OPERATION, requestPath } from 'n8n-workflow';
 
-import { discordApiRequest } from '../transport';
-import { checkAccessToGuild } from '../helpers/utils';
-
-import * as message from './message';
 import * as channel from './channel';
 import * as member from './member';
-import * as webhook from './webhook';
+import * as message from './message';
 import type { Discord } from './node.type';
+import * as webhook from './webhook';
+import { checkAccessToGuild } from '../helpers/utils';
+import { discordApiRequest } from '../transport';
 
 export async function router(this: IExecuteFunctions) {
 	let returnData: INodeExecutionData[] = [];
@@ -35,7 +34,7 @@ export async function router(this: IExecuteFunctions) {
 			userGuilds = (await discordApiRequest.call(
 				this,
 				'GET',
-				'/users/@me/guilds',
+				requestPath`/users/@me/guilds`,
 			)) as IDataObject[];
 
 			checkAccessToGuild(this.getNode(), guildId, userGuilds);
@@ -46,6 +45,11 @@ export async function router(this: IExecuteFunctions) {
 		resource,
 		operation,
 	} as Discord;
+
+	if (discord.resource === 'message' && discord.operation === SEND_AND_WAIT_OPERATION) {
+		returnData = await message.sendAndWait.execute.call(this, guildId, userGuilds);
+		return [returnData];
+	}
 
 	switch (discord.resource) {
 		case 'channel':

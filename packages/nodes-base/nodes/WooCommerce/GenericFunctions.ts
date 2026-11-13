@@ -1,5 +1,6 @@
+import { snakeCase } from 'change-case';
 import { createHash } from 'crypto';
-
+import omit from 'lodash/omit';
 import type {
 	ICredentialDataDecryptedObject,
 	IDataObject,
@@ -9,30 +10,30 @@ import type {
 	IWebhookFunctions,
 	IHttpRequestMethods,
 	IRequestOptions,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
+import { requestUrl } from 'n8n-workflow';
 
-import { snakeCase } from 'change-case';
-
-import omit from 'lodash/omit';
 import type { ICouponLine, IFeeLine, ILineItem, IShoppingLine } from './OrderInterface';
 
 export async function woocommerceApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions | IWebhookFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	qs: IDataObject = {},
 	uri?: string,
-	option: IDataObject = {},
+	option: Pick<IRequestOptions, 'resolveWithFullResponse'> = {},
 ): Promise<any> {
 	const credentials = await this.getCredentials('wooCommerceApi');
 
-	let options: IRequestOptions = {
+	let options: IRequestOptions | WithRequestTarget<IRequestOptions, 'uri'> = {
 		method,
 		qs,
 		body,
-		uri: uri || `${credentials.url}/wp-json/wc/v3${resource}`,
+		...(uri ? { uri } : { uri: requestUrl`${credentials.url}/wp-json/wc/v3${resource}` }),
 		json: true,
 	};
 
@@ -46,7 +47,7 @@ export async function woocommerceApiRequest(
 export async function woocommerceApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions | IHookFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},

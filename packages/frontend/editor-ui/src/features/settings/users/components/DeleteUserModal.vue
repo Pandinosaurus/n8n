@@ -1,0 +1,215 @@
+<script lang="ts" setup>
+import { ref, computed } from 'vue';
+import { useToast } from '@n8n/composables/useToast';
+import ProjectSharing from '@/features/collaboration/projects/components/ProjectSharing.vue';
+import { useUsersStore } from '@n8n/stores/users.store';
+import { useUIStore } from '@/app/stores/ui.store';
+import type { ProjectSharingData } from '@/features/collaboration/projects/projects.types';
+import type { ProjectListItem } from '@/features/collaboration/projects/projects.types';
+import { useRemoteProjectSearch } from '@/features/collaboration/projects/projects.utils';
+import { useI18n } from '@n8n/i18n';
+
+import {
+	N8nButton,
+	N8nDialog,
+	N8nDialogBody,
+	N8nDialogFooter,
+	N8nInput,
+	N8nInputLabel,
+	N8nRadioGroup,
+	N8nRadioGroupItem,
+	N8nText,
+} from '@n8n/design-system';
+
+defineOptions({ inheritAttrs: false });
+
+const props = defineProps<{
+	modalName: string;
+	data: {
+		userId: string;
+		afterDelete?: () => Promise<void>;
+	};
+}>();
+
+const uiStore = useUIStore();
+const modalOpen = computed(() => uiStore.modalsById[props.modalName]?.open === true);
+const loading = ref(false);
+const operation = ref('');
+const deleteConfirmText = ref('');
+const selectedProject = ref<ProjectSharingData | null>(null);
+
+const i18n = useI18n();
+const usersStore = useUsersStore();
+
+const userToDelete = computed(() => {
+	if (!props.data?.userId) return null;
+
+	return usersStore.usersList.state.items.find((user) => user.id === props.data.userId);
+});
+
+const isPending = computed(() => !userToDelete.value?.firstName);
+
+const title = computed(() => {
+	const user =
+		userToDelete.value?.firstName && userToDelete.value.lastName
+			? `${userToDelete.value.firstName} ${userToDelete.value.lastName}`
+			: (userToDelete.value?.email ?? '');
+
+	return i18n.baseText('settings.users.deleteUser', { interpolate: { user } });
+});
+
+const enabled = computed(() => {
+	if (isPending.value) {
+		return true;
+	}
+
+	if (
+		operation.value === 'delete' &&
+		deleteConfirmText.value === i18n.baseText('settings.users.deleteConfirmationText')
+	) {
+		return true;
+	}
+
+	return !!(operation.value === 'transfer' && selectedProject.value);
+});
+
+const searchFn = useRemoteProjectSearch();
+const filterFn = (project: ProjectListItem) =>
+	project.name !==
+	`${userToDelete.value?.firstName} ${userToDelete.value?.lastName} <${userToDelete.value?.email}>`;
+
+const { showMessage, showError } = useToast();
+
+async function onSubmit() {
+	if (loading.value || !enabled.value) {
+		return;
+	}
+
+	try {
+		loading.value = true;
+
+		const params = { id: props.data.userId } as { id: string; transferId?: string };
+		if (operation.value === 'transfer' && selectedProject.value) {
+			params.transferId = selectedProject.value.id;
+		}
+
+		await usersStore.deleteUser(params);
+
+		let message = '';
+		if (params.transferId && selectedProject.value) {
+			message = i18n.baseText('settings.users.transferredToUser', {
+				interpolate: { projectName: selectedProject.value.name ?? '' },
+			});
+		}
+
+		showMessage({
+			type: 'success',
+			title: i18n.baseText('settings.users.userDeleted'),
+			message,
+		});
+
+		await props.data.afterDelete?.();
+		closeDialog();
+	} catch (error) {
+		showError(error, i18n.baseText('settings.users.userDeletedError'));
+	} finally {
+		loading.value = false;
+	}
+}
+
+async function closeDialog() {
+	uiStore.closeModal(props.modalName);
+}
+
+function onDialogOpenUpdate(open: boolean) {
+	if (!open) void closeDialog();
+}
+</script>
+
+<template>
+	<N8nDialog :open="modalOpen" size="medium" :header="title" @update:open="onDialogOpenUpdate">
+		<N8nDialogBody>
+			<form id="delete-user-form" data-test-id="delete-user-modal" @submit.prevent="onSubmit">
+				<div v-if="isPending">
+					<N8nText color="text-base">{{
+						i18n.baseText('settings.users.confirmUserDeletion')
+					}}</N8nText>
+				</div>
+				<div v-else :class="$style.content">
+					<div>
+						<N8nText color="text-base">{{
+							i18n.baseText('settings.users.confirmDataHandlingAfterDeletion')
+						}}</N8nText>
+					</div>
+					<N8nRadioGroup v-model="operation">
+						<N8nRadioGroupItem value="transfer">
+							<template #label>
+								<N8nText color="text-dark">{{
+									i18n.baseText('settings.users.transferWorkflowsAndCredentials')
+								}}</N8nText>
+							</template>
+							<template #content>
+								<div v-if="operation === 'transfer'" class="pt-2xs">
+									<N8nText color="text-dark">{{
+										i18n.baseText('settings.users.transferWorkflowsAndCredentials.user')
+									}}</N8nText>
+									<ProjectSharing
+										v-model="selectedProject"
+										class="pt-2xs"
+										:search-fn="searchFn"
+										:filter-fn="filterFn"
+										:placeholder="
+											i18n.baseText('settings.users.transferWorkflowsAndCredentials.placeholder')
+										"
+									/>
+								</div>
+							</template>
+						</N8nRadioGroupItem>
+						<N8nRadioGroupItem value="delete">
+							<template #label>
+								<N8nText color="text-dark">{{
+									i18n.baseText('settings.users.deleteWorkflowsAndCredentials')
+								}}</N8nText>
+							</template>
+							<template #content>
+								<div v-if="operation === 'delete'" class="pt-2xs" data-test-id="delete-data-input">
+									<N8nInputLabel :label="i18n.baseText('settings.users.deleteConfirmationMessage')">
+										<N8nInput
+											v-model="deleteConfirmText"
+											:placeholder="i18n.baseText('settings.users.deleteConfirmationText')"
+										/>
+									</N8nInputLabel>
+								</div>
+							</template>
+						</N8nRadioGroupItem>
+					</N8nRadioGroup>
+				</div>
+			</form>
+		</N8nDialogBody>
+		<N8nDialogFooter>
+			<N8nButton
+				type="submit"
+				form="delete-user-form"
+				variant="destructive"
+				:loading="loading"
+				:disabled="!enabled"
+				:label="i18n.baseText('settings.users.delete')"
+				data-test-id="confirm-delete-user-button"
+			/>
+		</N8nDialogFooter>
+	</N8nDialog>
+</template>
+
+<style lang="scss" module>
+.content {
+	> *:not(:last-child) {
+		margin-bottom: var(--spacing--sm);
+	}
+}
+
+.innerContent {
+	> * {
+		margin-bottom: var(--spacing--2xs);
+	}
+}
+</style>

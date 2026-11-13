@@ -1,3 +1,4 @@
+import moment from 'moment-timezone';
 import type {
 	IDataObject,
 	INodeExecutionData,
@@ -5,16 +6,29 @@ import type {
 	INodeTypeDescription,
 	IPollFunctions,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
-
-import moment from 'moment-timezone';
-
 import {
-	encodeURIComponentOnce,
-	getCalendars,
-	googleApiRequest,
-	googleApiRequestAllItems,
-} from './GenericFunctions';
+	NodeConnectionTypes,
+	NodeApiError,
+	NodeOperationError,
+	decodePathValue,
+	requestPath,
+} from 'n8n-workflow';
+
+import { getCalendars, googleApiRequest, googleApiRequestAllItems } from './GenericFunctions';
+
+type GoogleCalendarEventDate = {
+	dateTime?: string;
+	date?: string;
+	timeZone?: string;
+};
+
+const parseEventDate = (eventDate: GoogleCalendarEventDate, calendarTimeZone?: string) => {
+	if (eventDate.dateTime) return moment(eventDate.dateTime);
+	if (!eventDate.date) return null;
+
+	// All-day dates start and end at midnight in the calendar's timezone.
+	return moment.tz(eventDate.date, eventDate.timeZone ?? calendarTimeZone ?? 'UTC');
+};
 
 export class GoogleCalendarTrigger implements INodeType {
 	description: INodeTypeDescription = {
@@ -22,14 +36,15 @@ export class GoogleCalendarTrigger implements INodeType {
 		name: 'googleCalendarTrigger',
 		icon: 'file:googleCalendar.svg',
 		group: ['trigger'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		subtitle: '={{$parameter["triggerOn"]}}',
 		description: 'Starts the workflow when Google Calendar events occur',
 		defaults: {
 			name: 'Google Calendar Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'googleCalendarOAuth2Api',
@@ -112,7 +127,7 @@ export class GoogleCalendarTrigger implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				default: {},
 				options: [
 					{
@@ -137,9 +152,11 @@ export class GoogleCalendarTrigger implements INodeType {
 	async poll(this: IPollFunctions): Promise<INodeExecutionData[][] | null> {
 		const poolTimes = this.getNodeParameter('pollTimes.item', []) as IDataObject[];
 		const triggerOn = this.getNodeParameter('triggerOn', '') as string;
-		const calendarId = encodeURIComponentOnce(
-			this.getNodeParameter('calendarId', '', { extractValue: true }) as string,
-		);
+		const calendarIdParam = this.getNodeParameter('calendarId', '', {
+			extractValue: true,
+		}) as string;
+		const calendarId =
+			this.getNode().typeVersion < 1.1 ? decodePathValue(calendarIdParam) : calendarIdParam;
 		const webhookData = this.getWorkflowStaticData('node');
 		const matchTerm = this.getNodeParameter('options.matchTerm', '') as string;
 
@@ -184,8 +201,8 @@ export class GoogleCalendarTrigger implements INodeType {
 		} else if (triggerOn === 'eventStarted' || triggerOn === 'eventEnded') {
 			Object.assign(qs, {
 				singleEvents: true,
-				timeMin: moment(startDate).startOf('second').utc().format(),
-				timeMax: moment(endDate).endOf('second').utc().format(),
+				timeMin: moment(startDate).startOf('second').subtract(1, 'second').utc().format(),
+				timeMax: moment(endDate).endOf('second').add(1, 'second').utc().format(),
 				orderBy: 'startTime',
 			});
 		}
@@ -199,7 +216,7 @@ export class GoogleCalendarTrigger implements INodeType {
 			events = await googleApiRequest.call(
 				this,
 				'GET',
-				`/calendar/v3/calendars/${calendarId}/events`,
+				requestPath`/calendar/v3/calendars/${calendarId}/events`,
 				{},
 				qs,
 			);
@@ -209,10 +226,37 @@ export class GoogleCalendarTrigger implements INodeType {
 				this,
 				'items',
 				'GET',
-				`/calendar/v3/calendars/${calendarId}/events`,
+				requestPath`/calendar/v3/calendars/${calendarId}/events`,
 				{},
 				qs,
 			);
+			let calendarTimeZone: string | undefined;
+			if (triggerOn === 'eventStarted' || triggerOn === 'eventEnded') {
+				const dateField = triggerOn === 'eventStarted' ? 'start' : 'end';
+				if (
+					events.some(
+						(event: { start?: GoogleCalendarEventDate; end?: GoogleCalendarEventDate }) => {
+							const eventDate = event[dateField];
+							return eventDate?.date && !eventDate.timeZone;
+						},
+					)
+				) {
+					calendarTimeZone =
+						webhookData.calendarTimeZoneId === calendarId
+							? (webhookData.calendarTimeZone as string | undefined)
+							: undefined;
+					if (!calendarTimeZone) {
+						const calendar = (await googleApiRequest.call(
+							this,
+							'GET',
+							requestPath`/calendar/v3/calendars/${calendarId}`,
+						)) as { timeZone: string };
+						calendarTimeZone = calendar.timeZone;
+						webhookData.calendarTimeZoneId = calendarId;
+						webhookData.calendarTimeZone = calendarTimeZone;
+					}
+				}
+			}
 			if (triggerOn === 'eventCreated') {
 				events = events.filter((event: { created: string }) =>
 					moment(event.created).isBetween(startDate, endDate),
@@ -228,13 +272,15 @@ export class GoogleCalendarTrigger implements INodeType {
 					events = events.filter((event: { status: string }) => event.status === 'cancelled');
 				}
 			} else if (triggerOn === 'eventStarted') {
-				events = events.filter((event: { start: { dateTime: string } }) =>
-					moment(event.start.dateTime).isBetween(startDate, endDate, null, '[]'),
-				);
+				events = events.filter((event: { start: GoogleCalendarEventDate }) => {
+					const eventStart = parseEventDate(event.start, calendarTimeZone);
+					return eventStart?.isBetween(startDate, endDate, null, '[]') ?? false;
+				});
 			} else if (triggerOn === 'eventEnded') {
-				events = events.filter((event: { end: { dateTime: string } }) =>
-					moment(event.end.dateTime).isBetween(startDate, endDate, null, '[]'),
-				);
+				events = events.filter((event: { end: GoogleCalendarEventDate }) => {
+					const eventEnd = parseEventDate(event.end, calendarTimeZone);
+					return eventEnd?.isBetween(startDate, endDate, null, '[]') ?? false;
+				});
 			}
 		}
 

@@ -1,0 +1,1673 @@
+import { Logger, parseFlatted } from '@n8n/backend-common';
+import { GlobalConfig } from '@n8n/config';
+import { Time } from '@n8n/constants';
+import { Service } from '@n8n/di';
+import { hasGlobalScope } from '@n8n/permissions';
+import type {
+	FindManyOptions,
+	FindOneOptions,
+	FindOperator,
+	FindOptionsWhere,
+	SelectQueryBuilder,
+} from '@n8n/typeorm';
+import {
+	Brackets,
+	DataSource,
+	Equal,
+	In,
+	IsNull,
+	LessThan,
+	LessThanOrEqual,
+	MoreThanOrEqual,
+	Not,
+	And,
+	Raw,
+} from '@n8n/typeorm';
+import { DateUtils } from '@n8n/typeorm/util/DateUtils';
+import { stringify } from 'flatted';
+import chunk from 'lodash/chunk';
+import pick from 'lodash/pick';
+import { ErrorReporter } from 'n8n-core';
+import type {
+	AnnotationVote,
+	ExecutionStatus,
+	ExecutionSummary,
+	ExecutionTracingContext,
+	IRunExecutionData,
+	IRunExecutionDataAll,
+	IWorkflowSettings,
+	WorkflowExecuteMode,
+} from 'n8n-workflow';
+import {
+	CRASHABLE_EXECUTION_STATUSES,
+	migrateRunExecutionData,
+	WAIT_FOR_SUB_EXECUTION,
+} from 'n8n-workflow';
+import { UnexpectedError } from '@n8n/errors';
+
+import {
+	AnnotationTagEntity,
+	AnnotationTagMapping,
+	ExecutionAnnotation,
+	ExecutionData,
+	ExecutionDataStorageLocation,
+	ExecutionEntity,
+	ExecutionMetadata,
+	SharedWorkflow,
+	WorkflowEntity,
+} from '../entities';
+import type { ActivityProjectScope } from './activity-event.repository';
+import { BaseRepository } from './base-repository';
+import { SharedWorkflowRepository } from './shared-workflow.repository';
+import type {
+	ExecutionSummaries,
+	IExecutionBase,
+	IExecutionFlattedDb,
+	IExecutionResponse,
+} from '../entities/types-db';
+import { TransactionRunner } from '../services/transaction';
+import { applyWorkflowBooleanSettingFilter } from '../utils/apply-workflow-boolean-setting-filter';
+import { chunkIds } from '../utils/chunk-ids';
+import { dbNowLiteral, dbNowPlusMsLiteral, parseDbTime } from '../utils/dialect-time';
+import { separate } from '../utils/separate';
+
+class PostgresLiveRowsRetrievalError extends UnexpectedError {
+	constructor(rows: unknown) {
+		super('Failed to retrieve live execution rows in Postgres', { extra: { rows } });
+	}
+}
+
+const MAX_REPORTED_INVALID_EXECUTIONS = 20;
+
+const REPORTED_ROW_FIELDS = [
+	'id',
+	'storedAt',
+	'status',
+	'mode',
+	'finished',
+	'createdAt',
+	'startedAt',
+	'stoppedAt',
+	'jsonSizeBytes',
+	'deletedAt',
+	'retryOf',
+] as const;
+
+/** Row fields that tell which kind of execution lost its data. Leaves out fields the query did not load. */
+function toReportedRow(execution: ExecutionEntity) {
+	const row: Record<string, unknown> = {};
+	for (const field of REPORTED_ROW_FIELDS) {
+		const value: unknown = execution[field];
+		if (value === undefined || value === null) continue;
+		row[field] = value instanceof Date ? value.toISOString() : value;
+	}
+	return row;
+}
+
+export type CrashedExecution = {
+	id: string;
+	workflowId: string;
+	workflowName?: string;
+	mode: WorkflowExecuteMode;
+	startedAt: Date | null;
+	stoppedAt: Date;
+	tracingContext?: ExecutionTracingContext;
+	workflowVersionId?: string;
+	retryOf?: string;
+	workflowCustomTelemetryTags?: IWorkflowSettings['customTelemetryTags'];
+	project?: { id: string; customTelemetryTags: Array<{ key: string; value: string }> };
+};
+
+export type ResumableExecutionStatus = 'waiting' | 'new';
+
+export type ResumeAttemptClaim =
+	| { outcome: 'claimed'; attempts: number }
+	| { outcome: 'exhausted'; attempts: number; jsonSizeBytes: number }
+	| { outcome: 'conflict' };
+
+export interface UpdateExecutionConditions {
+	requireStatus?: ExecutionStatus;
+	requireStatuses?: readonly ExecutionStatus[];
+	requireNotFinished?: boolean;
+	requireNotCanceled?: boolean;
+	/** Also update a soft-deleted execution. */
+	includeDeleted?: boolean;
+}
+
+export interface IGetExecutionsQueryFilter {
+	id?: FindOperator<string> | string;
+	finished?: boolean;
+	mode?: string;
+	retryOf?: string;
+	retrySuccessId?: string;
+	status?: ExecutionStatus[];
+	workflowId?: string;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	waitTill?: FindOperator<any> | boolean;
+	metadata?: Array<{ key: string; value: string; exactMatch?: boolean }>;
+	startedAfter?: string;
+	startedBefore?: string;
+}
+
+export type ExecutionDeletionCriteria = {
+	filters: IGetExecutionsQueryFilter | undefined;
+	accessibleWorkflowIds: string[];
+	deleteConditions: {
+		deleteBefore?: Date;
+		ids?: string[];
+	};
+};
+
+function parseFiltersToQueryBuilder(
+	qb: SelectQueryBuilder<ExecutionEntity>,
+	filters?: IGetExecutionsQueryFilter,
+) {
+	if (filters?.status) {
+		qb.andWhere('execution.status IN (:...workflowStatus)', {
+			workflowStatus: filters.status,
+		});
+	}
+	if (filters?.finished) {
+		qb.andWhere({ finished: filters.finished });
+	}
+	if (filters?.metadata) {
+		qb.leftJoin(ExecutionMetadata, 'md', 'md.executionId = execution.id');
+		for (const md of filters.metadata) {
+			if (md.exactMatch) {
+				qb.andWhere('md.key = :key AND md.value = :value', md);
+			} else {
+				qb.andWhere('md.key = :key AND LOWER(md.value) LIKE LOWER(:value)', md);
+			}
+		}
+	}
+	const startedAt = startedAtCondition(filters ?? {});
+	if (startedAt) qb.andWhere({ startedAt });
+	if (filters?.workflowId) {
+		qb.andWhere({
+			workflowId: filters.workflowId,
+		});
+	}
+}
+
+const startedAtCondition = ({
+	startedAfter,
+	startedBefore,
+}: {
+	startedAfter?: string;
+	startedBefore?: string;
+}) => {
+	const conditions = [];
+
+	if (startedAfter) {
+		conditions.push(
+			MoreThanOrEqual(DateUtils.mixedDateToUtcDatetimeString(new Date(startedAfter))),
+		);
+	}
+
+	if (startedBefore) {
+		conditions.push(
+			LessThanOrEqual(DateUtils.mixedDateToUtcDatetimeString(new Date(startedBefore))),
+		);
+	}
+
+	if (conditions.length === 0) return undefined;
+
+	return And(...conditions);
+};
+
+// This is the max number of elements in an IN-clause.
+// It's a conservative value, as some databases indicate limits around 1000.
+const MAX_UPDATE_BATCH_SIZE = 900;
+
+@Service()
+export class ExecutionRepository extends BaseRepository<ExecutionEntity> {
+	readonly hardDeletionBatchSize = 100;
+
+	constructor(
+		dataSource: DataSource,
+		private readonly globalConfig: GlobalConfig,
+		private readonly logger: Logger,
+		private readonly errorReporter: ErrorReporter,
+		private readonly sharedWorkflowRepository: SharedWorkflowRepository,
+		transactionRunner: TransactionRunner,
+	) {
+		super(ExecutionEntity, dataSource.manager, transactionRunner);
+	}
+
+	async findMultipleExecutions(
+		queryParams: FindManyOptions<ExecutionEntity>,
+		options?: {
+			unflattenData: true;
+			includeData?: true;
+		},
+	): Promise<IExecutionResponse[]>;
+	async findMultipleExecutions(
+		queryParams: FindManyOptions<ExecutionEntity>,
+		options?: {
+			unflattenData?: false | undefined;
+			includeData?: true;
+		},
+	): Promise<IExecutionFlattedDb[]>;
+	async findMultipleExecutions(
+		queryParams: FindManyOptions<ExecutionEntity>,
+		options?: {
+			unflattenData?: boolean;
+			includeData?: boolean;
+		},
+	): Promise<IExecutionBase[]>;
+	async findMultipleExecutions(
+		queryParams: FindManyOptions<ExecutionEntity>,
+		options?: {
+			unflattenData?: boolean;
+			includeData?: boolean;
+		},
+	): Promise<IExecutionFlattedDb[] | IExecutionResponse[] | IExecutionBase[]> {
+		if (options?.includeData) {
+			queryParams.relations ??= [];
+
+			if (Array.isArray(queryParams.relations)) {
+				queryParams.relations.push('executionData', 'metadata');
+			} else {
+				queryParams.relations.executionData = true;
+				queryParams.relations.metadata = true;
+			}
+		}
+
+		const executions = await this.find(queryParams);
+
+		const [valid, invalid] = separate(executions, (e) => e.executionData !== null);
+		this.reportInvalidExecutions(invalid);
+
+		if (!options?.includeData) {
+			// No data to include, so we exclude it and return early.
+			return executions.map((execution) => {
+				const { executionData, ...rest } = execution;
+				return rest;
+			}) as IExecutionFlattedDb[] | IExecutionResponse[] | IExecutionBase[];
+		}
+
+		return (await Promise.all(
+			valid.map(async (execution) => {
+				const { executionData, metadata, ...rest } = execution;
+				const data = await this.handleExecutionRunData(executionData.data, options);
+				return {
+					...rest,
+					data,
+					workflowData: executionData.workflowData,
+					customData: Object.fromEntries(metadata.map((m) => [m.key, m.value])),
+				};
+			}),
+		)) as IExecutionFlattedDb[] | IExecutionResponse[] | IExecutionBase[];
+	}
+
+	reportInvalidExecutions(executions: ExecutionEntity[]) {
+		if (executions.length === 0) return;
+
+		this.errorReporter.error(
+			new UnexpectedError('Found executions without executionData', {
+				extra: {
+					executionIds: executions.map(({ id }) => id),
+					executions: executions.slice(0, MAX_REPORTED_INVALID_EXECUTIONS).map(toReportedRow),
+				},
+			}),
+		);
+	}
+
+	private serializeAnnotation(annotation: ExecutionEntity['annotation']) {
+		if (!annotation) return null;
+
+		const { id, vote, tags } = annotation;
+		return {
+			id,
+			vote,
+			tags: tags?.map((tag) => pick(tag, ['id', 'name'])) ?? [],
+		};
+	}
+
+	/** Whether the execution exists and belongs to one of the given workflows. */
+	async existsForAccessibleWorkflows(
+		executionId: string,
+		accessibleWorkflowIds: string[],
+	): Promise<boolean> {
+		if (accessibleWorkflowIds.length === 0) return false;
+
+		return await this.exists({
+			where: { id: executionId, workflowId: In(accessibleWorkflowIds) },
+			// Manual executions with saving off are soft-deleted but stay downloadable.
+			withDeleted: true,
+		});
+	}
+
+	async findSingleExecution(
+		id: string,
+		options?: {
+			includeData: true;
+			includeAnnotation?: boolean;
+			unflattenData: true;
+			where?: FindOptionsWhere<ExecutionEntity>;
+		},
+	): Promise<IExecutionResponse | undefined>;
+	async findSingleExecution(
+		id: string,
+		options?: {
+			includeData: true;
+			includeAnnotation?: boolean;
+			unflattenData?: false | undefined;
+			where?: FindOptionsWhere<ExecutionEntity>;
+		},
+	): Promise<IExecutionFlattedDb | undefined>;
+	async findSingleExecution(
+		id: string,
+		options?: {
+			includeData?: boolean;
+			includeAnnotation?: boolean;
+			unflattenData?: boolean;
+			where?: FindOptionsWhere<ExecutionEntity>;
+		},
+	): Promise<IExecutionBase | undefined>;
+	async findSingleExecution(
+		id: string,
+		options?: {
+			includeData?: boolean;
+			includeAnnotation?: boolean;
+			unflattenData?: boolean;
+			where?: FindOptionsWhere<ExecutionEntity>;
+		},
+	): Promise<IExecutionFlattedDb | IExecutionResponse | IExecutionBase | undefined> {
+		const findOptions: FindOneOptions<ExecutionEntity> = {
+			where: {
+				id,
+				...options?.where,
+			},
+		};
+		if (options?.includeData) {
+			findOptions.relations = { executionData: true, metadata: true };
+		}
+
+		if (options?.includeAnnotation) {
+			findOptions.relations = {
+				...findOptions.relations,
+				annotation: {
+					tags: true,
+				},
+			};
+		}
+
+		const execution = await this.findOne(findOptions);
+
+		if (!execution) {
+			return undefined;
+		}
+
+		const { executionData, metadata, annotation, ...rest } = execution;
+		const serializedAnnotation = this.serializeAnnotation(annotation);
+
+		if (execution.status === 'success' && executionData?.data === '[]') {
+			this.errorReporter.error('Found successful execution where data is empty stringified array', {
+				extra: {
+					executionId: execution.id,
+					workflowId: executionData?.workflowData.id,
+				},
+			});
+		}
+
+		if (!options?.includeData) {
+			// Not including run data, so return early.
+			const { executionData, ...rest } = execution;
+			return {
+				...rest,
+				...(options?.includeAnnotation &&
+					serializedAnnotation && { annotation: serializedAnnotation }),
+			} as IExecutionFlattedDb | IExecutionResponse | IExecutionBase;
+		}
+
+		// Include the run data.
+		const data = await this.handleExecutionRunData(executionData.data, options);
+		return {
+			...rest,
+			data,
+			workflowData: executionData.workflowData,
+			workflowVersionId: executionData.workflowVersionId ?? null,
+			customData: Object.fromEntries(metadata.map((m) => [m.key, m.value])),
+			...(options?.includeAnnotation &&
+				serializedAnnotation && { annotation: serializedAnnotation }),
+		} as IExecutionFlattedDb | IExecutionResponse | IExecutionBase;
+	}
+
+	/**
+	 * Set in-progress executions to `crashed` in batches. Calls `onBatchTransitioned`
+	 * after each batch commits.
+	 */
+	async markAsCrashed(
+		executionIds: string | string[],
+		onBatchTransitioned?: (batch: CrashedExecution[]) => void,
+	): Promise<CrashedExecution[]> {
+		// Dedupe so a repeated id is reported, and counted, once.
+		const ids = [...new Set(Array.isArray(executionIds) ? executionIds : [executionIds])];
+
+		const crashed: CrashedExecution[] = [];
+
+		for (const batch of chunk(ids, MAX_UPDATE_BATCH_SIZE)) {
+			const transitioned = await this.withOwnerProjects(
+				await this.transitionToCrashed({ id: In(batch) }),
+			);
+
+			crashed.push(...transitioned);
+			// Report each batch as it commits, so a later batch that throws keeps the earlier reports.
+			onBatchTransitioned?.(transitioned);
+			this.logger.info('Marked executions as `crashed`', { executionIds: batch });
+		}
+
+		return crashed;
+	}
+
+	/** Set the workflow's in-progress executions to `crashed`. */
+	async markWorkflowExecutionsAsCrashed(workflowId: string): Promise<CrashedExecution[]> {
+		const transitioned = await this.withOwnerProjects(
+			await this.transitionToCrashed({ workflowId }),
+		);
+
+		if (transitioned.length > 0) {
+			this.logger.info('Marked executions as `crashed`', {
+				executionIds: transitioned.map(({ id }) => id),
+			});
+		}
+
+		return transitioned;
+	}
+
+	/**
+	 * Set a `waiting` or `new` execution to `crashed`, which `markAsCrashed` skips on purpose.
+	 * With `expectedAttempts`, the row is left alone if its count changed since it was read.
+	 */
+	async markAsCrashedFrom(
+		executionId: string,
+		status: ResumableExecutionStatus,
+		{
+			expectedAttempts,
+			onTransitioned,
+		}: { expectedAttempts?: number; onTransitioned?: (batch: CrashedExecution[]) => void } = {},
+	): Promise<boolean> {
+		const where: FindOptionsWhere<ExecutionEntity> = { id: executionId };
+		if (expectedAttempts !== undefined) where.resumeAttempts = expectedAttempts;
+
+		const transitioned = await this.withOwnerProjects(
+			await this.transitionToCrashed(where, [status]),
+		);
+
+		if (transitioned.length === 0) return false;
+
+		onTransitioned?.(transitioned);
+		this.logger.info('Marked executions as `crashed`', { executionIds: [executionId] });
+		return true;
+	}
+
+	/**
+	 * Set the rows matching `where` to `crashed`. The caller's predicate selects the
+	 * candidates; the status guard and the identity of the written rows are added here.
+	 */
+	private async transitionToCrashed(
+		where: FindOptionsWhere<ExecutionEntity>,
+		fromStatuses: readonly ExecutionStatus[] = CRASHABLE_EXECUTION_STATUSES,
+	): Promise<CrashedExecution[]> {
+		// `stoppedAt` doubles as a claim token, so the read below can match the rows this
+		// UPDATE wrote without `SELECT ... FOR UPDATE`, which SQLite does not support. A
+		// batch that partly overlaps a concurrent sweep still reads the shared rows back.
+		const stoppedAt = new Date();
+
+		return await this.runInTransaction({}, async (tx) => {
+			// Guard against overwriting executions that have since moved to a `waiting` or
+			// terminal status: recovery can race a `running` -> `waiting` transition and flag a
+			// healthy execution as dangling, but only genuinely in-progress rows should be crashed
+			const updateResult = await tx.update(
+				ExecutionEntity,
+				{ ...where, status: In(fromStatuses) },
+				{ status: 'crashed', stoppedAt, waitTill: null },
+			);
+
+			// An unreported `affected` is unknown rather than zero, so it falls through to the read.
+			if (updateResult?.affected === 0) return [];
+
+			const rows = await tx.find(ExecutionEntity, {
+				select: {
+					id: true,
+					workflowId: true,
+					workflowVersionId: true,
+					mode: true,
+					retryOf: true,
+					startedAt: true,
+					// TypeORM types a JSON column's select as a nested select, but any truthy
+					// value here selects the whole column.
+					tracingContext: { traceparent: true, tracestate: true },
+					workflow: { id: true, name: true, settings: { customTelemetryTags: true } },
+				},
+				relations: { workflow: true },
+				where: { ...where, status: 'crashed', stoppedAt },
+				// The UPDATE above also crashes soft-deleted rows, so keep them in the read.
+				withDeleted: true,
+			});
+
+			return rows.map(
+				({
+					id,
+					workflowId,
+					workflowVersionId,
+					mode,
+					retryOf,
+					startedAt,
+					tracingContext,
+					workflow,
+				}) => ({
+					id,
+					workflowId,
+					workflowName: workflow?.name,
+					workflowVersionId: workflowVersionId ?? undefined,
+					mode,
+					retryOf: retryOf ?? undefined,
+					startedAt,
+					stoppedAt,
+					tracingContext: tracingContext ?? undefined,
+					workflowCustomTelemetryTags: workflow?.settings?.customTelemetryTags,
+				}),
+			);
+		});
+	}
+
+	/** Add the owner project of each execution's workflow. */
+	private async withOwnerProjects(executions: CrashedExecution[]): Promise<CrashedExecution[]> {
+		if (executions.length === 0) return executions;
+
+		try {
+			const projects = await this.sharedWorkflowRepository.findOwnerProjectsByWorkflowIds([
+				...new Set(executions.map(({ workflowId }) => workflowId)),
+			]);
+
+			return executions.map((execution) => {
+				const project = projects.get(execution.workflowId);
+				if (!project) return execution;
+
+				return {
+					...execution,
+					project: { id: project.id, customTelemetryTags: project.customTelemetryTags },
+				};
+			});
+		} catch (error) {
+			// The project only decorates the report, so a failed lookup must still let the
+			// crash be counted and announced.
+			this.logger.warn('Failed to load owner projects for crashed executions', { error });
+			return executions;
+		}
+	}
+
+	async setRunning(executionId: string) {
+		const startedAt = new Date();
+
+		return await this.manager.transaction(async (manager) => {
+			const existing = await manager.findOneBy(ExecutionEntity, { id: executionId });
+
+			// Preserve original startedAt for resumed executions
+			const effectiveStartedAt = existing?.startedAt ?? startedAt;
+
+			await manager.update(
+				ExecutionEntity,
+				{ id: executionId },
+				{ status: 'running', startedAt: effectiveStartedAt, waitTill: null },
+			);
+
+			return effectiveStartedAt;
+		});
+	}
+
+	/**
+	 * Update an existing execution in the database.
+	 *
+	 * @param executionId - The ID of the execution to update
+	 * @param execution - Partial execution data to update
+	 * @param conditions - Optional conditions that must be met for the update to proceed.
+	 *   `requireStatus`: only update if execution has this exact status.
+	 *   `requireStatuses`: only update if execution has one of these statuses.
+	 *   `requireNotFinished`: only update if `finished = false`.
+	 *   `requireNotCanceled`: only update if `status != 'canceled'`.
+	 *   Note: `requireStatus`, `requireStatuses`, and `requireNotCanceled` all constrain the
+	 *   `status` column, so combining them is not supported.
+	 * @returns true if update succeeded, false if no rows matched (execution not found or conditions not met)
+	 */
+	async updateExistingExecution(
+		executionId: string,
+		execution: Partial<IExecutionResponse>,
+		conditions?: UpdateExecutionConditions,
+	): Promise<boolean> {
+		const statusConstraintCount =
+			(conditions?.requireStatus !== undefined ? 1 : 0) +
+			(conditions?.requireStatuses !== undefined ? 1 : 0) +
+			(conditions?.requireNotCanceled ? 1 : 0);
+		if (statusConstraintCount > 1) {
+			throw new UnexpectedError('Only one `status` constraint can be applied per update');
+		}
+
+		const {
+			id,
+			data,
+			workflowId,
+			workflowData,
+			workflowVersionId, // must never change
+			createdAt, // must never change
+			startedAt, // must never change
+			customData,
+			jsonSizeBytes, // computed by ExecutionPersistence on write; never set from a caller here
+			binaryDataSizeBytes, // computed by ExecutionPersistence on write; never set from a caller here
+			...executionInformation
+		} = execution;
+
+		const executionData: Partial<ExecutionData> = {};
+
+		if (workflowData) executionData.workflowData = workflowData;
+		if (data) executionData.data = stringify(data);
+
+		return await this.manager.transaction(async (tx) => {
+			if (Object.keys(executionInformation).length > 0) {
+				const whereCondition: FindOptionsWhere<ExecutionEntity> = { id: executionId };
+				if (conditions?.requireStatus) whereCondition.status = conditions.requireStatus;
+				if (conditions?.requireStatuses)
+					whereCondition.status = In([...conditions.requireStatuses]);
+				// oxlint-disable-next-line typescript/no-deprecated
+				if (conditions?.requireNotFinished) whereCondition.finished = false;
+				if (conditions?.requireNotCanceled) whereCondition.status = Not('canceled');
+
+				const result = await tx.update(ExecutionEntity, whereCondition, executionInformation);
+				const executionTableAffectedRows = result.affected ?? 0;
+
+				// If conditions were set and the update failed, abort the
+				// transaction early and return false.
+				if (executionTableAffectedRows === 0) {
+					return false;
+				}
+			}
+
+			if (Object.keys(executionData).length > 0) {
+				await tx.update(ExecutionData, { executionId }, executionData);
+			}
+
+			// Updates succeeded
+			return true;
+		});
+	}
+
+	/** Deletion targets of a workflow, soft-deleted ones included. */
+	async findForDeletionByWorkflowId(workflowId: string, limit: number) {
+		const executions = await this.createQueryBuilder('execution')
+			.withDeleted()
+			.select(['execution.id', 'execution.workflowId', 'execution.storedAt'])
+			.where('execution.workflowId = :workflowId', { workflowId })
+			.limit(limit)
+			.getMany();
+
+		return executions.map(({ id, workflowId, storedAt }) => ({
+			executionId: id,
+			workflowId,
+			storedAt,
+		}));
+	}
+
+	async findExecutionsToDelete({
+		filters,
+		accessibleWorkflowIds,
+		deleteConditions,
+	}: ExecutionDeletionCriteria): Promise<
+		Array<{ executionId: string; workflowId: string; storedAt: ExecutionDataStorageLocation }>
+	> {
+		if (!deleteConditions?.deleteBefore && !deleteConditions?.ids) {
+			throw new UnexpectedError(
+				'Either "deleteBefore" or "ids" must be present in the request body',
+			);
+		}
+
+		const query = this.createQueryBuilder('execution')
+			.select(['execution.id', 'execution.workflowId', 'execution.storedAt'])
+			.andWhere('execution.workflowId IN (:...accessibleWorkflowIds)', { accessibleWorkflowIds });
+
+		if (deleteConditions.deleteBefore) {
+			// delete executions by date, if user may access the underlying workflows
+			query.andWhere('execution.startedAt <= :deleteBefore', {
+				deleteBefore: deleteConditions.deleteBefore,
+			});
+			// Filters are only used when filtering by date
+			parseFiltersToQueryBuilder(query, filters);
+		} else if (deleteConditions.ids) {
+			// delete executions by IDs, if user may access the underlying workflows
+			query.andWhere('execution.id IN (:...executionIds)', { executionIds: deleteConditions.ids });
+		}
+
+		const executions = await query.getMany();
+
+		if (!executions.length) {
+			if (deleteConditions.ids) {
+				this.logger.error('Failed to delete an execution due to insufficient permissions', {
+					executionIds: deleteConditions.ids,
+				});
+			}
+			return [];
+		}
+
+		return executions.map(({ id, workflowId, storedAt }) => ({
+			executionId: id,
+			workflowId,
+			storedAt,
+		}));
+	}
+
+	async getIdsSince(date: Date) {
+		return await this.find({
+			select: ['id'],
+			where: {
+				startedAt: MoreThanOrEqual(DateUtils.mixedDateToUtcDatetimeString(date)),
+			},
+		}).then((executions) => executions.map(({ id }) => id));
+	}
+
+	async softDeletePrunableExecutions() {
+		const { pruneDataMaxAge, pruneDataMaxCount } = this.globalConfig.executions;
+
+		// Sub-query to exclude executions having annotations
+		const annotatedExecutionsSubQuery = this.manager
+			.createQueryBuilder()
+			.subQuery()
+			.select('annotation.executionId')
+			.from(ExecutionAnnotation, 'annotation');
+
+		const isPostgres = this.globalConfig.database.type === 'postgresdb';
+
+		const pruningCriteria = new Brackets((qb) => {
+			// Find executions that stopped before the retention cutoff.
+			qb.where({
+				stoppedAt: Raw(
+					(column) =>
+						`${column} <= ${dbNowPlusMsLiteral(isPostgres, -pruneDataMaxAge * Time.hours.toMilliseconds)}`,
+				),
+			});
+
+			if (pruneDataMaxCount > 0) {
+				// Compute the count cutoff in the same statement so it matches the rows it updates.
+				const countCutoff = this.createQueryBuilder('execution')
+					.select('execution.id')
+					.where('execution.id NOT IN ' + annotatedExecutionsSubQuery.getQuery())
+					.orderBy('execution.id', 'DESC')
+					.offset(pruneDataMaxCount)
+					.limit(1);
+
+				qb.orWhere(`id <= (${countCutoff.getQuery()})`);
+			}
+		});
+
+		return await this.createQueryBuilder()
+			.update(ExecutionEntity)
+			.set({ deletedAt: () => dbNowLiteral(isPostgres) })
+			.where({
+				deletedAt: IsNull(),
+				// Only mark executions as deleted if they are in an end state
+				status: Not(In(['new', 'running', 'waiting'])),
+			})
+			// Only mark executions as deleted if they are not annotated
+			.andWhere('id NOT IN ' + annotatedExecutionsSubQuery.getQuery())
+			.andWhere(pruningCriteria)
+			.execute();
+	}
+
+	/** One batch of soft-deleted executions past the buffer, newest id first, below `before` when given. */
+	async findSoftDeletedExecutions(before?: string) {
+		const isPostgres = this.globalConfig.database.type === 'postgresdb';
+		const bufferMs =
+			this.globalConfig.executions.pruneDataHardDeleteBuffer * Time.hours.toMilliseconds;
+
+		const results = await this.find({
+			select: ['workflowId', 'id', 'storedAt'],
+			where: {
+				deletedAt: Raw((column) => `${column} <= ${dbNowPlusMsLiteral(isPostgres, -bufferMs)}`),
+				...(before === undefined ? {} : { id: LessThan(before) }),
+			},
+			order: { id: 'DESC' },
+			take: this.hardDeletionBatchSize,
+
+			/**
+			 * @important This ensures soft-deleted executions are included,
+			 * else `@DeleteDateColumn()` at `deletedAt` will exclude them.
+			 */
+			withDeleted: true,
+		});
+
+		return results.map(({ id: executionId, workflowId, storedAt }) => ({
+			workflowId,
+			executionId,
+			storedAt,
+		}));
+	}
+
+	/**
+	 * A finished manual execution that n8n did not save, until pruning hard-deletes it.
+	 * It is soft-deleted, so other reads do not return it. The caller must check that
+	 * the reader started it.
+	 */
+	async findUnsavedManualExecution(executionId: string): Promise<ExecutionEntity | null> {
+		const isPostgres = this.globalConfig.database.type === 'postgresdb';
+		const bufferMs =
+			this.globalConfig.executions.pruneDataHardDeleteBuffer * Time.hours.toMilliseconds;
+
+		return await this.findOne({
+			where: {
+				id: executionId,
+				mode: 'manual',
+				// A run whose final data was never written still has its start status.
+				status: In(['success', 'error', 'crashed', 'canceled']),
+				deletedAt: Raw((column) => `${column} > ${dbNowPlusMsLiteral(isPostgres, -bufferMs)}`),
+			},
+			relations: { metadata: true },
+			// An unsaved manual execution is soft-deleted when it finishes.
+			withDeleted: true,
+		});
+	}
+
+	async deleteByIds(executionIds: string[]) {
+		return await this.delete({ id: In(executionIds) });
+	}
+
+	/**
+	 * Count one resume attempt before the load, so a load that kills the process stays
+	 * counted. `conflict` means the row is no longer in `status`.
+	 */
+	async claimResumeAttempt(
+		executionId: string,
+		status: ResumableExecutionStatus,
+		maxAttempts: number,
+	): Promise<ResumeAttemptClaim> {
+		const execution = await this.findOne({
+			select: ['id', 'resumeAttempts', 'jsonSizeBytes'],
+			where: { id: executionId, status },
+		});
+		if (!execution) return { outcome: 'conflict' };
+
+		const { resumeAttempts: attempts, jsonSizeBytes } = execution;
+		if (attempts >= maxAttempts) return { outcome: 'exhausted', attempts, jsonSizeBytes };
+
+		// The count just read is part of the predicate, so two processes cannot take the same attempt.
+		const result = await this.update(
+			{ id: executionId, status, resumeAttempts: attempts },
+			{ resumeAttempts: attempts + 1 },
+		);
+		if ((result.affected ?? 0) === 0) return { outcome: 'conflict' };
+
+		return { outcome: 'claimed', attempts: attempts + 1 };
+	}
+
+	/**
+	 * Give back an attempt. `attempts` is the count the claim returned, so a newer claim by
+	 * another process is not undone.
+	 */
+	async releaseResumeAttempt(
+		executionId: string,
+		status: ResumableExecutionStatus,
+		attempts: number,
+	): Promise<boolean> {
+		const result = await this.update(
+			{ id: executionId, status, resumeAttempts: attempts },
+			{ resumeAttempts: attempts - 1 },
+		);
+
+		return (result.affected ?? 0) > 0;
+	}
+
+	async findEnqueuedIds(): Promise<string[]> {
+		const rows = await this.find({
+			select: ['id'],
+			where: { status: 'new' },
+			order: { id: 'ASC' },
+		});
+
+		return rows.map(({ id }) => id);
+	}
+
+	async getWaitingExecutions() {
+		// Find all the executions which should be triggered in the next 70 seconds
+		const waitTill = new Date(Date.now() + 70000);
+		const where: FindOptionsWhere<ExecutionEntity> = {
+			waitTill: LessThanOrEqual(waitTill),
+			status: 'waiting',
+		};
+
+		const dbType = this.globalConfig.database.type;
+		if (dbType === 'sqlite') {
+			// This is needed because of issue in TypeORM <> SQLite:
+			// https://github.com/typeorm/typeorm/issues/2286
+			where.waitTill = LessThanOrEqual(DateUtils.mixedDateToUtcDatetimeString(waitTill));
+		}
+
+		return await this.findMultipleExecutions({
+			select: ['id', 'waitTill'],
+			where,
+			order: {
+				waitTill: 'ASC',
+			},
+		});
+	}
+
+	/** Ids of executions parked because a sub-execution they wait for is itself waiting. */
+	async findParkedOnSubExecution(): Promise<string[]> {
+		const where: FindOptionsWhere<ExecutionEntity> = {
+			waitTill: WAIT_FOR_SUB_EXECUTION,
+			status: 'waiting',
+		};
+
+		if (this.globalConfig.database.type === 'sqlite') {
+			// Same TypeORM <> SQLite date-parameter issue as in `getWaitingExecutions`.
+			where.waitTill = Equal(DateUtils.mixedDateToUtcDatetimeString(WAIT_FOR_SUB_EXECUTION));
+		}
+
+		const rows = await this.find({ select: ['id'], where, order: { id: 'ASC' } });
+
+		return rows.map(({ id }) => id);
+	}
+
+	async countInWorkflows(
+		workflowIds: string[],
+		options: {
+			limit: number;
+			lastId?: string;
+			status?: ExecutionStatus;
+			excludedExecutionsIds?: string[];
+			startedAfter?: string;
+			startedBefore?: string;
+		},
+	): Promise<number> {
+		return await this.count({
+			where: this.getFindManyInWorkflowsCondition(workflowIds, options),
+			take: options.limit,
+		});
+	}
+
+	/**
+	 * Runs per workflow in these projects, one row for each workflow, newest first.
+	 *
+	 * For telling an agent what has been running and what broke. Aggregated in the database on
+	 * purpose: the alternative is reading every row and folding in memory, and a busy instance has
+	 * far more runs than a reader would ever show. The grouping is also what makes runs fold per
+	 * workflow across the whole window rather than only where they happen to be adjacent — two
+	 * schedules on different intervals interleave.
+	 *
+	 * Scoped by project, because a run has no acting user: a schedule that failed at 03:00 belongs
+	 * to nobody, and is exactly the row worth surfacing. An empty scope therefore reads nothing
+	 * rather than falling back to something wider.
+	 *
+	 * Bounded by `stoppedAt`, which carries its own index, rather than by an execution id: a run
+	 * that started before a caller's last read and failed after it has a low id and a recent
+	 * outcome, and is the row a reader most needs.
+	 */
+	async summariseRunsForProjects(query: {
+		projectIds: ActivityProjectScope;
+		/**
+		 * Start of the window, inclusive. Half-open with `stoppedBefore` — `[after, before)` — so
+		 * consecutive windows tile the timeline with neither a gap nor an overlap: a caller passing
+		 * the previous window's end gets additions only, and a run landing exactly on that boundary
+		 * belongs to the later window rather than falling between the two.
+		 */
+		stoppedAfter: Date;
+		/** End of the window, exclusive. The caller's read time. */
+		stoppedBefore: Date;
+		/** How many workflows may contribute, so schedules cannot crowd out everything else. */
+		workflowLimit: number;
+		/**
+		 * Count only workflows this instance exposes to MCP. Pushed into the query rather than
+		 * applied to the result, because these are aggregates: dropping rows afterwards would leave
+		 * "ran 43 times" standing for runs the caller may not see.
+		 */
+		mcpVisibleOnly?: boolean;
+	}): Promise<
+		Array<{
+			workflowId: string;
+			workflowName: string;
+			total: number;
+			failed: number;
+			lastStoppedAt: Date;
+			lastFailedExecutionId: string | null;
+		}>
+	> {
+		if (query.projectIds !== 'all-projects' && query.projectIds.length === 0) return [];
+		if (!Number.isInteger(query.workflowLimit) || query.workflowLimit <= 0) return [];
+
+		// `crashed` and `error` are the failure half of `CompletedExecutionStatus`. `canceled` is
+		// somebody stopping a run on purpose, which is not a fault to report.
+		const failureStatuses: ExecutionStatus[] = ['error', 'crashed'];
+
+		const qb = this.createQueryBuilder('execution')
+			.select('execution.workflowId', 'workflowId')
+			.addSelect('MAX(workflow.name)', 'workflowName')
+			// A workflow can be shared into several projects, so the join multiplies rows when more
+			// than one of them is in scope. Every aggregate here counts distinct executions.
+			.addSelect('COUNT(DISTINCT execution.id)', 'total')
+			.addSelect(
+				'COUNT(DISTINCT CASE WHEN execution.status IN (:...failureStatuses) THEN execution.id END)',
+				'failed',
+			)
+			.addSelect('MAX(execution.stoppedAt)', 'lastStoppedAt')
+			// Named so a reader can hand the agent the failure itself rather than the newest run,
+			// which on a schedule that has since recovered is a success.
+			.addSelect(
+				'MAX(CASE WHEN execution.status IN (:...failureStatuses) THEN execution.id END)',
+				'lastFailedExecutionId',
+			)
+			.innerJoin(WorkflowEntity, 'workflow', 'workflow.id = execution.workflowId')
+			.where('execution.deletedAt IS NULL')
+			// An evaluation suite is machine-paced and would bury everything a person did. The
+			// activity feed used to keep eval runs in their own category for the same reason.
+			.andWhere('execution.mode != :evaluationMode', { evaluationMode: 'evaluation' })
+			.andWhere('execution.stoppedAt IS NOT NULL')
+			.andWhere('execution.stoppedAt >= :stoppedAfter', { stoppedAfter: query.stoppedAfter })
+			.andWhere('execution.stoppedAt < :stoppedBefore', { stoppedBefore: query.stoppedBefore })
+			.setParameter('failureStatuses', failureStatuses);
+
+		// A whole-instance reader needs no project predicate, and skipping the join also removes the
+		// row multiplication a workflow shared into several projects would otherwise cause.
+		if (query.projectIds !== 'all-projects') {
+			qb.innerJoin(SharedWorkflow, 'sw', 'sw.workflowId = workflow.id').andWhere(
+				'sw.projectId IN (:...projectIds)',
+				{ projectIds: query.projectIds },
+			);
+		}
+
+		if (query.mcpVisibleOnly) {
+			qb.andWhere('workflow.isArchived = :notArchived', { notArchived: false });
+			applyWorkflowBooleanSettingFilter(qb, this.globalConfig, 'availableInMCP', true);
+		}
+
+		const rows = await qb
+			.groupBy('execution.workflowId')
+			.orderBy('MAX(execution.stoppedAt)', 'DESC')
+			.limit(query.workflowLimit)
+			.getRawMany<{
+				workflowId: string;
+				workflowName: string;
+				total: number | string;
+				failed: number | string;
+				lastStoppedAt: Date | string;
+				lastFailedExecutionId: number | string | null;
+			}>();
+
+		return rows.map((row) => ({
+			workflowId: row.workflowId,
+			workflowName: row.workflowName,
+			// Postgres returns COUNT as a bigint string.
+			total: Number(row.total),
+			failed: Number(row.failed),
+			lastStoppedAt: parseDbTime(row.lastStoppedAt),
+			lastFailedExecutionId:
+				row.lastFailedExecutionId === null ? null : String(row.lastFailedExecutionId),
+		}));
+	}
+
+	private getStatusCondition(status?: ExecutionStatus) {
+		const condition: Pick<FindOptionsWhere<IExecutionFlattedDb>, 'status'> = {};
+
+		if (status) {
+			condition.status = status;
+		}
+
+		return condition;
+	}
+
+	private getIdCondition(params: { lastId?: string; excludedExecutionsIds?: string[] }) {
+		const condition: Pick<FindOptionsWhere<IExecutionFlattedDb>, 'id'> = {};
+
+		if (params.lastId && params.excludedExecutionsIds?.length) {
+			condition.id = And(LessThan(params.lastId), Not(In(params.excludedExecutionsIds)));
+		} else if (params.lastId) {
+			condition.id = LessThan(params.lastId);
+		} else if (params.excludedExecutionsIds?.length) {
+			condition.id = Not(In(params.excludedExecutionsIds));
+		}
+
+		return condition;
+	}
+
+	getFindManyInWorkflowsCondition(
+		workflowIds: string[],
+		options: {
+			lastId?: string;
+			status?: ExecutionStatus;
+			excludedExecutionsIds?: string[];
+			startedAfter?: string;
+			startedBefore?: string;
+		} = {},
+	) {
+		const where: FindOptionsWhere<IExecutionFlattedDb> = {
+			...this.getIdCondition({
+				lastId: options.lastId,
+				excludedExecutionsIds: options.excludedExecutionsIds,
+			}),
+			...this.getStatusCondition(options.status),
+			workflowId: In(workflowIds),
+		};
+
+		const startedAt = startedAtCondition(options);
+		if (startedAt) where.startedAt = startedAt;
+
+		return where;
+	}
+
+	async findIfShared(executionId: string, sharedWorkflowIds: string[]) {
+		return await this.findSingleExecution(executionId, {
+			where: {
+				workflowId: In(sharedWorkflowIds),
+			},
+			includeData: true,
+			unflattenData: false,
+			includeAnnotation: true,
+		});
+	}
+
+	async findIfAccessible(executionId: string, accessibleWorkflowIds: string[]) {
+		return await this.findSingleExecution(executionId, {
+			where: { workflowId: In(accessibleWorkflowIds) },
+		});
+	}
+
+	async stopBeforeRun(execution: IExecutionResponse) {
+		execution.status = 'canceled';
+		execution.stoppedAt = new Date();
+		execution.waitTill = null;
+
+		await this.update(
+			{ id: execution.id },
+			{ status: execution.status, stoppedAt: execution.stoppedAt, waitTill: execution.waitTill },
+		);
+
+		return execution;
+	}
+
+	async cancelMany(executionIds: string[]) {
+		await this.update(
+			{ id: In(executionIds) },
+			{ status: 'canceled', stoppedAt: new Date(), waitTill: null },
+		);
+	}
+
+	async cancelManyRunning(executionIds: string[]) {
+		await this.update(
+			// The caller's ID list is a snapshot. The status match stops an execution that
+			// reached a terminal status in the meantime from being recorded as cancelled.
+			{ id: In(executionIds), status: 'running' },
+			{ status: 'canceled', stoppedAt: new Date(), waitTill: null },
+		);
+	}
+
+	// ----------------------------------
+	//            new API
+	// ----------------------------------
+
+	/**
+	 * Fields to include in the summary of an execution when querying for many.
+	 */
+	private summaryFields = {
+		id: true,
+		workflowId: true,
+		workflowVersionId: true,
+		jsonSizeBytes: true,
+		binaryDataSizeBytes: true,
+		mode: true,
+		retryOf: true,
+		status: true,
+		createdAt: true,
+		startedAt: true,
+		stoppedAt: true,
+		usedPrivateCredentials: true,
+	};
+
+	private annotationFields = {
+		id: true,
+		vote: true,
+	};
+
+	/**
+	 * This function reduces duplicate rows in the raw result set of the query builder from *toQueryBuilderWithAnnotations*
+	 * by merging the tags of the same execution annotation.
+	 */
+	private reduceExecutionsWithAnnotations(
+		rawExecutionsWithTags: Array<
+			ExecutionSummary & {
+				annotation_id: number;
+				annotation_vote: AnnotationVote;
+				annotation_tags_id: string;
+				annotation_tags_name: string;
+			}
+		>,
+	) {
+		const summariesById = new Map<string, ExecutionSummary>();
+
+		for (const {
+			annotation_id: _,
+			annotation_vote: vote,
+			annotation_tags_id: tagId,
+			annotation_tags_name: tagName,
+			...row
+		} of rawExecutionsWithTags) {
+			let execution = summariesById.get(row.id);
+			if (!execution) {
+				execution = {
+					...row,
+					annotation: {
+						vote,
+						tags: tagId ? [{ id: tagId, name: tagName }] : [],
+					},
+				};
+				summariesById.set(row.id, execution);
+			} else if (tagId) {
+				execution.annotation = execution.annotation ?? {
+					vote,
+					tags: [] as Array<{ id: string; name: string }>,
+				};
+				execution.annotation.tags.push({ id: tagId, name: tagName });
+			}
+		}
+
+		return [...summariesById.values()];
+	}
+
+	async findManyByRangeQuery(query: ExecutionSummaries.RangeQuery): Promise<ExecutionSummary[]> {
+		// Due to performance reasons, we use custom query builder with raw SQL.
+		// IMPORTANT: it produces duplicate rows for executions with multiple tags, which we need to reduce manually
+		const qb = this.toQueryBuilderWithAnnotations(query);
+
+		const rawExecutionsWithTags: Array<
+			ExecutionSummary & {
+				annotation_id: number;
+				annotation_vote: AnnotationVote;
+				annotation_tags_id: string;
+				annotation_tags_name: string;
+			}
+		> = await qb.getRawMany();
+
+		const executions = this.reduceExecutionsWithAnnotations(rawExecutionsWithTags);
+
+		return executions.map((execution) => this.toSummary(execution));
+	}
+
+	// @tech_debt: These transformations should not be needed
+	private toSummary(execution: {
+		id: number | string;
+		createdAt?: Date | string;
+		startedAt: Date | string | null;
+		stoppedAt?: Date | string;
+		waitTill?: Date | string | null;
+		jsonSizeBytes?: number | string;
+		binaryDataSizeBytes?: number | string;
+		usedPrivateCredentials?: boolean | number;
+	}): ExecutionSummary {
+		execution.id = execution.id.toString();
+
+		if (execution.jsonSizeBytes !== undefined && typeof execution.jsonSizeBytes === 'string') {
+			// Raw query bypasses the entity transformer, so Postgres hands bigint back as a string.
+			execution.jsonSizeBytes = Number(execution.jsonSizeBytes);
+		}
+
+		if (typeof execution.binaryDataSizeBytes === 'string') {
+			// Raw query bypasses the entity transformer, so Postgres hands bigint back as a string.
+			execution.binaryDataSizeBytes = Number(execution.binaryDataSizeBytes);
+		}
+
+		// SQLite returns 0/1 for booleans; coerce to a proper boolean.
+		if (typeof execution.usedPrivateCredentials === 'number') {
+			execution.usedPrivateCredentials = execution.usedPrivateCredentials !== 0;
+		}
+
+		const normalizeDateString = (date: string) => {
+			if (date.includes(' ')) return date.replace(' ', 'T') + 'Z';
+			return date;
+		};
+
+		if (execution.createdAt) {
+			execution.createdAt =
+				execution.createdAt instanceof Date
+					? execution.createdAt.toISOString()
+					: normalizeDateString(execution.createdAt);
+		}
+
+		if (execution.startedAt) {
+			execution.startedAt =
+				execution.startedAt instanceof Date
+					? execution.startedAt.toISOString()
+					: normalizeDateString(execution.startedAt);
+		}
+
+		if (execution.waitTill) {
+			execution.waitTill =
+				execution.waitTill instanceof Date
+					? execution.waitTill.toISOString()
+					: normalizeDateString(execution.waitTill);
+		}
+
+		if (execution.stoppedAt) {
+			execution.stoppedAt =
+				execution.stoppedAt instanceof Date
+					? execution.stoppedAt.toISOString()
+					: normalizeDateString(execution.stoppedAt);
+		}
+
+		return execution as ExecutionSummary;
+	}
+
+	async fetchCount(query: ExecutionSummaries.CountQuery) {
+		return await this.toQueryBuilder(query).getCount();
+	}
+
+	async getLiveExecutionRowsOnPostgres() {
+		const tableName = `${this.globalConfig.database.tablePrefix}execution_entity`;
+
+		const pgSql = `SELECT n_live_tup as result FROM pg_stat_all_tables WHERE relname = '${tableName}' and schemaname = '${this.globalConfig.database.postgresdb.schema}';`;
+
+		try {
+			const rows = (await this.query(pgSql)) as Array<{ result: string }>;
+
+			if (rows.length !== 1) throw new PostgresLiveRowsRetrievalError(rows);
+
+			const [row] = rows;
+
+			return parseInt(row.result, 10);
+		} catch (error) {
+			if (error instanceof Error) this.logger.error(error.message, { error });
+
+			return -1;
+		}
+	}
+
+	private toQueryBuilder(query: ExecutionSummaries.Query) {
+		const {
+			user,
+			sharingOptions,
+			status,
+			workflowId,
+			startedBefore,
+			startedAfter,
+			metadata,
+			annotationTags,
+			vote,
+			projectId,
+			workflowVersionId,
+			isArchived,
+			workflowBooleanSettings,
+		} = query;
+
+		const fields = Object.keys(this.summaryFields)
+			.concat(['waitTill', 'retrySuccessId'])
+			.map((key) => `execution.${key} AS "${key}"`)
+			.concat('workflow.name AS "workflowName"');
+
+		const qb = this.createQueryBuilder('execution')
+			.select(fields)
+			.innerJoin('execution.workflow', 'workflow');
+
+		if (user && sharingOptions) {
+			// EXISTS-based access control — correlated subquery for better query plans
+			const subquery = this.sharedWorkflowRepository.buildSharedWorkflowIdsSubquery(
+				user,
+				sharingOptions,
+			);
+			subquery.andWhere('"sw"."workflowId" = execution."workflowId"');
+			qb.where(`EXISTS (${subquery.getQuery()})`);
+			qb.setParameters(subquery.getParameters());
+		} else if (user && hasGlobalScope(user, 'workflow:read')) {
+			// Global-scope admin without sharingOptions — no access-control filter needed
+		} else {
+			// No user or insufficient scope — deny all to prevent unscoped queries
+			qb.where('1 = 0');
+		}
+
+		if (query.kind === 'range') {
+			const { limit, beforeId } = query.range;
+
+			qb.limit(limit);
+
+			if (beforeId) qb.andWhere('execution.id < :beforeId', { beforeId });
+
+			// Since a cursor pages by id, using a sort order other than `id` together
+			// with a cursor may skip or repeat rows at the boundary. This is because
+			// the row's status AND/OR startedAt timestamps can change after the fact.
+			// We accept this as a current limitation in the implementation.
+			if (query.order?.startedAt === 'DESC') {
+				qb.orderBy({ 'COALESCE(execution.startedAt, execution.createdAt)': 'DESC' });
+			} else if (query.order?.top) {
+				qb.orderBy(`(CASE WHEN execution.status = '${query.order.top}' THEN 0 ELSE 1 END)`);
+			}
+			qb.addOrderBy('execution.id', 'DESC');
+		}
+
+		if (status) qb.andWhere('execution.status IN (:...status)', { status });
+		if (query.mode) qb.andWhere('execution.mode = :filterMode', { filterMode: query.mode });
+		if (workflowId) qb.andWhere({ workflowId });
+		const startedAt = startedAtCondition({ startedAfter, startedBefore });
+		if (startedAt) qb.andWhere({ startedAt });
+
+		if (metadata?.length === 1) {
+			const [{ key, value, exactMatch }] = metadata;
+
+			const executionIdMatch = 'md.executionId = execution.id';
+			const keyMatch = exactMatch ? 'md.key = :key' : 'LOWER(md.key) = LOWER(:key)';
+			const valueMatch = exactMatch ? 'md.value = :value' : 'LOWER(md.value) LIKE LOWER(:value)';
+
+			const matches = [executionIdMatch, keyMatch, valueMatch];
+
+			qb.innerJoin(ExecutionMetadata, 'md', matches.join(' AND '));
+
+			qb.setParameter('key', key);
+			qb.setParameter('value', exactMatch ? value : `%${value}%`);
+		}
+
+		if (workflowVersionId) {
+			qb.innerJoin(
+				'execution.executionData',
+				'executionData',
+				'executionData.workflowVersionId = :workflowVersionId',
+			);
+			qb.setParameter('workflowVersionId', workflowVersionId);
+		}
+
+		if (annotationTags?.length || vote) {
+			// If there is a filter by one or multiple tags or by vote - we need to join the annotations table
+			qb.innerJoin('execution.annotation', 'annotation');
+
+			// Add an inner join for each tag
+			if (annotationTags?.length) {
+				for (let index = 0; index < annotationTags.length; index++) {
+					qb.innerJoin(
+						AnnotationTagMapping,
+						`atm_${index}`,
+						`atm_${index}.annotationId = annotation.id AND atm_${index}.tagId = :tagId_${index}`,
+					);
+
+					qb.setParameter(`tagId_${index}`, annotationTags[index]);
+				}
+			}
+
+			// Add filter by vote
+			if (vote) {
+				qb.andWhere('annotation.vote = :vote', { vote });
+			}
+		}
+
+		if (projectId) {
+			qb.innerJoin(WorkflowEntity, 'w', 'w.id = execution.workflowId')
+				.innerJoin(SharedWorkflow, 'sw', 'sw.workflowId = w.id')
+				.andWhere('sw.projectId = :projectId', { projectId });
+		}
+
+		if (isArchived !== undefined) {
+			qb.andWhere('workflow.isArchived = :isArchived', { isArchived });
+		}
+
+		if (workflowBooleanSettings?.length) {
+			for (const { key, value } of workflowBooleanSettings) {
+				applyWorkflowBooleanSettingFilter(qb, this.globalConfig, key, value);
+			}
+		}
+
+		return qb;
+	}
+
+	/**
+	 * This method is used to add the annotation fields to the executions query
+	 * It uses original query builder as a subquery and adds the annotation fields to it
+	 * IMPORTANT: Query made with this query builder fetches duplicate execution rows for each tag,
+	 *  this is intended, as we are working with raw query.
+	 *  The duplicates are reduced in the *reduceExecutionsWithAnnotations* method.
+	 */
+	private toQueryBuilderWithAnnotations(query: ExecutionSummaries.Query) {
+		const annotationFields = Object.keys(this.annotationFields).map(
+			(key) => `annotation.${key} AS "annotation_${key}"`,
+		);
+
+		const subQuery = this.toQueryBuilder(query).addSelect(annotationFields);
+
+		// Ensure the join with annotations is made only once
+		// It might be already present as an inner join if the query includes filter by annotation tags
+		// If not, it must be added as a left join
+		if (!subQuery.expressionMap.joinAttributes.some((join) => join.alias.name === 'annotation')) {
+			subQuery.leftJoin('execution.annotation', 'annotation');
+		}
+
+		const qb = this.manager
+			.createQueryBuilder()
+			.select(['e.*', 'ate.id AS "annotation_tags_id"', 'ate.name AS "annotation_tags_name"'])
+			.from(`(${subQuery.getQuery()})`, 'e')
+			.setParameters(subQuery.getParameters())
+			.leftJoin(AnnotationTagMapping, 'atm', 'atm.annotationId = e.annotation_id')
+			.leftJoin(AnnotationTagEntity, 'ate', 'ate.id = atm.tagId');
+
+		// Sort the final result after the joins again, because there is no
+		// guarantee that the order is unchanged after performing joins. Especially
+		// postgres returned to the natural order again, listing executions in the
+		// order they were created.
+		if (query.kind === 'range') {
+			if (query.order?.startedAt === 'DESC') {
+				const table = qb.escape('e');
+				const startedAt = qb.escape('startedAt');
+				const createdAt = qb.escape('createdAt');
+				qb.orderBy({ [`COALESCE(${table}.${startedAt}, ${table}.${createdAt})`]: 'DESC' });
+			} else if (query.order?.top) {
+				qb.orderBy(`(CASE WHEN e.status = '${query.order.top}' THEN 0 ELSE 1 END)`);
+			}
+			qb.addOrderBy('e.id', 'DESC');
+		}
+
+		return qb;
+	}
+
+	/**
+	 * IDs of the distinct workflows that have at least one execution started at or after `date`.
+	 * @param date Lower bound (inclusive) for `startedAt`.
+	 * @returns Distinct workflow IDs, in no particular order.
+	 * @remarks Reads only entity columns, never the execution data blobs.
+	 */
+	async getWorkflowIdsWithExecutionsSince(date: Date): Promise<string[]> {
+		const result = await this.createQueryBuilder('execution')
+			.select('DISTINCT execution.workflowId', 'workflowId')
+			.where('execution.startedAt >= :date', {
+				date: DateUtils.mixedDateToUtcDatetimeString(date),
+			})
+			.getRawMany<{ workflowId: string }>();
+
+		return result.map((row) => row.workflowId);
+	}
+
+	async getDistinctVersionIds(workflowId: string): Promise<string[]> {
+		const result = await this.createQueryBuilder('execution')
+			.innerJoin('execution.executionData', 'ed')
+			.select('DISTINCT ed.workflowVersionId', 'workflowVersionId')
+			.where('execution.workflowId = :workflowId', { workflowId })
+			.andWhere('ed.workflowVersionId IS NOT NULL')
+			.getRawMany<{ workflowVersionId: string }>();
+
+		return result.map((r) => r.workflowVersionId);
+	}
+
+	/** IDs of executions still in progress (`running` or `unknown` status). */
+	async findUnfinishedIds(): Promise<string[]> {
+		const rows = await this.find({
+			select: ['id'],
+			where: { status: In(['running', 'unknown']) },
+		});
+		return rows.map(({ id }) => id);
+	}
+
+	async findStatusesByIds(ids: string[]): Promise<Array<Pick<ExecutionEntity, 'id' | 'status'>>> {
+		const rows: Array<Pick<ExecutionEntity, 'id' | 'status'>> = [];
+		for (const chunk of chunkIds(ids)) {
+			rows.push(...(await this.find({ select: ['id', 'status'], where: { id: In(chunk) } })));
+		}
+
+		return rows;
+	}
+
+	async getAllIds() {
+		const executions = await this.find({ select: ['id'], order: { id: 'ASC' } });
+
+		return executions.map(({ id }) => id);
+	}
+
+	/**
+	 * Retrieve a batch of execution IDs with `new` or `running` status, in most recent order.
+	 */
+	async getInProgressExecutionIds(batchSize: number) {
+		const executions = await this.find({
+			select: ['id'],
+			where: { status: In(['new', 'running']) },
+			order: { startedAt: 'DESC' },
+			take: batchSize,
+		});
+
+		return executions.map(({ id }) => id);
+	}
+
+	/**
+	 * The number of executions that are running and count towards the concurrent executions limit.
+	 * Concurrency control only applies to executions started from a webhook or trigger node.
+	 */
+	async getConcurrentExecutionsCount() {
+		const concurrentExecutionsCount = await this.count({
+			where: { status: 'running', mode: In(['webhook', 'trigger']) },
+		});
+
+		return concurrentExecutionsCount;
+	}
+
+	private async handleExecutionRunData(
+		data: string,
+		options: { unflattenData?: boolean } = {},
+	): Promise<IRunExecutionData | string | undefined> {
+		if (options.unflattenData) {
+			// Parse the serialized data (async for large payloads to avoid blocking the event loop).
+			const deserializedData: unknown = await parseFlatted(data);
+			// If it parses to an object, migrate and return it.
+			if (deserializedData) {
+				return migrateRunExecutionData(deserializedData as IRunExecutionDataAll);
+			}
+			return undefined;
+		}
+		// Just return the string data as-is.
+		return data;
+	}
+
+	async findByStopExecutionsFilter(
+		query: ExecutionSummaries.StopExecutionFilterQuery,
+	): Promise<Array<{ id: string }>> {
+		if (!query.status || query.status.length === 0) return [];
+
+		const where: FindOptionsWhere<ExecutionEntity> = {
+			status: In(query.status),
+		};
+
+		if (query.workflowId !== 'all') {
+			where.workflowId = query.workflowId;
+		}
+
+		const startedAt = startedAtCondition(query);
+		if (startedAt) where.startedAt = startedAt;
+
+		return await this.find({ select: ['id'], where });
+	}
+}

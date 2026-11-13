@@ -1,14 +1,20 @@
-import type {
-	IHookFunctions,
-	ILoadOptionsFunctions,
-	INodePropertyOptions,
-	INodeType,
-	INodeTypeDescription,
-	IWebhookFunctions,
-	IWebhookResponseData,
+import { randomBytes } from 'crypto';
+import {
+	NodeConnectionTypes,
+	requestPath,
+	type IHookFunctions,
+	type ILoadOptionsFunctions,
+	type INodePropertyOptions,
+	type INodeType,
+	type INodeTypeDescription,
+	type IWebhookFunctions,
+	type IWebhookResponseData,
 } from 'n8n-workflow';
 
 import { venafiApiRequest } from './GenericFunctions';
+import { verifySignature } from './VenafiTlsProtectCloudTriggerHelpers';
+
+const connectorName = (webhookUrl: string | undefined) => `n8n-webhook (${webhookUrl})`;
 
 export class VenafiTlsProtectCloudTrigger implements INodeType {
 	description: INodeTypeDescription = {
@@ -36,7 +42,7 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 			},
 		],
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
 			{
 				// eslint-disable-next-line n8n-nodes-base/node-param-display-name-wrong-for-dynamic-options
@@ -50,7 +56,7 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 				required: true,
 				default: [],
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				// eslint-disable-next-line n8n-nodes-base/node-param-display-name-wrong-for-dynamic-multi-options
@@ -64,7 +70,7 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 				required: true,
 				default: [],
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 		],
 	};
@@ -72,7 +78,11 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 	methods = {
 		loadOptions: {
 			async getActivityTypes(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const activitytypes = await venafiApiRequest.call(this, 'GET', '/v1/activitytypes');
+				const activitytypes = await venafiApiRequest.call(
+					this,
+					'GET',
+					requestPath`/v1/activitytypes`,
+				);
 				return activitytypes.map(
 					({ key, readableName }: { key: string; readableName: string }) => ({
 						name: readableName,
@@ -82,7 +92,11 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 			},
 			async getActivitySubTypes(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const resource = this.getCurrentNodeParameter('resource') as string;
-				const activitytypes = await venafiApiRequest.call(this, 'GET', '/v1/activitytypes');
+				const activitytypes = await venafiApiRequest.call(
+					this,
+					'GET',
+					requestPath`/v1/activitytypes`,
+				);
 				const activity = activitytypes.find(({ key }: { key: string }) => key === resource) as {
 					values: [{ key: string; readableName: string }];
 				};
@@ -101,22 +115,17 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 			async checkExists(this: IHookFunctions): Promise<boolean> {
 				const webhookUrl = this.getNodeWebhookUrl('default');
 
-				const { connectors } = await venafiApiRequest.call(this, 'GET', '/v1/connectors');
+				const { connectors } = await venafiApiRequest.call(
+					this,
+					'GET',
+					requestPath`/v1/connectors`,
+				);
 
-				for (const connector of connectors) {
-					const {
-						id,
-						status,
-						properties: {
-							target: {
-								connection: { url },
-							},
-						},
-					} = connector;
-
-					if (url === webhookUrl && status === 'Active') {
-						await venafiApiRequest.call(this, 'DELETE', `/v1/connectors/${id}`);
-						return false;
+				// The API does not return the connection URL, so match the name that `create` sets
+				const expectedName = connectorName(webhookUrl);
+				for (const { id, name } of connectors) {
+					if (name === expectedName) {
+						await venafiApiRequest.call(this, 'DELETE', requestPath`/v1/connectors/${id}`);
 					}
 				}
 				return false;
@@ -124,14 +133,16 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 			async create(this: IHookFunctions): Promise<boolean> {
 				const webhookUrl = this.getNodeWebhookUrl('default');
 				const resource = this.getNodeParameter('resource') as string;
+				const webhookSecret = randomBytes(32).toString('hex');
 				const body = {
-					name: `n8n-webhook (${webhookUrl})`,
+					name: connectorName(webhookUrl),
 					properties: {
 						connectorKind: 'WEBHOOK',
 						target: {
 							type: 'generic',
 							connection: {
 								url: webhookUrl,
+								secret: webhookSecret,
 							},
 						},
 						filter: {
@@ -140,7 +151,12 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 					},
 				};
 
-				const responseData = await venafiApiRequest.call(this, 'POST', '/v1/connectors', body);
+				const responseData = await venafiApiRequest.call(
+					this,
+					'POST',
+					requestPath`/v1/connectors`,
+					body,
+				);
 
 				if (responseData.id === undefined) {
 					// Required data is missing so was not successful
@@ -149,6 +165,7 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 
 				const webhookData = this.getWorkflowStaticData('node');
 				webhookData.webhookId = responseData.id as string;
+				webhookData.webhookSecret = webhookSecret;
 
 				return true;
 			},
@@ -157,7 +174,11 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 
 				if (webhookData.webhookId !== undefined) {
 					try {
-						await venafiApiRequest.call(this, 'DELETE', `/v1/connectors/${webhookData.webhookId}`);
+						await venafiApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/v1/connectors/${webhookData.webhookId}`,
+						);
 					} catch (error) {
 						return false;
 					}
@@ -165,6 +186,7 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 					// Remove from the static workflow data so that it is clear
 					// that no webhooks are registered anymore
 					delete webhookData.webhookId;
+					delete webhookData.webhookSecret;
 				}
 
 				return true;
@@ -180,6 +202,14 @@ export class VenafiTlsProtectCloudTrigger implements INodeType {
 			// Is a create webhook confirmation request
 			const res = this.getResponseObject();
 			res.status(200).end();
+			return {
+				noWebhookResponse: true,
+			};
+		}
+
+		if (!verifySignature.call(this)) {
+			const res = this.getResponseObject();
+			res.status(401).send('Unauthorized').end();
 			return {
 				noWebhookResponse: true,
 			};

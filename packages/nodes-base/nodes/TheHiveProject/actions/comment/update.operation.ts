@@ -4,9 +4,12 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { theHiveApiRequest } from '../../transport';
-import { commentRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { commentRLC } from '../../descriptions';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	commentRLC,
@@ -41,7 +44,12 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		message,
 	};
 
-	responseData = await theHiveApiRequest.call(this, 'PATCH', `/v1/comment/${commentId}`, body);
+	responseData = await theHiveApiRequest.call(
+		this,
+		'PATCH',
+		requestPath`/v1/comment/${commentId}`,
+		body,
+	);
 
 	const executionData = this.helpers.constructExecutionMetaData(wrapData(responseData), {
 		itemData: { item: i },

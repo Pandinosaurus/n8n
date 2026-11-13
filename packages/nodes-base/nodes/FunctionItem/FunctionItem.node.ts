@@ -1,6 +1,5 @@
-/* eslint-disable @typescript-eslint/no-loop-func */
-import type { NodeVMOptions } from '@n8n/vm2';
-import { NodeVM } from '@n8n/vm2';
+import type { NodeVMOptions } from 'vm2';
+import { NodeVM } from 'vm2';
 import type {
 	IExecuteFunctions,
 	IBinaryKeyData,
@@ -9,7 +8,13 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { deepCopy, NodeOperationError } from 'n8n-workflow';
+import {
+	NodeConnectionTypes,
+	deepCopy,
+	NodeOperationError,
+	CONSOLE_OUTPUT_REDACTED_MESSAGE,
+} from 'n8n-workflow';
+
 import { vmResolver } from '../Code/JavaScriptSandbox';
 
 export class FunctionItem implements INodeType {
@@ -17,6 +22,8 @@ export class FunctionItem implements INodeType {
 		displayName: 'Function Item',
 		name: 'functionItem',
 		hidden: true,
+		deprecated: true,
+		replacedByNodeType: 'n8n-nodes-base.code',
 		icon: 'fa:code',
 		group: ['transform'],
 		version: 1,
@@ -25,15 +32,9 @@ export class FunctionItem implements INodeType {
 			name: 'Function Item',
 			color: '#ddbb33',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		properties: [
-			{
-				displayName: 'A newer version of this node type is available, called the ‘Code’ node',
-				name: 'notice',
-				type: 'notice',
-				default: '',
-			},
 			{
 				displayName: 'JavaScript Code',
 				name: 'functionCode',
@@ -71,7 +72,7 @@ return item;`,
 		const cleanupData = (inputData: IDataObject): IDataObject => {
 			Object.keys(inputData).map((key) => {
 				if (inputData[key] !== null && typeof inputData[key] === 'object') {
-					if (inputData[key]!.constructor.name === 'Object') {
+					if (inputData[key].constructor.name === 'Object') {
 						// Is regular node.js object so check its data
 						inputData[key] = cleanupData(inputData[key] as IDataObject);
 					} else {
@@ -113,8 +114,8 @@ return item;`,
 						}
 						item.binary = data;
 					},
-					getNodeParameter: this.getNodeParameter,
-					getWorkflowStaticData: this.getWorkflowStaticData,
+					getNodeParameter: this.getNodeParameter.bind(this),
+					getWorkflowStaticData: this.getWorkflowStaticData.bind(this),
 					helpers: this.helpers,
 					item: item.json,
 					getBinaryDataAsync: async (): Promise<IBinaryKeyData | undefined> => {
@@ -126,7 +127,7 @@ return item;`,
 								)?.toString('base64');
 							}
 						}
-						// Retrun Data
+						// Return Data
 						return item.binary;
 					},
 					setBinaryDataAsync: async (data: IBinaryKeyData) => {
@@ -156,8 +157,12 @@ return item;`,
 				const dataProxy = this.getWorkflowDataProxy(itemIndex);
 				Object.assign(sandbox, dataProxy);
 
+				// Keep vm2 'inherit' (raw stdout) when the run is not redacted so output
+				// is byte-identical; redirect only when the resolved policy redacts it.
+				const redactConsole = mode !== 'manual' && this.isConsoleOutputRedacted();
+
 				const options: NodeVMOptions = {
-					console: mode === 'manual' ? 'redirect' : 'inherit',
+					console: mode === 'manual' || redactConsole ? 'redirect' : 'inherit',
 					sandbox,
 					require: vmResolver,
 				};
@@ -165,7 +170,9 @@ return item;`,
 				const vm = new NodeVM(options as unknown as NodeVMOptions);
 
 				if (mode === 'manual') {
-					vm.on('console.log', this.sendMessageToUI);
+					vm.on('console.log', this.sendMessageToUI.bind(this));
+				} else if (redactConsole) {
+					vm.on('console.log', () => console.log(CONSOLE_OUTPUT_REDACTED_MESSAGE));
 				}
 
 				// Get the code to execute

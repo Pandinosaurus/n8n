@@ -1,10 +1,19 @@
 import type { INodeProperties } from 'n8n-workflow';
 
+import { blocks, text } from './Blocks';
+import { filters } from './Filters';
+import {
+	databaseUrlExtractionRegexp,
+	databaseUrlValidationRegexp,
+	databasePageUrlExtractionRegexp,
+	databasePageUrlValidationRegexp,
+	idExtractionRegexp,
+	idValidationRegexp,
+} from '../constants';
 import { getConditions, getSearchFilters } from '../GenericFunctions';
 
-import { blocks, text } from './Blocks';
-
-import { filters } from './Filters';
+const databasePageSimplifyHint =
+	'When true, v1 returns id and properties under their original names, such as $json.Status. In v2, database pages return id, name, url, and property_ keys with snake_case names, such as $json.property_status. V2 replaces non-ASCII characters with separators before converting names. Rich-text values are strings. Status values use the status name when present. People values are arrays of email addresses, with {} for missing emails. Match expressions and verification output fixtures to the node version. When false, read the native properties object, including people entries when you need person names.';
 
 export const databasePageOperations: INodeProperties[] = [
 	{
@@ -24,7 +33,7 @@ export const databasePageOperations: INodeProperties[] = [
 			{
 				name: 'Create',
 				value: 'create',
-				description: 'Create a pages in a database',
+				description: 'Create a page in a database',
 				action: 'Create a database page',
 			},
 			{
@@ -109,21 +118,19 @@ export const databasePageFields: INodeProperties[] = [
 				name: 'url',
 				type: 'string',
 				placeholder:
-					'https://www.notion.so/0fe2f7de558b471eab07e9d871cdf4a9?v=f2d424ba0c404733a3f500c78c881610',
+					'https://www.notion.com/0fe2f7de558b471eab07e9d871cdf4a9?v=f2d424ba0c404733a3f500c78c881610',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
+							regex: databaseUrlValidationRegexp,
 							errorMessage: 'Not a valid Notion Database URL',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: databaseUrlExtractionRegexp,
 				},
 			},
 			{
@@ -135,17 +142,16 @@ export const databasePageFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
+							regex: idValidationRegexp,
 							errorMessage: 'Not a valid Notion Database ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -184,6 +190,7 @@ export const databasePageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: { propertyHint: databasePageSimplifyHint },
 	},
 	{
 		displayName: 'Properties',
@@ -210,7 +217,7 @@ export const databasePageFields: INodeProperties[] = [
 						name: 'key',
 						type: 'options',
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 						typeOptions: {
 							loadOptionsMethod: 'getDatabaseProperties',
 							loadOptionsDependsOn: ['databaseId'],
@@ -289,7 +296,7 @@ export const databasePageFields: INodeProperties[] = [
 						},
 						default: [],
 						description:
-							'Name of the options you want to set. Multiples can be defined separated by comma. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Name of the options you want to set. Multiples can be defined separated by comma. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Option Name or ID',
@@ -305,7 +312,7 @@ export const databasePageFields: INodeProperties[] = [
 						},
 						default: '',
 						description:
-							'Name of the option you want to set. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Name of the option you want to set. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Status Name or ID',
@@ -321,7 +328,7 @@ export const databasePageFields: INodeProperties[] = [
 						},
 						default: '',
 						description:
-							'Name of the option you want to set. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Name of the option you want to set. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Email',
@@ -372,7 +379,7 @@ export const databasePageFields: INodeProperties[] = [
 						},
 						default: [],
 						description:
-							'List of users. Multiples can be defined separated by comma. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'List of users. Multiples can be defined separated by comma. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Relation IDs',
@@ -493,7 +500,7 @@ export const databasePageFields: INodeProperties[] = [
 						},
 						default: 'default',
 						description:
-							'Time zone to use. By default n8n timezone is used. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Time zone to use. By default n8n timezone is used. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'File URLs',
@@ -551,7 +558,7 @@ export const databasePageFields: INodeProperties[] = [
 			},
 		},
 		default: {},
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		options: [
 			{
 				displayName: 'Icon Type',
@@ -595,21 +602,19 @@ export const databasePageFields: INodeProperties[] = [
 				displayName: 'Link',
 				name: 'url',
 				type: 'string',
-				placeholder: 'https://www.notion.so/My-Database-Page-b4eeb113e118403ba450af65ac25f0b9',
+				placeholder: 'https://www.notion.com/My-Database-Page-b4eeb113e118403ba450af65ac25f0b9',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
+							regex: databasePageUrlValidationRegexp,
 							errorMessage: 'Not a valid Notion Database Page URL',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: databasePageUrlExtractionRegexp,
 				},
 			},
 			{
@@ -621,17 +626,16 @@ export const databasePageFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
+							regex: idValidationRegexp,
 							errorMessage: 'Not a valid Notion Database Page ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -654,6 +658,7 @@ export const databasePageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: { propertyHint: databasePageSimplifyHint },
 	},
 	{
 		displayName: 'Properties',
@@ -680,7 +685,7 @@ export const databasePageFields: INodeProperties[] = [
 						name: 'key',
 						type: 'options',
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 						typeOptions: {
 							loadOptionsMethod: 'getDatabaseIdFromPage',
 							loadOptionsDependsOn: ['pageId'],
@@ -750,7 +755,7 @@ export const databasePageFields: INodeProperties[] = [
 						name: 'multiSelectValue',
 						type: 'multiOptions',
 						description:
-							'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 						typeOptions: {
 							loadOptionsMethod: 'getDatabaseOptionsFromPage',
 						},
@@ -766,7 +771,7 @@ export const databasePageFields: INodeProperties[] = [
 						name: 'selectValue',
 						type: 'options',
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 						typeOptions: {
 							loadOptionsMethod: 'getDatabaseOptionsFromPage',
 						},
@@ -791,7 +796,7 @@ export const databasePageFields: INodeProperties[] = [
 						},
 						default: '',
 						description:
-							'Name of the option you want to set. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Name of the option you want to set. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Email',
@@ -841,7 +846,7 @@ export const databasePageFields: INodeProperties[] = [
 						},
 						default: [],
 						description:
-							'List of users. Multiples can be defined separated by comma. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'List of users. Multiples can be defined separated by comma. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'Relation IDs',
@@ -962,7 +967,7 @@ export const databasePageFields: INodeProperties[] = [
 						},
 						default: 'default',
 						description:
-							'Time zone to use. By default n8n timezone is used. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+							'Time zone to use. By default n8n timezone is used. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 					},
 					{
 						displayName: 'File URLs',
@@ -1019,7 +1024,7 @@ export const databasePageFields: INodeProperties[] = [
 			},
 		},
 		default: {},
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		options: [
 			{
 				displayName: 'Icon Type',
@@ -1064,21 +1069,19 @@ export const databasePageFields: INodeProperties[] = [
 				displayName: 'Link',
 				name: 'url',
 				type: 'string',
-				placeholder: 'https://www.notion.so/My-Database-Page-b4eeb113e118403ba450af65ac25f0b9',
+				placeholder: 'https://www.notion.com/My-Database-Page-b4eeb113e118403ba450af65ac25f0b9',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
+							regex: databasePageUrlValidationRegexp,
 							errorMessage: 'Not a valid Notion Database Page URL',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?(?:[a-zA-Z0-9-]{2,}-)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: databasePageUrlExtractionRegexp,
 				},
 			},
 			{
@@ -1090,17 +1093,16 @@ export const databasePageFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
+							regex: idValidationRegexp,
 							errorMessage: 'Not a valid Notion Database Page ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -1129,6 +1131,7 @@ export const databasePageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: { propertyHint: databasePageSimplifyHint },
 	},
 	/* -------------------------------------------------------------------------- */
 	/*                                databasePage:getAll                         */
@@ -1155,21 +1158,19 @@ export const databasePageFields: INodeProperties[] = [
 				name: 'url',
 				type: 'string',
 				placeholder:
-					'https://www.notion.so/0fe2f7de558b471eab07e9d871cdf4a9?v=f2d424ba0c404733a3f500c78c881610',
+					'https://www.notion.com/0fe2f7de558b471eab07e9d871cdf4a9?v=f2d424ba0c404733a3f500c78c881610',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
-							errorMessage: 'Not a valid Notion Database URL',
+							regex: databasePageUrlValidationRegexp,
+							errorMessage: 'Not a valid Notion Database Page URL',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: databasePageUrlExtractionRegexp,
 				},
 			},
 			{
@@ -1181,17 +1182,16 @@ export const databasePageFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
-							errorMessage: 'Not a valid Notion Database ID',
+							regex: idValidationRegexp,
+							errorMessage: 'Not a valid Notion Database Page ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -1228,7 +1228,6 @@ export const databasePageFields: INodeProperties[] = [
 		},
 		typeOptions: {
 			minValue: 1,
-			maxValue: 100,
 		},
 		default: 50,
 		description: 'Max number of results to return',
@@ -1245,6 +1244,7 @@ export const databasePageFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: { propertyHint: databasePageSimplifyHint },
 	},
 	...getSearchFilters('databasePage'),
 	{
@@ -1362,7 +1362,7 @@ export const databasePageFields: INodeProperties[] = [
 								},
 								default: '',
 								description:
-									'The name of the property to filter by. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+									'The name of the property to filter by. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 							},
 							{
 								displayName: 'Property Name',

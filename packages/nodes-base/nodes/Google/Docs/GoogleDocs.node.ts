@@ -8,8 +8,9 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, requestPath, requestUrl } from 'n8n-workflow';
 
+import { documentFields, documentOperations } from './DocumentDescription';
 import {
 	extractID,
 	googleApiRequest,
@@ -17,9 +18,6 @@ import {
 	hasKeys,
 	upperFirst,
 } from './GenericFunctions';
-
-import { documentFields, documentOperations } from './DocumentDescription';
-
 import type { IUpdateBody, IUpdateFields } from './interfaces';
 
 export class GoogleDocs implements INodeType {
@@ -31,11 +29,13 @@ export class GoogleDocs implements INodeType {
 		version: [1, 2],
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		description: 'Consume Google Docs API.',
+		schemaPath: 'Google/Docs',
 		defaults: {
 			name: 'Google Docs',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
+		usableAsTool: true,
 		credentials: [
 			{
 				name: 'googleApi',
@@ -139,10 +139,10 @@ export class GoogleDocs implements INodeType {
 						this,
 						'drives',
 						'GET',
-						'',
+						requestPath``,
 						{},
 						{},
-						'https://www.googleapis.com/drive/v3/drives',
+						requestUrl`https://www.googleapis.com/drive/v3/drives`,
 					);
 				} catch (error) {
 					throw new NodeApiError(this.getNode(), error as JsonObject, {
@@ -165,7 +165,7 @@ export class GoogleDocs implements INodeType {
 						value: 'default',
 					},
 				];
-				const driveId = this.getNodeParameter('driveId');
+				const driveId = this.getNodeParameter('driveId', 'myDrive');
 
 				const qs = {
 					q: `mimeType = \'application/vnd.google-apps.folder\' ${
@@ -180,10 +180,10 @@ export class GoogleDocs implements INodeType {
 						this,
 						'files',
 						'GET',
-						'',
+						requestPath``,
 						{},
 						qs,
-						'https://www.googleapis.com/drive/v3/files',
+						requestUrl`https://www.googleapis.com/drive/v3/files`,
 					);
 				} catch (error) {
 					throw new NodeApiError(this.getNode(), error as JsonObject, {
@@ -229,10 +229,10 @@ export class GoogleDocs implements INodeType {
 						responseData = await googleApiRequest.call(
 							this,
 							'POST',
-							'',
+							requestPath``,
 							body,
 							{},
-							'https://www.googleapis.com/drive/v3/files',
+							requestUrl`https://www.googleapis.com/drive/v3/files`,
 						);
 					} else if (operation === 'get') {
 						// https://developers.google.com/docs/api/reference/rest/v1/documents/get
@@ -244,7 +244,11 @@ export class GoogleDocs implements INodeType {
 						if (!documentId) {
 							documentId = documentURL;
 						}
-						responseData = await googleApiRequest.call(this, 'GET', `/documents/${documentId}`);
+						responseData = await googleApiRequest.call(
+							this,
+							'GET',
+							requestPath`/documents/${documentId}`,
+						);
 						if (simple) {
 							const content = (responseData.body.content as IDataObject[])
 								.reduce((arr: string[], contentItem) => {
@@ -494,7 +498,7 @@ export class GoogleDocs implements INodeType {
 						responseData = await googleApiRequest.call(
 							this,
 							'POST',
-							`/documents/${documentId}:batchUpdate`,
+							requestPath`/documents/${documentId}:batchUpdate`,
 							body,
 						);
 

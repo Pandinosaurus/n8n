@@ -4,28 +4,32 @@ import type {
 	INodeTypeDescription,
 	ITriggerResponse,
 } from 'n8n-workflow';
+import { NodeConnectionTypes } from 'n8n-workflow';
 
 export class ManualTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Manual Trigger',
 		name: 'manualTrigger',
-		icon: 'fa:mouse-pointer',
+		icon: 'node:manual-trigger',
+		iconColor: 'black',
 		group: ['trigger'],
 		version: 1,
 		description: 'Runs the flow on clicking a button in n8n',
 		eventTriggerDescription: '',
 		maxNodes: 1,
 		defaults: {
-			name: 'When clicking "Test workflow"',
-			color: '#909298',
+			name: 'When clicking ‘Execute workflow’',
 		},
 
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
+		builderHint: {
+			searchHint: 'There can only be one manual trigger node per workflow',
+		},
 		properties: [
 			{
 				displayName:
-					'This node is where a manual workflow execution starts. To make one, go back to the canvas and click test workflow’',
+					'This node is where the workflow execution starts (when you click the ‘test’ button on the canvas).<br><br> <a data-action="showNodeCreator">Explore other ways to trigger your workflow</a> (e.g on a schedule, or a webhook)',
 				name: 'notice',
 				type: 'notice',
 				default: '',

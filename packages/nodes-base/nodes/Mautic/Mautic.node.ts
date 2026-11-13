@@ -1,3 +1,4 @@
+import { snakeCase } from 'change-case';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -8,22 +9,15 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
-
-import { snakeCase } from 'change-case';
-import { mauticApiRequest, mauticApiRequestAllItems, validateJSON } from './GenericFunctions';
-
-import { contactFields, contactOperations } from './ContactDescription';
-
-import { segmentEmailFields, segmentEmailOperations } from './SegmentEmailDescription';
-
-import { companyFields, companyOperations } from './CompanyDescription';
-
-import { companyContactFields, companyContactOperations } from './CompanyContactDescription';
-
-import { contactSegmentFields, contactSegmentOperations } from './ContactSegmentDescription';
+import { NodeConnectionTypes, NodeApiError, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { campaignContactFields, campaignContactOperations } from './CampaignContactDescription';
+import { companyContactFields, companyContactOperations } from './CompanyContactDescription';
+import { companyFields, companyOperations } from './CompanyDescription';
+import { contactFields, contactOperations } from './ContactDescription';
+import { contactSegmentFields, contactSegmentOperations } from './ContactSegmentDescription';
+import { mauticApiRequest, mauticApiRequestAllItems, validateJSON } from './GenericFunctions';
+import { segmentEmailFields, segmentEmailOperations } from './SegmentEmailDescription';
 
 export class Mautic implements INodeType {
 	description: INodeTypeDescription = {
@@ -37,8 +31,9 @@ export class Mautic implements INodeType {
 		defaults: {
 			name: 'Mautic',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'mauticApi',
@@ -140,7 +135,7 @@ export class Mautic implements INodeType {
 					this,
 					'companies',
 					'GET',
-					'/companies',
+					requestPath`/companies`,
 				);
 				for (const company of companies) {
 					returnData.push({
@@ -154,7 +149,7 @@ export class Mautic implements INodeType {
 			// select them easily
 			async getTags(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const tags = await mauticApiRequestAllItems.call(this, 'tags', 'GET', '/tags');
+				const tags = await mauticApiRequestAllItems.call(this, 'tags', 'GET', requestPath`/tags`);
 				for (const tag of tags) {
 					returnData.push({
 						name: tag.tag,
@@ -167,7 +162,12 @@ export class Mautic implements INodeType {
 			// select them easily
 			async getStages(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const stages = await mauticApiRequestAllItems.call(this, 'stages', 'GET', '/stages');
+				const stages = await mauticApiRequestAllItems.call(
+					this,
+					'stages',
+					'GET',
+					requestPath`/stages`,
+				);
 				for (const stage of stages) {
 					returnData.push({
 						name: stage.name,
@@ -184,7 +184,7 @@ export class Mautic implements INodeType {
 					this,
 					'fields',
 					'GET',
-					'/fields/company',
+					requestPath`/fields/company`,
 				);
 				for (const field of fields) {
 					returnData.push({
@@ -200,7 +200,7 @@ export class Mautic implements INodeType {
 					this,
 					'fields',
 					'GET',
-					'/fields/company',
+					requestPath`/fields/company`,
 				);
 				for (const field of fields) {
 					if (field.alias === 'companyindustry') {
@@ -222,7 +222,7 @@ export class Mautic implements INodeType {
 					this,
 					'fields',
 					'GET',
-					'/fields/contact',
+					requestPath`/fields/contact`,
 				);
 				for (const field of fields) {
 					returnData.push({
@@ -236,7 +236,12 @@ export class Mautic implements INodeType {
 			// select them easily
 			async getSegments(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const segments = await mauticApiRequestAllItems.call(this, 'lists', 'GET', '/segments');
+				const segments = await mauticApiRequestAllItems.call(
+					this,
+					'lists',
+					'GET',
+					requestPath`/segments`,
+				);
 				for (const segment of segments) {
 					returnData.push({
 						name: segment.name,
@@ -253,7 +258,7 @@ export class Mautic implements INodeType {
 					this,
 					'campaigns',
 					'GET',
-					'/campaigns',
+					requestPath`/campaigns`,
 				);
 				for (const campaign of campaings) {
 					returnData.push({
@@ -267,7 +272,12 @@ export class Mautic implements INodeType {
 			// select them easily
 			async getEmails(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const emails = await mauticApiRequestAllItems.call(this, 'emails', 'GET', '/emails');
+				const emails = await mauticApiRequestAllItems.call(
+					this,
+					'emails',
+					'GET',
+					requestPath`/emails`,
+				);
 				for (const email of emails) {
 					returnData.push({
 						name: email.name,
@@ -280,7 +290,12 @@ export class Mautic implements INodeType {
 			// select them easily
 			async getSegmentEmails(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const emails = await mauticApiRequestAllItems.call(this, 'emails', 'GET', '/emails');
+				const emails = await mauticApiRequestAllItems.call(
+					this,
+					'emails',
+					'GET',
+					requestPath`/emails`,
+				);
 				for (const email of emails) {
 					if (email.emailType === 'list') {
 						returnData.push({
@@ -295,7 +310,12 @@ export class Mautic implements INodeType {
 			// select them easily
 			async getCampaignEmails(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const emails = await mauticApiRequestAllItems.call(this, 'emails', 'GET', '/emails');
+				const emails = await mauticApiRequestAllItems.call(
+					this,
+					'emails',
+					'GET',
+					requestPath`/emails`,
+				);
 				for (const email of emails) {
 					if (email.emailType === 'template') {
 						returnData.push({
@@ -419,7 +439,12 @@ export class Mautic implements INodeType {
 						}
 
 						Object.assign(body, rest);
-						responseData = await mauticApiRequest.call(this, 'POST', '/companies/new', body);
+						responseData = await mauticApiRequest.call(
+							this,
+							'POST',
+							requestPath`/companies/new`,
+							body,
+						);
 						responseData = responseData.company;
 						if (simple) {
 							responseData = responseData.fields.all;
@@ -529,7 +554,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'PATCH',
-							`/companies/${companyId}/edit`,
+							requestPath`/companies/${companyId}/edit`,
 							body,
 						);
 						responseData = responseData.company;
@@ -541,7 +566,11 @@ export class Mautic implements INodeType {
 					if (operation === 'get') {
 						const companyId = this.getNodeParameter('companyId', i) as string;
 						const simple = this.getNodeParameter('simple', i) as boolean;
-						responseData = await mauticApiRequest.call(this, 'GET', `/companies/${companyId}`);
+						responseData = await mauticApiRequest.call(
+							this,
+							'GET',
+							requestPath`/companies/${companyId}`,
+						);
 						responseData = responseData.company;
 						if (simple) {
 							responseData = responseData.fields.all;
@@ -558,14 +587,20 @@ export class Mautic implements INodeType {
 								this,
 								'companies',
 								'GET',
-								'/companies',
+								requestPath`/companies`,
 								{},
 								qs,
 							);
 						} else {
 							qs.limit = this.getNodeParameter('limit', i);
 							qs.start = 0;
-							responseData = await mauticApiRequest.call(this, 'GET', '/companies', {}, qs);
+							responseData = await mauticApiRequest.call(
+								this,
+								'GET',
+								requestPath`/companies`,
+								{},
+								qs,
+							);
 							if (responseData.errors) {
 								throw new NodeApiError(this.getNode(), responseData as JsonObject);
 							}
@@ -584,7 +619,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'DELETE',
-							`/companies/${companyId}/delete`,
+							requestPath`/companies/${companyId}/delete`,
 						);
 						responseData = responseData.company;
 						if (simple) {
@@ -692,7 +727,12 @@ export class Mautic implements INodeType {
 						if (additionalFields.website) {
 							body.website = additionalFields.website as string;
 						}
-						responseData = await mauticApiRequest.call(this, 'POST', '/contacts/new', body);
+						responseData = await mauticApiRequest.call(
+							this,
+							'POST',
+							requestPath`/contacts/new`,
+							body,
+						);
 						responseData = [responseData.contact];
 						if (options.rawData === false) {
 							responseData = responseData.map((item) => item.fields.all);
@@ -810,7 +850,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'PATCH',
-							`/contacts/${contactId}/edit`,
+							requestPath`/contacts/${contactId}/edit`,
 							body,
 						);
 						responseData = [responseData.contact];
@@ -822,7 +862,11 @@ export class Mautic implements INodeType {
 					if (operation === 'get') {
 						const options = this.getNodeParameter('options', i);
 						const contactId = this.getNodeParameter('contactId', i) as string;
-						responseData = await mauticApiRequest.call(this, 'GET', `/contacts/${contactId}`);
+						responseData = await mauticApiRequest.call(
+							this,
+							'GET',
+							requestPath`/contacts/${contactId}`,
+						);
 						responseData = [responseData.contact];
 						if (options.rawData === false) {
 							responseData = responseData.map((item) => item.fields.all);
@@ -845,14 +889,20 @@ export class Mautic implements INodeType {
 								this,
 								'contacts',
 								'GET',
-								'/contacts',
+								requestPath`/contacts`,
 								{},
 								qs,
 							);
 						} else {
 							qs.limit = this.getNodeParameter('limit', i);
 							qs.start = 0;
-							responseData = await mauticApiRequest.call(this, 'GET', '/contacts', {}, qs);
+							responseData = await mauticApiRequest.call(
+								this,
+								'GET',
+								requestPath`/contacts`,
+								{},
+								qs,
+							);
 							if (responseData.errors) {
 								throw new NodeApiError(this.getNode(), responseData as JsonObject);
 							}
@@ -871,7 +921,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'DELETE',
-							`/contacts/${contactId}/delete`,
+							requestPath`/contacts/${contactId}/delete`,
 						);
 						responseData = [responseData.contact];
 						if (options.rawData === false) {
@@ -885,7 +935,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/emails/${campaignEmailId}/contact/${contactId}/send`,
+							requestPath`/emails/${campaignEmailId}/contact/${contactId}/send`,
 						);
 					}
 					//https://developer.mautic.org/#add-do-not-contact
@@ -902,7 +952,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/contacts/${contactId}/dnc/${channel}/${action}`,
+							requestPath`/contacts/${contactId}/dnc/${channel}/${action}`,
 							body,
 						);
 						responseData = responseData.contact;
@@ -918,7 +968,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/contacts/${contactId}/points/${path}/${points}`,
+							requestPath`/contacts/${contactId}/points/${path}/${points}`,
 						);
 					}
 				}
@@ -931,7 +981,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/segments/${segmentId}/contact/${contactId}/add`,
+							requestPath`/segments/${segmentId}/contact/${contactId}/add`,
 						);
 					}
 					//https://developer.mautic.org/#remove-contact-from-a-segment
@@ -941,7 +991,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/segments/${segmentId}/contact/${contactId}/remove`,
+							requestPath`/segments/${segmentId}/contact/${contactId}/remove`,
 						);
 					}
 				}
@@ -954,7 +1004,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/campaigns/${campaignId}/contact/${contactId}/add`,
+							requestPath`/campaigns/${campaignId}/contact/${contactId}/add`,
 						);
 					}
 					//https://developer.mautic.org/#remove-contact-from-a-campaign
@@ -964,7 +1014,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/campaigns/${campaignId}/contact/${contactId}/remove`,
+							requestPath`/campaigns/${campaignId}/contact/${contactId}/remove`,
 						);
 					}
 				}
@@ -976,7 +1026,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/emails/${segmentEmailId}/send`,
+							requestPath`/emails/${segmentEmailId}/send`,
 						);
 					}
 				}
@@ -989,7 +1039,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/companies/${companyId}/contact/${contactId}/add`,
+							requestPath`/companies/${companyId}/contact/${contactId}/add`,
 							{},
 						);
 						// responseData = responseData.company;
@@ -1004,7 +1054,7 @@ export class Mautic implements INodeType {
 						responseData = await mauticApiRequest.call(
 							this,
 							'POST',
-							`/companies/${companyId}/contact/${contactId}/remove`,
+							requestPath`/companies/${companyId}/contact/${contactId}/remove`,
 							{},
 						);
 						// responseData = responseData.company;

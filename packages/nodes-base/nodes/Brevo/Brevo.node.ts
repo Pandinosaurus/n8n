@@ -1,5 +1,7 @@
 /* eslint-disable n8n-nodes-base/node-filename-against-convention */
 import type { INodeType, INodeTypeDescription } from 'n8n-workflow';
+import { NodeConnectionTypes } from 'n8n-workflow';
+
 import { attributeFields, attributeOperations } from './AttributeDescription';
 import { contactFields, contactOperations } from './ContactDescription';
 import { emailFields, emailOperations } from './EmailDescription';
@@ -12,14 +14,15 @@ export class Brevo implements INodeType {
 		name: 'sendInBlue',
 		icon: 'file:brevo.svg',
 		group: ['transform'],
-		version: 1,
+		version: [1, 1.1],
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		description: 'Consume Brevo API',
 		defaults: {
 			name: 'Brevo',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'sendInBlueApi',

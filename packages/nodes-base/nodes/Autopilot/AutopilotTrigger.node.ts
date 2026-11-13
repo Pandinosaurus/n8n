@@ -1,3 +1,4 @@
+import { snakeCase } from 'change-case';
 import type {
 	IHookFunctions,
 	IWebhookFunctions,
@@ -6,8 +7,8 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
-import { snakeCase } from 'change-case';
 import { autopilotApiRequest } from './GenericFunctions';
 
 export class AutopilotTrigger implements INodeType {
@@ -23,7 +24,7 @@ export class AutopilotTrigger implements INodeType {
 			name: 'Autopilot Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'autopilotApi',
@@ -85,7 +86,11 @@ export class AutopilotTrigger implements INodeType {
 				const webhookData = this.getWorkflowStaticData('node');
 				const webhookUrl = this.getNodeWebhookUrl('default');
 				const event = this.getNodeParameter('event') as string;
-				const { hooks: webhooks } = await autopilotApiRequest.call(this, 'GET', '/hooks');
+				const { hooks: webhooks } = await autopilotApiRequest.call(
+					this,
+					'GET',
+					requestPath`/hooks`,
+				);
 				for (const webhook of webhooks) {
 					if (webhook.target_url === webhookUrl && webhook.event === snakeCase(event)) {
 						webhookData.webhookId = webhook.hook_id;
@@ -102,14 +107,18 @@ export class AutopilotTrigger implements INodeType {
 					event: snakeCase(event),
 					target_url: webhookUrl,
 				};
-				const webhook = await autopilotApiRequest.call(this, 'POST', '/hook', body);
+				const webhook = await autopilotApiRequest.call(this, 'POST', requestPath`/hook`, body);
 				webhookData.webhookId = webhook.hook_id;
 				return true;
 			},
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				try {
-					await autopilotApiRequest.call(this, 'DELETE', `/hook/${webhookData.webhookId}`);
+					await autopilotApiRequest.call(
+						this,
+						'DELETE',
+						requestPath`/hook/${webhookData.webhookId}`,
+					);
 				} catch (error) {
 					return false;
 				}

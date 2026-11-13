@@ -1,0 +1,666 @@
+import { Container } from '@n8n/di';
+import type {
+	IRunExecutionData,
+	ContextType,
+	IContextObject,
+	INode,
+	OnError,
+	Workflow,
+	ITaskMetadata,
+	ISourceData,
+	IExecuteData,
+	IWorkflowExecuteAdditionalData,
+	ExecuteWorkflowData,
+	RelatedExecution,
+	IExecuteWorkflowInfo,
+	IExecutionContext,
+	IRun,
+} from 'n8n-workflow';
+import { NodeHelpers, WAIT_FOR_SUB_EXECUTION } from 'n8n-workflow';
+import { UnexpectedError } from '@n8n/errors';
+import { captor, mock, type MockProxy } from 'vitest-mock-extended';
+
+import { BinaryDataService } from '@/binary-data/binary-data.service';
+import { PLACEHOLDER_EMPTY_EXECUTION_ID } from '@/constants';
+import type { ExecutionLifecycleHooks } from '@/execution-engine/execution-lifecycle-hooks';
+
+import type { BaseExecuteContext } from '../base-execute-context';
+
+const binaryDataService = mock<BinaryDataService>();
+Container.set(BinaryDataService, binaryDataService);
+
+export const describeCommonTests = (
+	context: BaseExecuteContext,
+	{
+		abortSignal,
+		node,
+		workflow,
+		runExecutionData,
+		executeData,
+	}: {
+		abortSignal: AbortSignal;
+		node: INode;
+		workflow: Workflow;
+		runExecutionData: IRunExecutionData;
+		executeData: IExecuteData;
+	},
+) => {
+	const additionalData = context.additionalData as MockProxy<IWorkflowExecuteAdditionalData>;
+
+	describe('getRuntimeCredential', () => {
+		beforeEach(() => {
+			additionalData.getRuntimeCredential.mockReset();
+		});
+
+		it('forwards the alias to the additionalData callback and returns its value', async () => {
+			additionalData.getRuntimeCredential.mockResolvedValue('Bearer xyz');
+
+			const result = await context.getRuntimeCredential('api_key');
+
+			expect(result).toBe('Bearer xyz');
+			expect(additionalData.getRuntimeCredential).toHaveBeenCalledWith(runExecutionData, 'api_key');
+		});
+
+		it('returns undefined when the underlying callback yields undefined', async () => {
+			additionalData.getRuntimeCredential.mockResolvedValue(undefined);
+
+			const result = await context.getRuntimeCredential('missing');
+
+			expect(result).toBeUndefined();
+		});
+	});
+
+	describe('getExecutionCancelSignal', () => {
+		it('should return the abort signal', () => {
+			expect(context.getExecutionCancelSignal()).toBe(abortSignal);
+		});
+	});
+
+	describe('getExecutionContext', () => {
+		it('should return execution context when runtimeData exists', () => {
+			const mockContext: IExecutionContext = {
+				version: 1,
+				establishedAt: Date.now(),
+				source: 'manual',
+				credentials: 'encrypted-credential-data',
+			};
+
+			runExecutionData.executionData = {
+				contextData: {},
+				runtimeData: mockContext,
+				nodeExecutionStack: [],
+				metadata: {},
+				waitingExecution: {},
+				waitingExecutionSource: null,
+			};
+
+			const result = context.getExecutionContext();
+
+			expect(result).toEqual(mockContext);
+			expect(result?.version).toBe(1);
+			expect(result?.establishedAt).toBeDefined();
+		});
+
+		it('should return undefined when executionData is not set', () => {
+			runExecutionData.executionData = undefined;
+
+			expect(context.getExecutionContext()).toBeUndefined();
+		});
+
+		it('should return undefined when runtimeData is not set', () => {
+			runExecutionData.executionData = {
+				contextData: {},
+				runtimeData: undefined,
+				nodeExecutionStack: [],
+				metadata: {},
+				waitingExecution: {},
+				waitingExecutionSource: null,
+			};
+
+			expect(context.getExecutionContext()).toBeUndefined();
+		});
+
+		it('should handle optional credentials field', () => {
+			const contextWithoutCredentials: IExecutionContext = {
+				version: 1,
+				establishedAt: Date.now(),
+				source: 'manual',
+			};
+
+			runExecutionData.executionData = {
+				contextData: {},
+				runtimeData: contextWithoutCredentials,
+				nodeExecutionStack: [],
+				metadata: {},
+				waitingExecution: {},
+				waitingExecutionSource: null,
+			};
+
+			const result = context.getExecutionContext();
+
+			expect(result).toEqual(contextWithoutCredentials);
+			expect(result?.credentials).toBeUndefined();
+		});
+	});
+
+	describe('onExecutionCancellation', () => {
+		it('registers the handler and triggers it when the signal aborts', () => {
+			const handler = vi.fn();
+			context.onExecutionCancellation(handler);
+
+			const fnCaptor = captor<() => void>();
+			expect(abortSignal.addEventListener).toHaveBeenCalledWith('abort', fnCaptor);
+			expect(handler).not.toHaveBeenCalled();
+
+			fnCaptor.value();
+			expect(abortSignal.removeEventListener).toHaveBeenCalledWith('abort', fnCaptor);
+			expect(handler).toHaveBeenCalled();
+		});
+	});
+
+	describe('onExecutionFinish', () => {
+		const hooks = mock<ExecutionLifecycleHooks>();
+		const originalHooks = additionalData.hooks;
+
+		beforeEach(() => {
+			vi.mocked(hooks.addHandler).mockClear();
+			additionalData.hooks = hooks;
+		});
+
+		afterEach(() => {
+			additionalData.hooks = originalHooks;
+		});
+
+		const registeredHandler = () => {
+			const fnCaptor = captor<(run: IRun) => Promise<void>>();
+			expect(hooks.addHandler).toHaveBeenLastCalledWith('workflowExecuteAfter', fnCaptor);
+			return fnCaptor.value;
+		};
+
+		it('invokes the handler once the execution ends', async () => {
+			const handler = vi.fn();
+			context.onExecutionFinish(handler);
+
+			await registeredHandler()(mock<IRun>({ status: 'success' }));
+
+			expect(handler).toHaveBeenCalledTimes(1);
+		});
+
+		it('does not invoke the handler when the execution pauses into the waiting state', async () => {
+			const handler = vi.fn();
+			context.onExecutionFinish(handler);
+
+			await registeredHandler()(mock<IRun>({ status: 'waiting' }));
+
+			expect(handler).not.toHaveBeenCalled();
+		});
+
+		it('contains handler errors so the lifecycle hook chain cannot fail', async () => {
+			const handler = vi.fn().mockRejectedValue(new Error('cleanup failed'));
+			context.onExecutionFinish(handler);
+
+			await expect(registeredHandler()(mock<IRun>({ status: 'success' }))).resolves.toBeUndefined();
+			expect(handler).toHaveBeenCalledTimes(1);
+		});
+
+		it('does nothing when lifecycle hooks are unavailable', () => {
+			additionalData.hooks = undefined;
+
+			expect(() => context.onExecutionFinish(vi.fn())).not.toThrow();
+		});
+	});
+
+	describe('continueOnFail', () => {
+		afterEach(() => {
+			node.onError = undefined;
+			node.continueOnFail = false;
+		});
+
+		it('should return false for nodes by default', () => {
+			expect(context.continueOnFail()).toEqual(false);
+		});
+
+		it('should return true if node has continueOnFail set to true', () => {
+			node.continueOnFail = true;
+			expect(context.continueOnFail()).toEqual(true);
+		});
+
+		test.each([
+			['continueRegularOutput', true],
+			['continueErrorOutput', true],
+			['stopWorkflow', false],
+		])('if node has onError set to %s, it should return %s', (onError, expected) => {
+			node.onError = onError as OnError;
+			expect(context.continueOnFail()).toEqual(expected);
+		});
+	});
+
+	describe('getContext', () => {
+		it('should return the context object', () => {
+			const contextType: ContextType = 'node';
+			const expectedContext = mock<IContextObject>();
+			const getContextSpy = vi.spyOn(NodeHelpers, 'getContext');
+			getContextSpy.mockReturnValue(expectedContext);
+
+			expect(context.getContext(contextType)).toEqual(expectedContext);
+
+			expect(getContextSpy).toHaveBeenCalledWith(runExecutionData, contextType, node);
+
+			getContextSpy.mockRestore();
+		});
+	});
+
+	describe('sendMessageToUI', () => {
+		it('should send console messages to the frontend', () => {
+			context.sendMessageToUI('Testing', 1, 2, {});
+			expect(additionalData.sendDataToUI).toHaveBeenCalledWith('sendConsoleMessage', {
+				source: '[Node: "Test Node"]',
+				messages: ['Testing', 1, 2, {}],
+			});
+		});
+	});
+
+	describe('logAiEvent', () => {
+		it('should log the AI event correctly', () => {
+			const eventName = 'ai-tool-called';
+			const msg = 'test message';
+
+			context.logAiEvent(eventName, msg);
+
+			expect(additionalData.logAiEvent).toHaveBeenCalledWith(eventName, {
+				executionId: additionalData.executionId,
+				nodeName: node.name,
+				workflowName: workflow.name,
+				nodeType: node.type,
+				workflowId: workflow.id,
+				msg,
+			});
+		});
+	});
+
+	describe('getInputSourceData', () => {
+		it('should return the input source data correctly', () => {
+			const inputSourceData = mock<ISourceData>();
+			executeData.source = { main: [inputSourceData] };
+
+			expect(context.getInputSourceData()).toEqual(inputSourceData);
+		});
+
+		it('should throw an error if the source data is missing', () => {
+			executeData.source = null;
+
+			expect(() => context.getInputSourceData()).toThrow(UnexpectedError);
+		});
+	});
+
+	describe('setMetadata', () => {
+		it('sets metadata on execution data', () => {
+			const metadata: ITaskMetadata = {
+				subExecution: {
+					workflowId: '123',
+					executionId: 'xyz',
+				},
+			};
+
+			expect(context.getExecuteData().metadata?.subExecution).toEqual(undefined);
+			context.setMetadata(metadata);
+			expect(context.getExecuteData().metadata?.subExecution).toEqual(metadata.subExecution);
+		});
+
+		it('deep-merges the nested tracing key instead of clobbering it', () => {
+			context.setMetadata({ tracing: { 'llm.tokens.total': 42, 'llm.cost.total': 0.01 } });
+			context.setMetadata({ tracing: { 'ai.agent.iterations': 3 } });
+
+			expect(context.getExecuteData().metadata?.tracing).toEqual({
+				'llm.tokens.total': 42,
+				'llm.cost.total': 0.01,
+				'ai.agent.iterations': 3,
+			});
+		});
+	});
+
+	describe('evaluateExpression', () => {
+		it('should evaluate the expression correctly', () => {
+			const expression = '$json.test';
+			const expectedResult = 'data';
+			// Touch the lazy proxy property so vi.spyOn can find it.
+			void workflow.expression.resolveSimpleParameterValue;
+			const resolveSimpleParameterValueSpy = vi.spyOn(
+				workflow.expression,
+				'resolveSimpleParameterValue',
+			);
+			resolveSimpleParameterValueSpy.mockReturnValue(expectedResult);
+
+			expect(context.evaluateExpression(expression, 0)).toEqual(expectedResult);
+
+			expect(resolveSimpleParameterValueSpy).toHaveBeenCalledWith(
+				`=${expression}`,
+				{},
+				runExecutionData,
+				0,
+				0,
+				node.name,
+				[],
+				'manual',
+				expect.objectContaining({}),
+				executeData,
+			);
+
+			resolveSimpleParameterValueSpy.mockRestore();
+		});
+	});
+
+	describe('putExecutionToWait', () => {
+		it('should set waitTill and execution status', async () => {
+			const waitTill = new Date();
+
+			await context.putExecutionToWait(waitTill);
+
+			expect(runExecutionData.waitTill).toEqual(waitTill);
+			expect(additionalData.setExecutionStatus).toHaveBeenCalledWith('waiting');
+		});
+	});
+
+	describe('executeWorkflow', () => {
+		const data = [[{ json: { test: true } }]];
+		const executeWorkflowData = mock<ExecuteWorkflowData>({ data });
+		const workflowInfo = mock<IExecuteWorkflowInfo>();
+		const parentExecution: RelatedExecution = {
+			executionId: 'parent_execution_id',
+			workflowId: 'parent_workflow_id',
+		};
+
+		it('should execute workflow and return data', async () => {
+			additionalData.executeWorkflow.mockResolvedValue(executeWorkflowData);
+
+			const result = await context.executeWorkflow(workflowInfo, undefined, undefined, {
+				parentExecution,
+			});
+
+			expect(result.data).toEqual(data);
+			expect(result).toBe(executeWorkflowData);
+		});
+
+		it('should put execution to wait if waitTill is returned', async () => {
+			const waitTill = new Date();
+			additionalData.executeWorkflow.mockResolvedValue({ ...executeWorkflowData, waitTill });
+
+			const result = await context.executeWorkflow(workflowInfo, undefined, undefined, {
+				parentExecution,
+			});
+
+			expect(additionalData.setExecutionStatus).toHaveBeenCalledWith('waiting');
+			expect(runExecutionData.waitTill).toEqual(WAIT_FOR_SUB_EXECUTION);
+			expect(result.waitTill).toBe(waitTill);
+		});
+
+		describe('tagging the parked task with its waiting sub-executions', () => {
+			beforeEach(() => {
+				delete executeData.metadata;
+			});
+
+			it('should record the id of a sub-execution that went into waiting', async () => {
+				additionalData.executeWorkflow.mockResolvedValue({
+					...executeWorkflowData,
+					executionId: 'child_1',
+					waitTill: new Date(),
+				});
+
+				await context.executeWorkflow(workflowInfo, undefined, undefined, { parentExecution });
+
+				expect(executeData.metadata?.waitingChildExecutionIds).toEqual(['child_1']);
+			});
+
+			it('should record every sub-execution that went into waiting during the same node run', async () => {
+				additionalData.executeWorkflow
+					.mockResolvedValueOnce({
+						...executeWorkflowData,
+						executionId: 'child_1',
+						waitTill: new Date(),
+					})
+					.mockResolvedValueOnce({
+						...executeWorkflowData,
+						executionId: 'child_2',
+						waitTill: new Date(),
+					});
+
+				await context.executeWorkflow(workflowInfo, undefined, undefined, { parentExecution });
+				await context.executeWorkflow(workflowInfo, undefined, undefined, { parentExecution });
+
+				expect(executeData.metadata?.waitingChildExecutionIds).toEqual(['child_1', 'child_2']);
+			});
+
+			it('should not record a sub-execution that ran to completion', async () => {
+				additionalData.executeWorkflow.mockResolvedValue({
+					...executeWorkflowData,
+					executionId: 'child_1',
+					waitTill: undefined,
+				});
+
+				await context.executeWorkflow(workflowInfo, undefined, undefined, { parentExecution });
+
+				expect(executeData.metadata?.waitingChildExecutionIds).toBeUndefined();
+			});
+		});
+
+		describe('execution context propagation to sub-workflows', () => {
+			const executionContext: IExecutionContext = {
+				version: 1,
+				establishedAt: 123,
+				source: 'webhook',
+				credentials: 'encrypted-credential-data',
+			};
+
+			afterEach(() => {
+				vi.restoreAllMocks();
+			});
+
+			it('should inject the current execution context when the parent id matches', async () => {
+				additionalData.executeWorkflow.mockResolvedValue(executeWorkflowData);
+				vi.spyOn(context, 'getExecutionId').mockReturnValue('current_execution_id');
+				vi.spyOn(context, 'getExecutionContext').mockReturnValue(executionContext);
+
+				const childParentExecution: RelatedExecution = {
+					executionId: 'current_execution_id',
+					workflowId: 'parent_workflow_id',
+				};
+
+				await context.executeWorkflow(workflowInfo, undefined, undefined, {
+					parentExecution: childParentExecution,
+				});
+
+				expect(childParentExecution.executionContext).toBe(executionContext);
+				expect(additionalData.executeWorkflow).toHaveBeenCalledWith(
+					workflowInfo,
+					additionalData,
+					expect.objectContaining({
+						parentExecution: expect.objectContaining({ executionContext }),
+					}),
+				);
+			});
+
+			// Regression for IAM-857: during a trigger's webhook phase (e.g. an MCP
+			// Trigger tool call) there is no execution id yet, so `getExecutionId()` is
+			// `undefined` while the parent id is the placeholder. Context must still propagate.
+			it('should inject the execution context when no execution id is assigned yet', async () => {
+				additionalData.executeWorkflow.mockResolvedValue(executeWorkflowData);
+				vi.spyOn(context, 'getExecutionId').mockReturnValue(undefined as unknown as string);
+				vi.spyOn(context, 'getExecutionContext').mockReturnValue(executionContext);
+
+				const childParentExecution: RelatedExecution = {
+					executionId: PLACEHOLDER_EMPTY_EXECUTION_ID,
+					workflowId: 'parent_workflow_id',
+				};
+
+				await context.executeWorkflow(workflowInfo, undefined, undefined, {
+					parentExecution: childParentExecution,
+				});
+
+				expect(childParentExecution.executionContext).toBe(executionContext);
+			});
+
+			it('should not overwrite an execution context already set on the parent', async () => {
+				additionalData.executeWorkflow.mockResolvedValue(executeWorkflowData);
+				const existingContext: IExecutionContext = { ...executionContext, establishedAt: 999 };
+				vi.spyOn(context, 'getExecutionId').mockReturnValue('current_execution_id');
+				const getExecutionContextSpy = vi.spyOn(context, 'getExecutionContext');
+
+				const childParentExecution: RelatedExecution = {
+					executionId: 'current_execution_id',
+					workflowId: 'parent_workflow_id',
+					executionContext: existingContext,
+				};
+
+				await context.executeWorkflow(workflowInfo, undefined, undefined, {
+					parentExecution: childParentExecution,
+				});
+
+				expect(childParentExecution.executionContext).toBe(existingContext);
+				expect(getExecutionContextSpy).not.toHaveBeenCalled();
+			});
+
+			it('should not inject context when the parent id refers to a different execution', async () => {
+				additionalData.executeWorkflow.mockResolvedValue(executeWorkflowData);
+				vi.spyOn(context, 'getExecutionId').mockReturnValue('current_execution_id');
+				vi.spyOn(context, 'getExecutionContext').mockReturnValue(executionContext);
+
+				const childParentExecution: RelatedExecution = {
+					executionId: 'some_other_execution_id',
+					workflowId: 'parent_workflow_id',
+				};
+
+				await context.executeWorkflow(workflowInfo, undefined, undefined, {
+					parentExecution: childParentExecution,
+				});
+
+				expect(childParentExecution.executionContext).toBeUndefined();
+			});
+		});
+
+		describe('sub-workflow dynamic credential reporting', () => {
+			beforeEach(() => {
+				// The shared mock keeps assigned flags across tests; reset like the engine loop does.
+				additionalData.currentNodeUsedDynamicCredentials = false;
+				additionalData.currentNodeAttemptedDynamicCredentials = false;
+				additionalData.dynamicCredentialsResolvedUserId = undefined;
+			});
+
+			it('forwards the sub-workflow dynamic-credential usage onto the parent execution', async () => {
+				additionalData.executeWorkflow.mockResolvedValue({
+					...executeWorkflowData,
+					usedDynamicCredentials: true,
+					dynamicCredentialsResolvedUserId: 'sub-user',
+				});
+
+				await context.executeWorkflow(workflowInfo);
+
+				expect(additionalData.currentNodeUsedDynamicCredentials).toBe(true);
+				expect(additionalData.dynamicCredentialsResolvedUserId).toBe('sub-user');
+			});
+
+			it('forwards the attempted flag onto the parent execution', async () => {
+				additionalData.executeWorkflow.mockResolvedValue({
+					...executeWorkflowData,
+					attemptedDynamicCredentials: true,
+				});
+
+				await context.executeWorkflow(workflowInfo);
+
+				expect(additionalData.currentNodeAttemptedDynamicCredentials).toBe(true);
+			});
+
+			it('forwards usage attached to a failed sub-workflow error and rethrows', async () => {
+				const error = Object.assign(new Error('sub-workflow failed'), {
+					dynamicCredentialsUsage: {
+						usedDynamicCredentials: true,
+						attemptedDynamicCredentials: true,
+						dynamicCredentialsResolvedUserId: 'sub-user',
+					},
+				});
+				additionalData.executeWorkflow.mockRejectedValue(error);
+
+				await expect(context.executeWorkflow(workflowInfo)).rejects.toThrow('sub-workflow failed');
+
+				expect(additionalData.currentNodeUsedDynamicCredentials).toBe(true);
+				expect(additionalData.currentNodeAttemptedDynamicCredentials).toBe(true);
+				expect(additionalData.dynamicCredentialsResolvedUserId).toBe('sub-user');
+				// The marker is transport-only and must not persist into the node's taskData.error.
+				expect('dynamicCredentialsUsage' in error).toBe(false);
+			});
+
+			it('rethrows a failed sub-workflow error without usage untouched', async () => {
+				additionalData.executeWorkflow.mockRejectedValue(new Error('sub-workflow failed'));
+
+				await expect(context.executeWorkflow(workflowInfo)).rejects.toThrow('sub-workflow failed');
+
+				expect(additionalData.currentNodeUsedDynamicCredentials).toBe(false);
+				expect(additionalData.currentNodeAttemptedDynamicCredentials).toBe(false);
+				expect(additionalData.dynamicCredentialsResolvedUserId).toBeUndefined();
+			});
+		});
+
+		describe('sub-workflow redaction reporting', () => {
+			let executionContext: IExecutionContext;
+			const originalExecutionData = runExecutionData.executionData;
+
+			beforeEach(() => {
+				executionContext = { version: 1, establishedAt: 123, source: 'manual' };
+				runExecutionData.executionData = mock<NonNullable<IRunExecutionData['executionData']>>({
+					runtimeData: executionContext,
+				});
+			});
+
+			afterEach(() => {
+				runExecutionData.executionData = originalExecutionData;
+			});
+
+			it('escalates the execution context with the channels the sub-workflow reports', async () => {
+				additionalData.executeWorkflow.mockResolvedValue({
+					...executeWorkflowData,
+					subWorkflowRedaction: { production: true, manual: false },
+				});
+
+				await context.executeWorkflow(workflowInfo);
+
+				expect(executionContext.subWorkflowRedaction).toEqual({ production: true, manual: false });
+				// The start snapshot keeps its meaning.
+				expect(executionContext.redaction).toBeUndefined();
+			});
+
+			it('combines the report with earlier reports and leaves the earlier object unchanged', async () => {
+				const earlier = { production: true, manual: false };
+				executionContext.subWorkflowRedaction = earlier;
+				additionalData.executeWorkflow.mockResolvedValue({
+					...executeWorkflowData,
+					subWorkflowRedaction: { production: false, manual: true },
+				});
+
+				await context.executeWorkflow(workflowInfo);
+
+				expect(executionContext.subWorkflowRedaction).toEqual({ production: true, manual: true });
+				expect(earlier).toEqual({ production: true, manual: false });
+			});
+
+			it('does not escalate when the sub-workflow reports nothing', async () => {
+				additionalData.executeWorkflow.mockResolvedValue({ ...executeWorkflowData });
+
+				await context.executeWorkflow(workflowInfo);
+
+				expect(executionContext).not.toHaveProperty('subWorkflowRedaction');
+			});
+
+			it('escalates from the channels attached to a failed sub-workflow error and rethrows', async () => {
+				const error = Object.assign(new Error('sub-workflow failed'), {
+					subWorkflowRedaction: { production: true, manual: true },
+				});
+				additionalData.executeWorkflow.mockRejectedValue(error);
+
+				await expect(context.executeWorkflow(workflowInfo)).rejects.toThrow('sub-workflow failed');
+
+				expect(executionContext.subWorkflowRedaction).toEqual({ production: true, manual: true });
+				// The marker is transport-only and must not persist into the node's taskData.error.
+				expect('subWorkflowRedaction' in error).toBe(false);
+			});
+		});
+	});
+};

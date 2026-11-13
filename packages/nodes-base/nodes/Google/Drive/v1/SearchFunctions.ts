@@ -1,4 +1,8 @@
 import type { ILoadOptionsFunctions, INodeListSearchResult } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { escapeBackslashQuotedValue } from '@utils/query-escaping';
+
 import { googleApiRequest } from './GenericFunctions';
 
 interface GoogleDriveFilesItem {
@@ -20,10 +24,10 @@ export async function fileSearch(
 ): Promise<INodeListSearchResult> {
 	const query: string[] = [];
 	if (filter) {
-		query.push(`name contains '${filter.replace("'", "\\'")}'`);
+		query.push(`name contains '${escapeBackslashQuotedValue(filter)}'`);
 	}
 	query.push("mimeType != 'application/vnd.google-apps.folder'");
-	const res = await googleApiRequest.call(this, 'GET', '/drive/v3/files', undefined, {
+	const res = await googleApiRequest.call(this, 'GET', requestPath`/drive/v3/files`, undefined, {
 		q: query.join(' and '),
 		pageToken: paginationToken,
 		fields: 'nextPageToken,files(id,name,mimeType,webViewLink)',
@@ -46,10 +50,10 @@ export async function folderSearch(
 ): Promise<INodeListSearchResult> {
 	const query: string[] = [];
 	if (filter) {
-		query.push(`name contains '${filter.replace("'", "\\'")}'`);
+		query.push(`name contains '${escapeBackslashQuotedValue(filter)}'`);
 	}
 	query.push("mimeType = 'application/vnd.google-apps.folder'");
-	const res = await googleApiRequest.call(this, 'GET', '/drive/v3/files', undefined, {
+	const res = await googleApiRequest.call(this, 'GET', requestPath`/drive/v3/files`, undefined, {
 		q: query.join(' and '),
 		pageToken: paginationToken,
 		fields: 'nextPageToken,files(id,name,mimeType,webViewLink)',
@@ -70,8 +74,8 @@ export async function driveSearch(
 	filter?: string,
 	paginationToken?: string,
 ): Promise<INodeListSearchResult> {
-	const res = await googleApiRequest.call(this, 'GET', '/drive/v3/drives', undefined, {
-		q: filter ? `name contains '${filter.replace("'", "\\'")}'` : undefined,
+	const res = await googleApiRequest.call(this, 'GET', requestPath`/drive/v3/drives`, undefined, {
+		q: filter ? `name contains '${escapeBackslashQuotedValue(filter)}'` : undefined,
 		pageToken: paginationToken,
 	});
 	return {

@@ -4,7 +4,10 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeOperationError, requestPath } from 'n8n-workflow';
+
+import { generatePairedItemData, processJsonInput, updateDisplayOptions } from '@utils/utilities';
+
 import type { ExcelResponse, UpdateSummary } from '../../helpers/interfaces';
 import {
 	checkRange,
@@ -12,9 +15,8 @@ import {
 	updateByAutoMaping,
 	updateByDefinedValues,
 } from '../../helpers/utils';
-import { microsoftApiRequest } from '../../transport';
+import { microsoftApiRequest, toWorkbookId } from '../../transport';
 import { workbookRLC, worksheetRLC } from '../common.descriptions';
-import { generatePairedItemData, processJsonInput, updateDisplayOptions } from '@utils/utilities';
 
 const properties: INodeProperties[] = [
 	workbookRLC,
@@ -101,7 +103,7 @@ const properties: INodeProperties[] = [
 		name: 'columnToMatchOn',
 		type: 'options',
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		typeOptions: {
 			loadOptionsDependsOn: ['worksheet.value', 'workbook.value', 'range'],
 			loadOptionsMethod: 'getWorksheetColumnRow',
@@ -150,7 +152,7 @@ const properties: INodeProperties[] = [
 						name: 'column',
 						type: 'options',
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 						typeOptions: {
 							loadOptionsDependsOn: ['columnToMatchOn', 'range'],
 							loadOptionsMethod: 'getWorksheetColumnRowSkipColumnToMatchOn',
@@ -171,7 +173,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -250,9 +252,13 @@ export async function execute(
 			qs.$select = options.fields;
 		}
 
-		const workbookId = this.getNodeParameter('workbook', 0, undefined, {
-			extractValue: true,
-		}) as string;
+		// Whole-batch operation: every param (including the SP target) is read at item 0.
+		const workbookId = toWorkbookId.call(
+			this,
+			this.getNodeParameter('workbook', 0, undefined, {
+				extractValue: true,
+			}) as string,
+		);
 
 		const worksheetId = this.getNodeParameter('worksheet', 0, undefined, {
 			extractValue: true,
@@ -269,7 +275,12 @@ export async function execute(
 			worksheetData = await microsoftApiRequest.call(
 				this,
 				'PATCH',
-				`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+				requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				0,
 			);
 		}
 
@@ -283,9 +294,12 @@ export async function execute(
 			worksheetData = await microsoftApiRequest.call(
 				this,
 				'GET',
-				`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/usedRange`,
+				requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/usedRange`,
 				undefined,
 				query,
+				undefined,
+				undefined,
+				0,
 			);
 
 			range = (worksheetData.address as string).split('!')[1];
@@ -300,9 +314,12 @@ export async function execute(
 			responseData = await microsoftApiRequest.call(
 				this,
 				'PATCH',
-				`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+				requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
 				{ values },
 				qs,
+				undefined,
+				undefined,
+				0,
 			);
 
 			returnData.push(
@@ -357,8 +374,12 @@ export async function execute(
 			responseData = await microsoftApiRequest.call(
 				this,
 				'PATCH',
-				`/drive/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
+				requestPath`/items/${workbookId}/workbook/worksheets/${worksheetId}/range(address='${range}')`,
 				{ values: updateSummary.updatedData },
+				undefined,
+				undefined,
+				undefined,
+				0,
 			);
 
 			const { updatedRows } = updateSummary;

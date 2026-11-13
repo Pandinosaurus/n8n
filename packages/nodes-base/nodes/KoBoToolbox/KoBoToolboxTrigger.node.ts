@@ -1,10 +1,12 @@
-import type {
-	IDataObject,
-	IHookFunctions,
-	INodeType,
-	INodeTypeDescription,
-	IWebhookFunctions,
-	IWebhookResponseData,
+import {
+	NodeConnectionTypes,
+	requestPath,
+	type IDataObject,
+	type IHookFunctions,
+	type INodeType,
+	type INodeTypeDescription,
+	type IWebhookFunctions,
+	type IWebhookResponseData,
 } from 'n8n-workflow';
 
 import {
@@ -14,7 +16,6 @@ import {
 	loadForms,
 	parseStringList,
 } from './GenericFunctions';
-
 import { options } from './Options';
 
 export class KoBoToolboxTrigger implements INodeType {
@@ -29,7 +30,7 @@ export class KoBoToolboxTrigger implements INodeType {
 			name: 'KoBoToolbox Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'koBoToolboxApi',
@@ -55,7 +56,7 @@ export class KoBoToolboxTrigger implements INodeType {
 				required: true,
 				default: '',
 				description:
-					'Form ID (e.g. aSAvYreNzVEkrWg5Gdcvg). Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+					'Form ID (e.g. aSAvYreNzVEkrWg5Gdcvg). Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Trigger On',
@@ -81,7 +82,7 @@ export class KoBoToolboxTrigger implements INodeType {
 				const webhookUrl = this.getNodeWebhookUrl('default');
 				const formId = this.getNodeParameter('formId') as string;
 				const webhooks = await koBoToolboxApiRequest.call(this, {
-					url: `/api/v2/assets/${formId}/hooks/`,
+					url: requestPath`/api/v2/assets/${formId}/hooks/`,
 				});
 				for (const webhook of webhooks || []) {
 					if (webhook.endpoint === webhookUrl && webhook.active === true) {
@@ -100,7 +101,7 @@ export class KoBoToolboxTrigger implements INodeType {
 
 				const response = await koBoToolboxApiRequest.call(this, {
 					method: 'POST',
-					url: `/api/v2/assets/${formId}/hooks/`,
+					url: requestPath`/api/v2/assets/${formId}/hooks/`,
 					body: {
 						name: `n8n webhook id ${workflow.id}: ${workflow.name}`,
 						endpoint: webhookUrl,
@@ -122,7 +123,7 @@ export class KoBoToolboxTrigger implements INodeType {
 				try {
 					await koBoToolboxApiRequest.call(this, {
 						method: 'DELETE',
-						url: `/api/v2/assets/${formId}/hooks/${webhookData.webhookId}`,
+						url: requestPath`/api/v2/assets/${formId}/hooks/${webhookData.webhookId}`,
 					});
 				} catch (error) {
 					return false;
@@ -143,9 +144,12 @@ export class KoBoToolboxTrigger implements INodeType {
 		const req = this.getRequestObject();
 		const formatOptions = this.getNodeParameter('formatOptions') as IDataObject;
 
-		// prettier-ignore
 		const responseData = formatOptions.reformat
-			? formatSubmission(req.body as IDataObject, parseStringList(formatOptions.selectMask as string), parseStringList(formatOptions.numberMask as string))
+			? formatSubmission(
+					req.body as IDataObject,
+					parseStringList(formatOptions.selectMask as string),
+					parseStringList(formatOptions.numberMask as string),
+				)
 			: req.body;
 
 		if (formatOptions.download) {

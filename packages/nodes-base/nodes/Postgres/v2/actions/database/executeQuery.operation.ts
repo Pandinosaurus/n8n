@@ -6,17 +6,24 @@ import type {
 } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
 
+import { createEventLoopYielder } from '@n8n/utils/promise/create-event-loop-yielder';
+
+import { getResolvables, updateDisplayOptions } from '@utils/utilities';
+
 import type {
 	PgpDatabase,
 	PostgresNodeOptions,
 	QueriesRunner,
+	QueryValue,
 	QueryWithValues,
 } from '../../helpers/interfaces';
-
-import { replaceEmptyStringsByNulls } from '../../helpers/utils';
-
+import {
+	evaluateExpression,
+	isJSON,
+	replaceEmptyStringsByNulls,
+	stringToArray,
+} from '../../helpers/utils';
 import { optionsCollection } from '../common.descriptions';
-import { getResolvables, updateDisplayOptions } from '@utils/utilities';
 
 const properties: INodeProperties[] = [
 	{
@@ -54,20 +61,22 @@ export async function execute(
 	nodeOptions: PostgresNodeOptions,
 	_db?: PgpDatabase,
 ): Promise<INodeExecutionData[]> {
-	items = replaceEmptyStringsByNulls(items, nodeOptions.replaceEmptyStrings as boolean);
-
+	const yieldToEventLoop = createEventLoopYielder();
 	const queries: QueryWithValues[] = [];
-
-	for (let i = 0; i < items.length; i++) {
-		let query = this.getNodeParameter('query', i) as string;
+	replaceEmptyStringsByNulls(items, nodeOptions.replaceEmptyStrings as boolean);
+	for (let index = 0; index < items.length; index++) {
+		await yieldToEventLoop();
+		let query = this.getNodeParameter('query', index) as string;
 
 		for (const resolvable of getResolvables(query)) {
-			query = query.replace(resolvable, this.evaluateExpression(resolvable, i) as string);
+			query = query.replace(resolvable, this.evaluateExpression(resolvable, index) as string);
 		}
 
-		let values: Array<IDataObject | string> = [];
+		let values: QueryValue[] = [];
 
-		let queryReplacement = this.getNodeParameter('options.queryReplacement', i, '');
+		const nodeVersion = nodeOptions.nodeVersion as number;
+
+		let queryReplacement = this.getNodeParameter('options.queryReplacement', index, '');
 
 		if (typeof queryReplacement === 'number') {
 			queryReplacement = String(queryReplacement);
@@ -79,38 +88,99 @@ export async function execute(
 			const rawReplacements = (node.parameters.options as IDataObject)?.queryReplacement as string;
 
 			if (rawReplacements) {
-				const rawValues = rawReplacements
-					.replace(/^=+/, '')
-					.split(',')
-					.filter((entry) => entry)
-					.map((entry) => entry.trim());
-
-				for (const rawValue of rawValues) {
-					const resolvables = getResolvables(rawValue);
-
+				if (nodeVersion >= 2.5) {
+					const rawValues = rawReplacements.replace(/^=+/, '');
+					const resolvables = getResolvables(rawValues);
 					if (resolvables.length) {
 						for (const resolvable of resolvables) {
-							values.push(this.evaluateExpression(`${resolvable}`, i) as IDataObject);
+							const rawEvaluated = this.evaluateExpression(`${resolvable}`, index);
+
+							if (Array.isArray(rawEvaluated)) {
+								for (const item of rawEvaluated) {
+									if (item === undefined) {
+										// From v2.8 a missing element becomes SQL NULL, so later values keep their position
+										if (nodeVersion >= 2.8) values.push(null);
+										continue;
+									}
+									values.push(
+										typeof item === 'object' && item !== null ? JSON.stringify(item) : item,
+									);
+								}
+								continue;
+							}
+
+							// From v2.8 an expression gives one bind value, so commas in data do not split it.
+							// null and a missing field (undefined) become SQL NULL
+							if (nodeVersion >= 2.8) {
+								values.push(
+									rawEvaluated === null || rawEvaluated === undefined
+										? null
+										: evaluateExpression(rawEvaluated),
+								);
+								continue;
+							}
+
+							const evaluatedExpression = evaluateExpression(rawEvaluated);
+
+							const evaluatedValues = isJSON(evaluatedExpression)
+								? [evaluatedExpression]
+								: stringToArray(evaluatedExpression);
+
+							if (evaluatedValues.length) values.push(...evaluatedValues);
 						}
 					} else {
-						values.push(rawValue);
+						values.push(...stringToArray(rawValues));
+					}
+				} else {
+					const rawValues = rawReplacements
+						.replace(/^=+/, '')
+						.split(',')
+						.filter((entry) => entry)
+						.map((entry) => entry.trim());
+
+					for (const rawValue of rawValues) {
+						const resolvables = getResolvables(rawValue);
+
+						if (resolvables.length) {
+							for (const resolvable of resolvables) {
+								values.push(this.evaluateExpression(`${resolvable}`, index) as IDataObject);
+							}
+						} else {
+							values.push(rawValue);
+						}
 					}
 				}
 			}
 		} else {
 			if (Array.isArray(queryReplacement)) {
 				values = queryReplacement as IDataObject[];
+			} else if (
+				nodeVersion >= 2.8 &&
+				(queryReplacement === null || queryReplacement === undefined)
+			) {
+				// From v2.8 a single expression that gives null or a missing field becomes SQL NULL
+				values = [null];
 			} else {
 				throw new NodeOperationError(
 					this.getNode(),
 					'Query Parameters must be a string of comma-separated values or an array of values',
-					{ itemIndex: i },
+					{ itemIndex: index },
 				);
 			}
 		}
 
-		queries.push({ query, values });
+		if (!queryReplacement || nodeOptions.treatQueryParametersInSingleQuotesAsText) {
+			let nextValueIndex = values.length + 1;
+			const literals = query.match(/'\$[0-9]+'/g) ?? [];
+			for (const literal of literals) {
+				query = query.replace(literal, `$${nextValueIndex}`);
+				values.push(literal.replace(/'/g, ''));
+				nextValueIndex++;
+			}
+		}
+
+		queries.push({ query, values, options: { partial: true } });
 	}
 
-	return await runQueries(queries, items, nodeOptions);
+	return await runQueries(queries, nodeOptions);
 }

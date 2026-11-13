@@ -58,8 +58,9 @@ export const rowFields: INodeProperties[] = [
 		name: 'tableId',
 		type: 'options',
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		typeOptions: {
+			loadOptionsDependsOn: ['projectRef', 'useCustomSchema', 'schema'],
 			loadOptionsMethod: 'getTables',
 		},
 		required: true,
@@ -74,7 +75,6 @@ export const rowFields: INodeProperties[] = [
 	...getFilters(['row'], ['update'], {
 		includeNoneOption: false,
 		filterTypeDisplayName: 'Select Type',
-		filterStringDisplayName: 'Select Condition (String)',
 		filterFixedCollectionDisplayName: 'Select Conditions',
 		mustMatchOptions: [
 			{
@@ -154,7 +154,7 @@ export const rowFields: INodeProperties[] = [
 						name: 'fieldId',
 						type: 'options',
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 						typeOptions: {
 							loadOptionsDependsOn: ['tableId'],
 							loadOptionsMethod: 'getTableColumns',
@@ -177,7 +177,6 @@ export const rowFields: INodeProperties[] = [
 	...getFilters(['row'], ['delete'], {
 		includeNoneOption: false,
 		filterTypeDisplayName: 'Select Type',
-		filterStringDisplayName: 'Select Condition (String)',
 		filterFixedCollectionDisplayName: 'Select Conditions',
 		mustMatchOptions: [
 			{
@@ -223,7 +222,7 @@ export const rowFields: INodeProperties[] = [
 						},
 						default: '',
 						description:
-							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 					},
 					{
 						displayName: 'Value',
@@ -268,6 +267,26 @@ export const rowFields: INodeProperties[] = [
 		},
 		default: 50,
 		description: 'Max number of results to return',
+	},
+	// Supabase REST API uses PostgREST under the hood. Without a stable ORDER BY, offset-based
+	// pagination returns non-deterministic pages — the database may return the same row in both
+	// page 1 and page 2, or skip rows entirely. Adding ?order=column ensures consistent page
+	// boundaries and prevents duplicates when using Return All or Limit >= 1000.
+	// See https://supabase.com/docs/guides/api/sql-to-rest for the order parameter syntax.
+	{
+		displayName: 'Order By',
+		name: 'orderBy',
+		type: 'string',
+		displayOptions: {
+			show: {
+				resource: ['row'],
+				operation: ['getAll'],
+			},
+		},
+		default: '',
+		placeholder: 'e.g. ID or created_at.desc',
+		description:
+			'Column(s) to order results by, e.g. <code>ID</code> or <code>created_at.desc</code>. Recommended when using Return All or Limit ≥ 1000 to avoid duplicate or missing records.',
 	},
 	...getFilters(['row'], ['getAll'], {}),
 ];

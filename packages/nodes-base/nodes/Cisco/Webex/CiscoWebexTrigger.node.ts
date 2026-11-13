@@ -7,6 +7,7 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 
 import {
 	getAutomaticSecret,
@@ -30,7 +31,7 @@ export class CiscoWebexTrigger implements INodeType {
 			name: 'Webex by Cisco Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'ciscoWebexOAuth2Api',
@@ -499,7 +500,12 @@ export class CiscoWebexTrigger implements INodeType {
 
 				// Check all the webhooks which exist already if it is identical to the
 				// one that is supposed to get created.
-				const data = await webexApiRequestAllItems.call(this, 'items', 'GET', '/webhooks');
+				const data = await webexApiRequestAllItems.call(
+					this,
+					'items',
+					'GET',
+					requestPath`/webhooks`,
+				);
 				for (const webhook of data) {
 					if (
 						webhook.url === webhookUrl &&
@@ -527,7 +533,7 @@ export class CiscoWebexTrigger implements INodeType {
 						filter.push(`${key}=${filters[key]}`);
 					}
 				}
-				const endpoint = '/webhooks';
+				const endpoint = requestPath`/webhooks`;
 
 				const body: IDataObject = {
 					name: `n8n-webhook:${webhookUrl}`,
@@ -559,7 +565,7 @@ export class CiscoWebexTrigger implements INodeType {
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				if (webhookData.webhookId !== undefined) {
-					const endpoint = `/webhooks/${webhookData.webhookId}`;
+					const endpoint = requestPath`/webhooks/${webhookData.webhookId}`;
 					try {
 						await webexApiRequest.call(this, 'DELETE', endpoint);
 					} catch (error) {
@@ -594,7 +600,7 @@ export class CiscoWebexTrigger implements INodeType {
 			const {
 				data: { id },
 			} = bodyData as { data: { id: string } };
-			bodyData = await webexApiRequest.call(this, 'GET', `/attachment/actions/${id}`);
+			bodyData = await webexApiRequest.call(this, 'GET', requestPath`/attachment/actions/${id}`);
 		}
 
 		return {

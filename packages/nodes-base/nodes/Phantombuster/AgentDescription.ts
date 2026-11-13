@@ -42,6 +42,12 @@ export const agentOperations: INodeProperties[] = [
 				description: 'Add an agent to the launch queue',
 				action: 'Add an agent to the launch queue',
 			},
+			{
+				name: 'Launch Sync',
+				value: 'launchSync',
+				description: 'Launch an agent and stream results',
+				action: 'Launch an agent and stream results',
+			},
 		],
 		default: 'launch',
 	},
@@ -56,7 +62,7 @@ export const agentFields: INodeProperties[] = [
 		name: 'agentId',
 		type: 'options',
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		typeOptions: {
 			loadOptionsMethod: 'getAgents',
 		},
@@ -130,7 +136,7 @@ export const agentFields: INodeProperties[] = [
 		name: 'agentId',
 		type: 'options',
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		typeOptions: {
 			loadOptionsMethod: 'getAgents',
 		},
@@ -224,21 +230,21 @@ export const agentFields: INodeProperties[] = [
 	},
 
 	/* -------------------------------------------------------------------------- */
-	/*                                 agent:launch                               */
+	/*                                 agent:launch / launchSync                              */
 	/* -------------------------------------------------------------------------- */
 	{
 		displayName: 'Agent Name or ID',
 		name: 'agentId',
 		type: 'options',
 		description:
-			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		typeOptions: {
 			loadOptionsMethod: 'getAgents',
 		},
 		required: true,
 		displayOptions: {
 			show: {
-				operation: ['launch'],
+				operation: ['launch', 'launchSync'],
 				resource: ['agent'],
 			},
 		},
@@ -266,7 +272,7 @@ export const agentFields: INodeProperties[] = [
 		default: false,
 		displayOptions: {
 			show: {
-				operation: ['launch'],
+				operation: ['launch', 'launchSync'],
 				resource: ['agent'],
 			},
 		},
@@ -279,7 +285,7 @@ export const agentFields: INodeProperties[] = [
 		displayOptions: {
 			show: {
 				resource: ['agent'],
-				operation: ['launch'],
+				operation: ['launch', 'launchSync'],
 			},
 		},
 		default: {},

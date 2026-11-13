@@ -9,8 +9,10 @@ import type {
 	IPollFunctions,
 	IRequestOptions,
 	JsonObject,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestUrl } from 'n8n-workflow';
 
 // Interfaces and Types -------------------------------------------------------------
 interface IHaloPSATokens {
@@ -22,12 +24,6 @@ interface IHaloPSATokens {
 	id_token: string;
 }
 
-function getAuthUrl(credentials: IDataObject) {
-	return credentials.hostingType === 'on-premise'
-		? `${credentials.appUrl}/auth/token`
-		: `${credentials.authUrl}/token?tenant=${credentials.tenant}`;
-}
-
 // API Requests ---------------------------------------------------------------------
 
 export async function getAccessTokens(
@@ -35,22 +31,22 @@ export async function getAccessTokens(
 ): Promise<IHaloPSATokens> {
 	const credentials = await this.getCredentials('haloPSAApi');
 
-	const options: IRequestOptions = {
-		headers: {
-			'Content-Type': 'application/x-www-form-urlencoded',
-		},
-		method: 'POST',
-		form: {
-			client_id: credentials.client_id,
-			client_secret: credentials.client_secret,
-			grant_type: 'client_credentials',
-			scope: credentials.scope,
-		},
-		uri: getAuthUrl(credentials),
-		json: true,
-	};
-
 	try {
+		const options: WithRequestTarget<IRequestOptions, 'uri'> = {
+			headers: {
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			method: 'POST',
+			form: {
+				client_id: credentials.client_id,
+				client_secret: credentials.client_secret,
+				grant_type: 'client_credentials',
+				scope: credentials.scope,
+			},
+			qs: { tenant: credentials.tenant },
+			uri: requestUrl`${credentials.authUrl}/token`,
+			json: true,
+		};
 		const tokens = await this.helpers.request(options);
 		return tokens;
 	} catch (error) {
@@ -61,16 +57,15 @@ export async function getAccessTokens(
 export async function haloPSAApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions | IPollFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 	accessToken: string,
 	body: IDataObject | IDataObject[] = {},
 	qs: IDataObject = {},
-	option: IDataObject = {},
 ): Promise<any> {
 	const resourceApiUrl = (await this.getCredentials('haloPSAApi')).resourceApiUrl as string;
 
 	try {
-		let options: IRequestOptions = {
+		const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 			headers: {
 				Authorization: `Bearer ${accessToken}`,
 				'User-Agent': 'https://n8n.io',
@@ -82,10 +77,9 @@ export async function haloPSAApiRequest(
 			method,
 			qs,
 			body,
-			uri: `${resourceApiUrl}${resource}`,
+			uri: requestUrl`${resourceApiUrl}${resource}`,
 			json: true,
 		};
-		options = Object.assign({}, options, option);
 		if (Object.keys(body).length === 0) {
 			delete options.body;
 		}
@@ -99,7 +93,7 @@ export async function haloPSAApiRequest(
 		if (method === 'DELETE' || method === 'GET' || (method === 'POST' && message)) {
 			let newErrorMessage;
 			if (message.includes('400')) {
-				console.log(message);
+				this.logger.debug(message);
 				newErrorMessage = JSON.parse(message.split(' - ')[1]);
 				(error as JsonObject).message = `For field ID, ${
 					newErrorMessage.id || newErrorMessage['[0].id']
@@ -107,7 +101,7 @@ export async function haloPSAApiRequest(
 			}
 			if (message.includes('403')) {
 				(error as JsonObject).message =
-					`You don\'t have permissions to ${method.toLowerCase()} ${resource
+					`You don\'t have permissions to ${method.toLowerCase()} ${resource.value
 						.split('/')[1]
 						.toLowerCase()}.`;
 			}
@@ -136,14 +130,14 @@ export async function haloPSAApiRequest(
 // 	)) as IDataObject;
 
 // 	const { tickets } = response;
-// 	console.log((tickets as IDataObject[]).map(t => t.id));
+// 	this.logger.debug((tickets as IDataObject[]).map(t => t.id));
 // 	const body: IDataObject = {
 // 		id: clientId,
 // 		client_id: reasigmentCliendId,
 // 	};
 
 // 	for (const ticket of (tickets as IDataObject[])) {
-// 		console.log(ticket.id);
+// 		this.logger.debug(ticket.id);
 // 		await haloPSAApiRequest.call(this, 'DELETE', `/tickets/${ticket.id}`, accessToken);
 // 	}
 // }
@@ -152,7 +146,7 @@ export async function haloPSAApiRequestAllItems(
 	this: IExecuteFunctions | ILoadOptionsFunctions | IHookFunctions,
 	propertyName: string,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	accessToken: string,
 	body = {},
 	query: IDataObject = {},
@@ -224,7 +218,7 @@ export async function validateCredentials(
 ): Promise<IHaloPSATokens> {
 	const credentials = decryptedCredentials;
 
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		headers: {
 			'Content-Type': 'application/x-www-form-urlencoded',
 		},
@@ -235,7 +229,8 @@ export async function validateCredentials(
 			grant_type: 'client_credentials',
 			scope: credentials.scope,
 		},
-		uri: getAuthUrl(credentials),
+		qs: { tenant: credentials.tenant },
+		uri: requestUrl`${credentials.authUrl}/token`,
 		json: true,
 	};
 

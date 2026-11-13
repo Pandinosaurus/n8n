@@ -1,10 +1,19 @@
-import { NodeOperationError, type INodeProperties } from 'n8n-workflow';
-import { createClient } from '@supabase/supabase-js';
 import { SupabaseVectorStore } from '@langchain/community/vectorstores/supabase';
-import { createVectorStoreNode } from '../shared/createVectorStoreNode';
-import { metadataFilterField } from '../../../utils/sharedFields';
-import { supabaseTableNameRLC } from '../shared/descriptions';
+import { NodeOperationError, type INodeProperties } from 'n8n-workflow';
+
+import { metadataFilterField, createVectorStoreNode } from '@n8n/ai-utilities';
+
 import { supabaseTableNameSearch } from '../shared/methods/listSearch';
+import { supabaseTableNameRLC } from '../shared/descriptions';
+import { createSupabaseClient } from '../shared/supabase';
+
+const queryNameField: INodeProperties = {
+	displayName: 'Query Name',
+	name: 'queryName',
+	type: 'string',
+	default: 'match_documents',
+	description: 'Name of the query to use for matching documents',
+};
 
 const sharedFields: INodeProperties[] = [supabaseTableNameRLC];
 const insertFields: INodeProperties[] = [
@@ -14,17 +23,10 @@ const insertFields: INodeProperties[] = [
 		type: 'collection',
 		placeholder: 'Add Option',
 		default: {},
-		options: [
-			{
-				displayName: 'Query Name',
-				name: 'queryName',
-				type: 'string',
-				default: 'match_documents',
-				description: 'Name of the query to use for matching documents',
-			},
-		],
+		options: [queryNameField],
 	},
 ];
+
 const retrieveFields: INodeProperties[] = [
 	{
 		displayName: 'Options',
@@ -32,19 +34,13 @@ const retrieveFields: INodeProperties[] = [
 		type: 'collection',
 		placeholder: 'Add Option',
 		default: {},
-		options: [
-			{
-				displayName: 'Query Name',
-				name: 'queryName',
-				type: 'string',
-				default: 'match_documents',
-				description: 'Name of the query to use for matching documents',
-			},
-			metadataFilterField,
-		],
+		options: [queryNameField, metadataFilterField],
 	},
 ];
-export const VectorStoreSupabase = createVectorStoreNode({
+
+const updateFields: INodeProperties[] = [...insertFields];
+
+export class VectorStoreSupabase extends createVectorStoreNode<SupabaseVectorStore>({
 	meta: {
 		description: 'Work with your data in Supabase Vector Store',
 		icon: 'file:supabase.svg',
@@ -58,6 +54,7 @@ export const VectorStoreSupabase = createVectorStoreNode({
 				required: true,
 			},
 		],
+		operationModes: ['load', 'insert', 'retrieve', 'update', 'retrieve-as-tool'],
 	},
 	methods: {
 		listSearch: { supabaseTableNameSearch },
@@ -66,6 +63,7 @@ export const VectorStoreSupabase = createVectorStoreNode({
 	insertFields,
 	loadFields: retrieveFields,
 	retrieveFields,
+	updateFields,
 	async getVectorStoreClient(context, filter, embeddings, itemIndex) {
 		const tableName = context.getNodeParameter('tableName', itemIndex, '', {
 			extractValue: true,
@@ -74,7 +72,7 @@ export const VectorStoreSupabase = createVectorStoreNode({
 			queryName: string;
 		};
 		const credentials = await context.getCredentials('supabaseApi');
-		const client = createClient(credentials.host as string, credentials.serviceRole as string);
+		const client = createSupabaseClient(credentials);
 
 		return await SupabaseVectorStore.fromExistingIndex(embeddings, {
 			client,
@@ -91,7 +89,7 @@ export const VectorStoreSupabase = createVectorStoreNode({
 			queryName: string;
 		};
 		const credentials = await context.getCredentials('supabaseApi');
-		const client = createClient(credentials.host as string, credentials.serviceRole as string);
+		const client = createSupabaseClient(credentials);
 
 		try {
 			await SupabaseVectorStore.fromDocuments(documents, embeddings, {
@@ -112,4 +110,4 @@ export const VectorStoreSupabase = createVectorStoreNode({
 			}
 		}
 	},
-});
+}) {}

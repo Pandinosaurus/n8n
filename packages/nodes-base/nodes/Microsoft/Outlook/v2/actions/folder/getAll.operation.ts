@@ -1,7 +1,10 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
-import { getSubfolders, microsoftApiRequest, microsoftApiRequestAllItems } from '../../transport';
-import { folderFields, folderRLC, returnAllOrLimit } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { folderFields, folderRLC, returnAllOrLimit } from '../../descriptions';
+import { getSubfolders, microsoftApiRequest, microsoftApiRequestAllItems } from '../../transport';
 
 export const properties: INodeProperties[] = [
 	...returnAllOrLimit,
@@ -85,21 +88,29 @@ export async function execute(this: IExecuteFunctions, index: number) {
 
 	let endpoint;
 	if (parentFolderId) {
-		endpoint = `/mailFolders/${parentFolderId}/childFolders`;
+		endpoint = requestPath`/mailFolders/${parentFolderId}/childFolders`;
 	} else {
-		endpoint = '/mailFolders';
+		endpoint = requestPath`/mailFolders`;
 	}
 
 	if (returnAll) {
-		responseData = await microsoftApiRequestAllItems.call(this, 'value', 'GET', endpoint, {}, qs);
+		responseData = await microsoftApiRequestAllItems.call(
+			this,
+			'value',
+			'GET',
+			endpoint,
+			index,
+			{},
+			qs,
+		);
 	} else {
 		qs.$top = this.getNodeParameter('limit', index);
-		responseData = await microsoftApiRequest.call(this, 'GET', endpoint, {}, qs);
+		responseData = await microsoftApiRequest.call(this, 'GET', endpoint, index, {}, qs);
 		responseData = responseData.value;
 	}
 
 	if (options.includeChildFolders) {
-		responseData = await getSubfolders.call(this, responseData as IDataObject[]);
+		responseData = await getSubfolders.call(this, responseData as IDataObject[], index);
 	}
 
 	const executionData = this.helpers.constructExecutionMetaData(

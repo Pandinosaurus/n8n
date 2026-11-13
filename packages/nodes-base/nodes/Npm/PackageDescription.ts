@@ -1,5 +1,5 @@
-import { valid as isValidSemver } from 'semver';
 import type { INodeExecutionData, INodeProperties } from 'n8n-workflow';
+import { valid as isValidSemver } from 'semver';
 
 interface PackageJson {
 	name: string;
@@ -28,7 +28,7 @@ export const packageOperations: INodeProperties[] = [
 				routing: {
 					request: {
 						method: 'GET',
-						url: '=/{{ encodeURIComponent($parameter.packageName) }}/{{ $parameter.packageVersion }}',
+						url: '=/{{ toPathSegment($parameter.packageName) }}/{{ toPathSegment($parameter.packageVersion) }}',
 					},
 				},
 			},
@@ -40,7 +40,7 @@ export const packageOperations: INodeProperties[] = [
 				routing: {
 					request: {
 						method: 'GET',
-						url: '=/{{ encodeURIComponent($parameter.packageName) }}',
+						url: '=/{{ toPathSegment($parameter.packageName) }}',
 					},
 					output: {
 						postReceive: [

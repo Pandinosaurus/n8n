@@ -1,9 +1,9 @@
 import type { IExecuteFunctions, INodeExecutionData } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
-import type { AirtableType } from './node.type';
 
-import * as record from './record/Record.resource';
 import * as base from './base/Base.resource';
+import type { AirtableType } from './node.type';
+import * as record from './record/Record.resource';
 
 export async function router(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 	let returnData: INodeExecutionData[] = [];
@@ -24,11 +24,9 @@ export async function router(this: IExecuteFunctions): Promise<INodeExecutionDat
 					extractValue: true,
 				}) as string;
 
-				const table = encodeURI(
-					this.getNodeParameter('table', 0, undefined, {
-						extractValue: true,
-					}) as string,
-				);
+				const table = this.getNodeParameter('table', 0, undefined, {
+					extractValue: true,
+				}) as string;
 				returnData = await record[airtableNodeData.operation].execute.call(
 					this,
 					items,

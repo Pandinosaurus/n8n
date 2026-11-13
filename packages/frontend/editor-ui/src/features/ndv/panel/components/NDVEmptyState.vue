@@ -1,0 +1,85 @@
+<script setup lang="ts">
+import type { IconName } from '@n8n/design-system';
+
+import { N8nIcon } from '@n8n/design-system';
+const { icon } = defineProps<{
+	title?: string;
+	wide?: boolean;
+	icon?: IconName;
+	/** Has a compact `#actions` fallback that replaces the description on a narrow pane (needs an `ndvPane` container). */
+	hasCompactAction?: boolean;
+}>();
+
+defineSlots<{
+	icon(): unknown;
+	default(): unknown;
+	actions(): unknown;
+}>();
+</script>
+
+<template>
+	<article
+		data-ndv-empty-state
+		:class="[$style.empty, { [$style.wide]: wide, [$style.compactActions]: hasCompactAction }]"
+	>
+		<slot name="icon">
+			<N8nIcon v-if="icon" :icon="icon" size="xlarge" />
+		</slot>
+		<h1 v-if="title" :class="$style.title">{{ title }}</h1>
+		<p :class="$style.description"><slot /></p>
+		<div v-if="$slots.actions" :class="$style.actions">
+			<slot name="actions" />
+		</div>
+	</article>
+</template>
+
+<style lang="css" module>
+.empty {
+	display: flex;
+	flex-flow: column;
+	align-items: center;
+	justify-content: center;
+	gap: var(--spacing--sm);
+
+	line-height: 2;
+	color: var(--color--text);
+}
+
+.title {
+	font-size: var(--font-size--md);
+	font-weight: var(--font-weight--medium);
+	line-height: 145%;
+	color: var(--color--text);
+	margin: 0;
+}
+
+.actions {
+	margin-top: var(--spacing--xs);
+}
+
+.description {
+	font-size: var(--font-size--sm);
+	line-height: var(--line-height--xl);
+	margin: 0;
+	text-align: center;
+	max-width: 240px;
+
+	.wide & {
+		max-width: none;
+	}
+}
+
+.compactActions .actions {
+	display: none;
+}
+
+@container ndvPane (max-width: 180px) {
+	.compactActions .description {
+		display: none;
+	}
+
+	.compactActions .actions {
+		display: block;
+	}
+}
+</style>

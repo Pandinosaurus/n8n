@@ -1,7 +1,10 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
-import { microsoftApiRequest } from '../../transport';
-import { calendarRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { calendarRLC } from '../../descriptions';
+import { microsoftApiRequest } from '../../transport';
 
 export const properties: INodeProperties[] = [
 	calendarRLC,
@@ -91,13 +94,13 @@ export async function execute(this: IExecuteFunctions, index: number) {
 		extractValue: true,
 	}) as string;
 
-	const endpoint = `/calendars/${calendarId}`;
+	const endpoint = requestPath`/calendars/${calendarId}`;
 
 	const body: IDataObject = {
 		...updateFields,
 	};
 
-	const responseData = await microsoftApiRequest.call(this, 'PATCH', endpoint, body);
+	const responseData = await microsoftApiRequest.call(this, 'PATCH', endpoint, index, body);
 
 	const executionData = this.helpers.constructExecutionMetaData(
 		this.helpers.returnJsonArray(responseData as IDataObject),

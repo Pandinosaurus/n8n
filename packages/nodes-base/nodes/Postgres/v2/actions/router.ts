@@ -1,12 +1,17 @@
 import type { IExecuteFunctions, INodeExecutionData } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
 
-import { configurePostgres } from '../transport';
-import { configureQueryRunner } from '../helpers/utils';
-import type { PostgresType } from './node.type';
-
 import * as database from './database/Database.resource';
-import type { PostgresNodeCredentials, PostgresNodeOptions } from '../helpers/interfaces';
+import type { PostgresType } from './node.type';
+import { addExecutionHints } from '../../../../utils/utilities';
+import { configurePostgres } from '../../transport';
+import type {
+	ConnectionsData,
+	PostgresNodeCredentials,
+	PostgresNodeOptions,
+	QueriesRunner,
+} from '../helpers/interfaces';
+import { configureQueryRunner, parsePostgresError, prepareErrorItem } from '../helpers/utils';
 
 export async function router(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 	let returnData: INodeExecutionData[] = [];
@@ -15,14 +20,28 @@ export async function router(this: IExecuteFunctions): Promise<INodeExecutionDat
 	const resource = this.getNodeParameter<PostgresType>('resource', 0);
 	const operation = this.getNodeParameter('operation', 0);
 
-	const credentials = (await this.getCredentials('postgres')) as PostgresNodeCredentials;
+	const credentials = await this.getCredentials<PostgresNodeCredentials>('postgres');
 	const options = this.getNodeParameter('options', 0, {}) as PostgresNodeOptions;
-	options.nodeVersion = this.getNode().typeVersion;
+	const node = this.getNode();
+	options.nodeVersion = node.typeVersion;
 	options.operation = operation;
 
-	const { db, pgp, sshClient } = await configurePostgres(credentials, options);
+	let connection: ConnectionsData;
+	try {
+		connection = await configurePostgres.call(this, credentials, options);
+		// Open the lazy connection before dispatch, then return it to the pool.
+		const probe = await connection.db.connect();
+		await probe.done();
+	} catch (err) {
+		const error = parsePostgresError(node, err, []);
+		if (!this.continueOnFail()) {
+			throw error;
+		}
+		return [items.map((_, index) => prepareErrorItem({ ...error, message: error.message }, index))];
+	}
 
-	const runQueries = configureQueryRunner.call(
+	const { db, pgp } = connection;
+	const runQueries: QueriesRunner = configureQueryRunner.call(
 		this,
 		this.getNode(),
 		this.continueOnFail(),
@@ -35,32 +54,25 @@ export async function router(this: IExecuteFunctions): Promise<INodeExecutionDat
 		operation,
 	} as PostgresType;
 
-	try {
-		switch (postgresNodeData.resource) {
-			case 'database':
-				returnData = await database[postgresNodeData.operation].execute.call(
-					this,
-					runQueries,
-					items,
-					options,
-					db,
-				);
-				break;
-			default:
-				throw new NodeOperationError(
-					this.getNode(),
-					`The operation "${operation}" is not supported!`,
-				);
-		}
-	} catch (error) {
-		throw error;
-	} finally {
-		if (sshClient) {
-			sshClient.end();
-		}
-
-		if (!db.$pool.ending) await db.$pool.end();
+	switch (postgresNodeData.resource) {
+		case 'database':
+			returnData = await database[postgresNodeData.operation].execute.call(
+				this,
+				runQueries,
+				items,
+				options,
+				db,
+				pgp,
+			);
+			break;
+		default:
+			throw new NodeOperationError(
+				this.getNode(),
+				`The operation "${operation}" is not supported!`,
+			);
 	}
+
+	addExecutionHints(this, node, items, operation, node.executeOnce);
 
 	return [returnData];
 }

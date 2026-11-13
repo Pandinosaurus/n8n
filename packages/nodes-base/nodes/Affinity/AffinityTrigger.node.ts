@@ -6,7 +6,7 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import { affinityApiRequest, eventsExist, mapResource } from './GenericFunctions';
 
@@ -14,8 +14,7 @@ export class AffinityTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Affinity Trigger',
 		name: 'affinityTrigger',
-		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
-		icon: 'file:affinity.png',
+		icon: { light: 'file:affinity.svg', dark: 'file:affinity.dark.svg' },
 		group: ['trigger'],
 		version: 1,
 		description: 'Handle Affinity events via webhooks',
@@ -23,7 +22,7 @@ export class AffinityTrigger implements INodeType {
 			name: 'Affinity Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'affinityApi',
@@ -157,7 +156,7 @@ export class AffinityTrigger implements INodeType {
 			async checkExists(this: IHookFunctions): Promise<boolean> {
 				// Check all the webhooks which exist already if it is identical to the
 				// one that is supposed to get created.
-				const endpoint = '/webhook';
+				const endpoint = requestPath`/webhook`;
 
 				const responseData = await affinityApiRequest.call(this, 'GET', endpoint, {});
 
@@ -190,7 +189,7 @@ export class AffinityTrigger implements INodeType {
 
 				const events = this.getNodeParameter('events') as string[];
 
-				const endpoint = '/webhook/subscribe';
+				const endpoint = requestPath`/webhook/subscribe`;
 
 				const body = {
 					webhook_url: webhookUrl,
@@ -211,7 +210,7 @@ export class AffinityTrigger implements INodeType {
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 				if (webhookData.webhookId !== undefined) {
-					const endpoint = `/webhook/${webhookData.webhookId}`;
+					const endpoint = requestPath`/webhook/${webhookData.webhookId}`;
 
 					const responseData = await affinityApiRequest.call(this, 'DELETE', endpoint);
 
@@ -240,7 +239,11 @@ export class AffinityTrigger implements INodeType {
 			const resource = (bodyData.type as string).split('.')[0];
 			//@ts-ignore
 			const id = bodyData.body.id;
-			responseData = await affinityApiRequest.call(this, 'GET', `/${mapResource(resource)}/${id}`);
+			responseData = await affinityApiRequest.call(
+				this,
+				'GET',
+				requestPath`/${mapResource(resource)}/${id}`,
+			);
 			responseData.type = bodyData.type;
 		}
 

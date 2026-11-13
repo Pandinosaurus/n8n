@@ -78,7 +78,7 @@ export const documentFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		required: true,
 	},
 	{
@@ -108,6 +108,18 @@ export const documentFields: INodeProperties[] = [
 		},
 		description: 'Collection name',
 		required: true,
+	},
+	{
+		displayName: 'Document ID',
+		name: 'documentId',
+		type: 'string',
+		displayOptions: {
+			show: {
+				resource: ['document'],
+				operation: ['create'],
+			},
+		},
+		default: '',
 	},
 	{
 		displayName: 'Columns / Attributes',
@@ -156,7 +168,7 @@ export const documentFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		required: true,
 	},
 	{
@@ -232,7 +244,7 @@ export const documentFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		required: true,
 	},
 	{
@@ -327,7 +339,7 @@ export const documentFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		required: true,
 	},
 	{
@@ -504,7 +516,7 @@ export const documentFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		required: true,
 	},
 	{
@@ -546,7 +558,7 @@ export const documentFields: INodeProperties[] = [
 			},
 		},
 		default: '',
-		description: 'Must correspond to a document ID',
+		description: 'Name of the field in an input item that contains the document ID',
 		required: true,
 		placeholder: 'documentId',
 	},
@@ -583,7 +595,7 @@ export const documentFields: INodeProperties[] = [
 			},
 		},
 		description:
-			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>.',
+			'As displayed in firebase console URL. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 		required: true,
 	},
 	{
@@ -611,10 +623,32 @@ export const documentFields: INodeProperties[] = [
 				operation: ['query'],
 			},
 		},
-		description: 'JSON query to execute',
+		description:
+			'JSON query to execute. Use $1, $2, and so on as complete values to reference Query Parameters below.',
+		hint: 'Use query parameters for dynamic values instead of embedding expressions in the query',
 		required: true,
 		placeholder:
-			'{"structuredQuery": {"where": {"fieldFilter": {"field": {"fieldPath": "age"},"op": "EQUAL", "value": {"integerValue": 28}}}, "from": [{"collectionId": "users-collection"}]}}',
+			'{"structuredQuery": {"where": {"fieldFilter": {"field": {"fieldPath": "age"},"op": "EQUAL", "value": {"integerValue": "$1"}}}, "from": [{"collectionId": "users-collection"}]}}',
+	},
+	{
+		displayName: 'Query Parameters',
+		name: 'queryParameters',
+		type: 'json',
+		typeOptions: {
+			rows: 2,
+		},
+		default: '={{ [] }}',
+		displayOptions: {
+			show: {
+				resource: ['document'],
+				operation: ['query'],
+			},
+		},
+		description:
+			'Array of values to use for $1, $2, and so on, in order. Values can be strings, numbers, booleans, null, or arrays of these values.',
+		hint: 'Build the array inside the expression, for example {{ [$json.name, 30] }} sets $1 to the name and $2 to 30',
+		placeholder: '{{ [$json.name, 30] }}',
+		validateType: 'array',
 	},
 	{
 		displayName: 'Simplify',

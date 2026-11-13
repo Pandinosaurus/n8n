@@ -6,14 +6,14 @@
 	"resources": {
 		"primaryDocumentation": [
 			{
-				"url": "https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.filesreadwrite/"
+				"url": "https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.readwritefile/"
 			}
 		],
 		"generic": [
 			{
 				"label": "How uProc scraped a multi-page website with a low-code workflow",
 				"icon": " 🕸️",
-				"url": "https://n8n.io/blog/how-uproc-scraped-a-multi-page-website-with-a-low-code-workflow/"
+				"url": "https://n8n.io/case-studies/uproc/"
 			}
 		]
 	},

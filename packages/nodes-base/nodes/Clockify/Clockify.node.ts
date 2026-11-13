@@ -1,3 +1,5 @@
+import moment from 'moment-timezone';
+import { NodeConnectionTypes, requestPath } from 'n8n-workflow';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -8,34 +10,23 @@ import type {
 	INodeTypeDescription,
 } from 'n8n-workflow';
 
-import moment from 'moment-timezone';
-import { clockifyApiRequest, clockifyApiRequestAllItems } from './GenericFunctions';
-
-import type { IClientDto, IWorkspaceDto } from './WorkpaceInterfaces';
-
-import type { IUserDto } from './UserDtos';
-
-import type { IProjectDto } from './ProjectInterfaces';
-
 import { clientFields, clientOperations } from './ClientDescription';
-
+import { clockifyApiRequest, clockifyApiRequestAllItems } from './GenericFunctions';
 import { projectFields, projectOperations } from './ProjectDescription';
-
+import type { IProjectDto } from './ProjectInterfaces';
 import { tagFields, tagOperations } from './TagDescription';
-
 import { taskFields, taskOperations } from './TaskDescription';
-
 import { timeEntryFields, timeEntryOperations } from './TimeEntryDescription';
-
 import { userFields, userOperations } from './UserDescription';
-
+import type { IUserDto } from './UserDtos';
+import type { IClientDto, IWorkspaceDto } from './WorkpaceInterfaces';
 import { workspaceFields, workspaceOperations } from './WorkspaceDescription';
 
 export class Clockify implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Clockify',
 		name: 'clockify',
-		icon: 'file:clockify.svg',
+		icon: { light: 'file:clockify.svg', dark: 'file:clockify.dark.svg' },
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -43,8 +34,9 @@ export class Clockify implements INodeType {
 		defaults: {
 			name: 'Clockify',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'clockifyApi',
@@ -102,7 +94,7 @@ export class Clockify implements INodeType {
 				name: 'workspaceId',
 				type: 'options',
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 				typeOptions: {
 					loadOptionsMethod: 'listWorkspaces',
 				},
@@ -130,7 +122,7 @@ export class Clockify implements INodeType {
 				const workspaces: IWorkspaceDto[] = await clockifyApiRequest.call(
 					this,
 					'GET',
-					'workspaces',
+					requestPath`workspaces`,
 				);
 				if (undefined !== workspaces) {
 					workspaces.forEach((value) => {
@@ -146,7 +138,7 @@ export class Clockify implements INodeType {
 				const rtv: INodePropertyOptions[] = [];
 				const workspaceId = this.getCurrentNodeParameter('workspaceId');
 				if (undefined !== workspaceId) {
-					const resource = `workspaces/${workspaceId}/users`;
+					const resource = requestPath`workspaces/${workspaceId}/users`;
 					const users: IUserDto[] = await clockifyApiRequest.call(this, 'GET', resource);
 					if (undefined !== users) {
 						users.forEach((value) => {
@@ -163,7 +155,7 @@ export class Clockify implements INodeType {
 				const rtv: INodePropertyOptions[] = [];
 				const workspaceId = this.getCurrentNodeParameter('workspaceId');
 				if (undefined !== workspaceId) {
-					const resource = `workspaces/${workspaceId}/clients`;
+					const resource = requestPath`workspaces/${workspaceId}/clients`;
 					const clients: IClientDto[] = await clockifyApiRequest.call(this, 'GET', resource);
 					if (undefined !== clients) {
 						clients.forEach((value) => {
@@ -180,7 +172,7 @@ export class Clockify implements INodeType {
 				const rtv: INodePropertyOptions[] = [];
 				const workspaceId = this.getCurrentNodeParameter('workspaceId');
 				if (undefined !== workspaceId) {
-					const resource = `workspaces/${workspaceId}/projects`;
+					const resource = requestPath`workspaces/${workspaceId}/projects`;
 					const users: IProjectDto[] = await clockifyApiRequest.call(this, 'GET', resource);
 					if (undefined !== users) {
 						users.forEach((value) => {
@@ -197,7 +189,7 @@ export class Clockify implements INodeType {
 				const rtv: INodePropertyOptions[] = [];
 				const workspaceId = this.getCurrentNodeParameter('workspaceId');
 				if (undefined !== workspaceId) {
-					const resource = `workspaces/${workspaceId}/tags`;
+					const resource = requestPath`workspaces/${workspaceId}/tags`;
 					const users: IProjectDto[] = await clockifyApiRequest.call(this, 'GET', resource);
 					if (undefined !== users) {
 						users.forEach((value) => {
@@ -216,7 +208,7 @@ export class Clockify implements INodeType {
 				const rtv: INodePropertyOptions[] = [];
 				const workspaceId = this.getCurrentNodeParameter('workspaceId');
 				if (undefined !== workspaceId) {
-					const resource = `workspaces/${workspaceId}/custom-fields`;
+					const resource = requestPath`workspaces/${workspaceId}/custom-fields`;
 					const customFields = await clockifyApiRequest.call(this, 'GET', resource);
 					for (const customField of customFields) {
 						rtv.push({
@@ -260,7 +252,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'POST',
-							`/workspaces/${workspaceId}/clients`,
+							requestPath`/workspaces/${workspaceId}/clients`,
 							body,
 							qs,
 						);
@@ -274,7 +266,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'DELETE',
-							`/workspaces/${workspaceId}/clients/${clientId}`,
+							requestPath`/workspaces/${workspaceId}/clients/${clientId}`,
 							{},
 							qs,
 						);
@@ -297,7 +289,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'PUT',
-							`/workspaces/${workspaceId}/clients/${clientId}`,
+							requestPath`/workspaces/${workspaceId}/clients/${clientId}`,
 							body,
 							qs,
 						);
@@ -311,7 +303,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'GET',
-							`/workspaces/${workspaceId}/clients/${clientId}`,
+							requestPath`/workspaces/${workspaceId}/clients/${clientId}`,
 							{},
 							qs,
 						);
@@ -330,7 +322,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/clients`,
+								requestPath`/workspaces/${workspaceId}/clients`,
 								{},
 								qs,
 							);
@@ -340,7 +332,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/clients`,
+								requestPath`/workspaces/${workspaceId}/clients`,
 								{},
 								qs,
 							);
@@ -373,7 +365,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'POST',
-							`/workspaces/${workspaceId}/projects`,
+							requestPath`/workspaces/${workspaceId}/projects`,
 							body,
 							qs,
 						);
@@ -387,7 +379,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'DELETE',
-							`/workspaces/${workspaceId}/projects/${projectId}`,
+							requestPath`/workspaces/${workspaceId}/projects/${projectId}`,
 							{},
 							qs,
 						);
@@ -401,7 +393,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'GET',
-							`/workspaces/${workspaceId}/projects/${projectId}`,
+							requestPath`/workspaces/${workspaceId}/projects/${projectId}`,
 							{},
 							qs,
 						);
@@ -420,7 +412,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/projects`,
+								requestPath`/workspaces/${workspaceId}/projects`,
 								{},
 								qs,
 							);
@@ -430,7 +422,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/projects`,
+								requestPath`/workspaces/${workspaceId}/projects`,
 								{},
 								qs,
 							);
@@ -459,7 +451,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'PUT',
-							`/workspaces/${workspaceId}/projects/${projectId}`,
+							requestPath`/workspaces/${workspaceId}/projects/${projectId}`,
 							body,
 							qs,
 						);
@@ -479,7 +471,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'POST',
-							`/workspaces/${workspaceId}/tags`,
+							requestPath`/workspaces/${workspaceId}/tags`,
 							body,
 							qs,
 						);
@@ -493,7 +485,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'DELETE',
-							`/workspaces/${workspaceId}/tags/${tagId}`,
+							requestPath`/workspaces/${workspaceId}/tags/${tagId}`,
 							{},
 							qs,
 						);
@@ -514,7 +506,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/tags`,
+								requestPath`/workspaces/${workspaceId}/tags`,
 								{},
 								qs,
 							);
@@ -524,7 +516,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/tags`,
+								requestPath`/workspaces/${workspaceId}/tags`,
 								{},
 								qs,
 							);
@@ -547,7 +539,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'PUT',
-							`/workspaces/${workspaceId}/tags/${tagId}`,
+							requestPath`/workspaces/${workspaceId}/tags/${tagId}`,
 							body,
 							qs,
 						);
@@ -578,7 +570,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'POST',
-							`/workspaces/${workspaceId}/projects/${projectId}/tasks`,
+							requestPath`/workspaces/${workspaceId}/projects/${projectId}/tasks`,
 							body,
 							qs,
 						);
@@ -594,7 +586,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'DELETE',
-							`/workspaces/${workspaceId}/projects/${projectId}/tasks/${taskId}`,
+							requestPath`/workspaces/${workspaceId}/projects/${projectId}/tasks/${taskId}`,
 							{},
 							qs,
 						);
@@ -610,7 +602,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'GET',
-							`/workspaces/${workspaceId}/projects/${projectId}/tasks/${taskId}`,
+							requestPath`/workspaces/${workspaceId}/projects/${projectId}/tasks/${taskId}`,
 							{},
 							qs,
 						);
@@ -631,7 +623,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/projects/${projectId}/tasks`,
+								requestPath`/workspaces/${workspaceId}/projects/${projectId}/tasks`,
 								{},
 								qs,
 							);
@@ -641,7 +633,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequest.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/projects/${projectId}/tasks`,
+								requestPath`/workspaces/${workspaceId}/projects/${projectId}/tasks`,
 								{},
 								qs,
 							);
@@ -669,7 +661,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'PUT',
-							`/workspaces/${workspaceId}/projects/${projectId}/tasks/${taskId}`,
+							requestPath`/workspaces/${workspaceId}/projects/${projectId}/tasks/${taskId}`,
 							body,
 							qs,
 						);
@@ -706,7 +698,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'POST',
-							`/workspaces/${workspaceId}/time-entries`,
+							requestPath`/workspaces/${workspaceId}/time-entries`,
 							body,
 							qs,
 						);
@@ -720,7 +712,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'DELETE',
-							`/workspaces/${workspaceId}/time-entries/${timeEntryId}`,
+							requestPath`/workspaces/${workspaceId}/time-entries/${timeEntryId}`,
 							{},
 							qs,
 						);
@@ -736,7 +728,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'GET',
-							`/workspaces/${workspaceId}/time-entries/${timeEntryId}`,
+							requestPath`/workspaces/${workspaceId}/time-entries/${timeEntryId}`,
 							{},
 							qs,
 						);
@@ -770,7 +762,7 @@ export class Clockify implements INodeType {
 							} = await clockifyApiRequest.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/time-entries/${timeEntryId}`,
+								requestPath`/workspaces/${workspaceId}/time-entries/${timeEntryId}`,
 								{},
 								qs,
 							);
@@ -781,7 +773,7 @@ export class Clockify implements INodeType {
 						responseData = await clockifyApiRequest.call(
 							this,
 							'PUT',
-							`/workspaces/${workspaceId}/time-entries/${timeEntryId}`,
+							requestPath`/workspaces/${workspaceId}/time-entries/${timeEntryId}`,
 							body,
 							qs,
 						);
@@ -802,7 +794,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/users`,
+								requestPath`/workspaces/${workspaceId}/users`,
 								{},
 								qs,
 							);
@@ -812,7 +804,7 @@ export class Clockify implements INodeType {
 							responseData = await clockifyApiRequestAllItems.call(
 								this,
 								'GET',
-								`/workspaces/${workspaceId}/users`,
+								requestPath`/workspaces/${workspaceId}/users`,
 								{},
 								qs,
 							);
@@ -825,7 +817,13 @@ export class Clockify implements INodeType {
 				if (resource === 'workspace') {
 					if (operation === 'getAll') {
 						const returnAll = this.getNodeParameter('returnAll', i);
-						responseData = await clockifyApiRequest.call(this, 'GET', '/workspaces', {}, qs);
+						responseData = await clockifyApiRequest.call(
+							this,
+							'GET',
+							requestPath`/workspaces`,
+							{},
+							qs,
+						);
 						if (!returnAll) {
 							qs.limit = this.getNodeParameter('limit', i);
 							responseData = responseData.splice(0, qs.limit);

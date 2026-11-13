@@ -1,3 +1,5 @@
+import isEmpty from 'lodash/isEmpty';
+import set from 'lodash/set';
 import type {
 	IExecuteFunctions,
 	IDataObject,
@@ -6,20 +8,16 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { deepCopy } from 'n8n-workflow';
-
-import { Converter } from 'showdown';
-
+import { NodeConnectionTypes, deepCopy } from 'n8n-workflow';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
-
-import isEmpty from 'lodash/isEmpty';
-import set from 'lodash/set';
+import { Converter } from 'showdown';
 
 export class Markdown implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Markdown',
 		name: 'markdown',
-		icon: 'file:markdown.svg',
+		icon: 'node:markdown',
+		iconColor: 'black',
 		group: ['output'],
 		version: 1,
 		subtitle:
@@ -28,8 +26,8 @@ export class Markdown implements INodeType {
 		defaults: {
 			name: 'Markdown',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [],
 		properties: [
 			{
@@ -97,7 +95,7 @@ export class Markdown implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				default: {},
 				displayOptions: {
 					show: {
@@ -299,7 +297,7 @@ export class Markdown implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				default: {},
 				displayOptions: {
 					show: {

@@ -1,0 +1,513 @@
+import { N8N_CLIENT_EDITOR_UI, N8N_CLIENT_HEADER } from '@n8n/api-types';
+import { BaseError } from '@n8n/errors';
+
+import {
+	MfaRequiredError,
+	ResponseError,
+	STREAM_SEPARATOR,
+	makePublicApiRequest,
+	makeRestApiRequest,
+	request,
+	requestResponse,
+	setUnauthorizedHandler,
+	streamRequest,
+} from './utils';
+
+const { axiosRequest } = vi.hoisted(() => ({ axiosRequest: vi.fn() }));
+
+vi.mock('axios', () => ({
+	default: { request: axiosRequest },
+}));
+
+describe('request', () => {
+	afterEach(() => {
+		setUnauthorizedHandler(() => {});
+	});
+
+	const baseConfig = {
+		method: 'GET' as const,
+		baseURL: 'https://api.example.com',
+		endpoint: '/workflows',
+	};
+
+	it('calls the registered unauthorized handler with the request baseURL on a 401 response', async () => {
+		axiosRequest.mockRejectedValueOnce({
+			response: { status: 401, data: { message: 'Unauthorized' } },
+		});
+
+		const handler = vi.fn();
+		setUnauthorizedHandler(handler);
+
+		await expect(request(baseConfig)).rejects.toThrow('Unauthorized');
+
+		expect(handler).toHaveBeenCalledExactlyOnceWith(baseConfig.baseURL);
+	});
+
+	it('does not call the unauthorized handler on a non-401 error response', async () => {
+		axiosRequest.mockRejectedValueOnce({
+			response: { status: 500, data: { message: 'Internal Server Error' } },
+		});
+
+		const handler = vi.fn();
+		setUnauthorizedHandler(handler);
+
+		await expect(request(baseConfig)).rejects.toThrow('Internal Server Error');
+
+		expect(handler).not.toHaveBeenCalled();
+	});
+
+	it('does not call the unauthorized handler on a 401 that is actually an MFA-required response', async () => {
+		axiosRequest.mockRejectedValueOnce({
+			response: { status: 401, data: { message: 'Unauthorized', mfaRequired: true } },
+		});
+
+		const handler = vi.fn();
+		setUnauthorizedHandler(handler);
+
+		await expect(request(baseConfig)).rejects.toThrow(MfaRequiredError);
+
+		expect(handler).not.toHaveBeenCalled();
+	});
+});
+
+describe('request headers', () => {
+	it('sends the headers from its config with the request', async () => {
+		axiosRequest.mockResolvedValueOnce({ data: {} });
+		const headers = { [N8N_CLIENT_HEADER]: N8N_CLIENT_EDITOR_UI };
+
+		await request({
+			method: 'GET',
+			baseURL: 'https://api.example.com',
+			endpoint: '/workflows',
+			headers,
+		});
+
+		expect(axiosRequest).toHaveBeenCalledWith(expect.objectContaining({ headers }));
+	});
+});
+
+describe('makePublicApiRequest', () => {
+	it('sends the context headers with the public API base URL', async () => {
+		axiosRequest.mockResolvedValueOnce({ data: { id: 'workflow-1' } });
+		const headers = { [N8N_CLIENT_HEADER]: N8N_CLIENT_EDITOR_UI };
+
+		const result = await makePublicApiRequest(
+			{ baseUrl: 'https://api.example.com/api/v1', headers },
+			'GET',
+			'/workflows',
+		);
+
+		expect(result).toEqual({ id: 'workflow-1' });
+		expect(axiosRequest).toHaveBeenCalledWith(
+			expect.objectContaining({
+				baseURL: 'https://api.example.com/api/v1',
+				url: '/workflows',
+				headers,
+			}),
+		);
+	});
+});
+
+describe('makeRestApiRequest', () => {
+	it('does not send the editor UI client header on a REST API request', async () => {
+		axiosRequest.mockResolvedValueOnce({ data: { data: [] } });
+
+		await makeRestApiRequest(
+			{ baseUrl: 'https://api.example.com', pushRef: 'push-ref' },
+			'GET',
+			'/workflows',
+		);
+
+		const sentHeaders = axiosRequest.mock.lastCall?.[0].headers;
+		expect(sentHeaders).toEqual({ 'push-ref': 'push-ref' });
+		expect(sentHeaders).not.toHaveProperty(N8N_CLIENT_HEADER);
+	});
+});
+
+describe('requestResponse', () => {
+	afterEach(() => {
+		setUnauthorizedHandler(() => {});
+	});
+
+	const baseConfig = {
+		method: 'GET' as const,
+		baseURL: 'https://api.example.com',
+		endpoint: '/export',
+	};
+
+	it('returns the whole response and passes the response type to axios', async () => {
+		const blob = new Blob(['a,b\r\n']);
+		const response = { data: blob, headers: { 'content-disposition': 'attachment' }, status: 200 };
+		axiosRequest.mockResolvedValueOnce(response);
+
+		const result = await requestResponse({ ...baseConfig, responseType: 'blob' });
+
+		expect(result).toBe(response);
+		expect(axiosRequest).toHaveBeenCalledWith(expect.objectContaining({ responseType: 'blob' }));
+	});
+
+	/** A JSON error body as a Blob. jsdom's Blob has no `text()`, which every browser has. */
+	function jsonBlob(body: object): Blob {
+		const text = JSON.stringify(body);
+		const blob = new Blob([text]);
+		Object.defineProperty(blob, 'text', { value: async () => text });
+		return blob;
+	}
+
+	it('reads a blob error body, so an MFA-required 401 on a blob request is still recognised', async () => {
+		axiosRequest.mockRejectedValueOnce({
+			response: { status: 401, data: jsonBlob({ message: 'Unauthorized', mfaRequired: true }) },
+		});
+		const handler = vi.fn();
+		setUnauthorizedHandler(handler);
+
+		await expect(requestResponse({ ...baseConfig, responseType: 'blob' })).rejects.toThrow(
+			MfaRequiredError,
+		);
+
+		expect(handler).not.toHaveBeenCalled();
+	});
+
+	it('throws the server message from a blob error body', async () => {
+		axiosRequest.mockRejectedValueOnce({
+			response: { status: 403, data: jsonBlob({ message: 'Forbidden' }) },
+		});
+
+		await expect(requestResponse({ ...baseConfig, responseType: 'blob' })).rejects.toMatchObject({
+			message: 'Forbidden',
+			httpStatusCode: 403,
+		});
+	});
+});
+
+describe('streamRequest', () => {
+	it('should stream data from the API endpoint', async () => {
+		const encoder = new TextEncoder();
+		const mockResponse = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode(`${JSON.stringify({ chunk: 1 })}${STREAM_SEPARATOR}`));
+				controller.enqueue(encoder.encode(`${JSON.stringify({ chunk: 2 })}${STREAM_SEPARATOR}`));
+				controller.enqueue(encoder.encode(`${JSON.stringify({ chunk: 3 })}${STREAM_SEPARATOR}`));
+				controller.close();
+			},
+		});
+
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			body: mockResponse,
+		});
+
+		global.fetch = mockFetch;
+
+		const onChunkMock = vi.fn();
+		const onDoneMock = vi.fn();
+		const onErrorMock = vi.fn();
+
+		await streamRequest(
+			{
+				baseUrl: 'https://api.example.com',
+				pushRef: '',
+			},
+			'/data',
+			{ key: 'value' },
+			onChunkMock,
+			onDoneMock,
+			onErrorMock,
+		);
+
+		expect(mockFetch).toHaveBeenCalledWith('https://api.example.com/data', {
+			method: 'POST',
+			body: JSON.stringify({ key: 'value' }),
+			credentials: 'include',
+			headers: {
+				'Content-Type': 'application/json',
+				'browser-id': expect.stringContaining('-'),
+			},
+		});
+
+		expect(onChunkMock).toHaveBeenCalledTimes(3);
+		expect(onChunkMock).toHaveBeenNthCalledWith(1, { chunk: 1 });
+		expect(onChunkMock).toHaveBeenNthCalledWith(2, { chunk: 2 });
+		expect(onChunkMock).toHaveBeenNthCalledWith(3, { chunk: 3 });
+
+		expect(onDoneMock).toHaveBeenCalledTimes(1);
+		expect(onErrorMock).not.toHaveBeenCalled();
+	});
+
+	it('should stream error response with error data from the API endpoint', async () => {
+		const testError = { code: 500, message: 'Error happened' };
+		const encoder = new TextEncoder();
+		const mockResponse = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode(JSON.stringify(testError)));
+				controller.close();
+			},
+		});
+
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 500,
+			statusText: 'Internal Server Error',
+			body: mockResponse,
+		});
+
+		global.fetch = mockFetch;
+
+		const onChunkMock = vi.fn();
+		const onDoneMock = vi.fn();
+		const onErrorMock = vi.fn();
+
+		await streamRequest(
+			{
+				baseUrl: 'https://api.example.com',
+				pushRef: '',
+			},
+			'/data',
+			{ key: 'value' },
+			onChunkMock,
+			onDoneMock,
+			onErrorMock,
+		);
+
+		expect(mockFetch).toHaveBeenCalledWith('https://api.example.com/data', {
+			method: 'POST',
+			body: JSON.stringify({ key: 'value' }),
+			credentials: 'include',
+			headers: {
+				'Content-Type': 'application/json',
+				'browser-id': expect.stringContaining('-'),
+			},
+		});
+
+		expect(onChunkMock).not.toHaveBeenCalled();
+		expect(onDoneMock).not.toHaveBeenCalled();
+		expect(onErrorMock).toHaveBeenCalledExactlyOnceWith(
+			new ResponseError(testError.message, { httpStatusCode: 500 }),
+		);
+	});
+
+	it('should call onError when stream ends immediately with non-ok status and no chunks', async () => {
+		const mockResponse = new ReadableStream({
+			start(controller) {
+				// Empty stream that just closes without sending any chunks
+				controller.close();
+			},
+		});
+
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 403,
+			statusText: 'Forbidden',
+			body: mockResponse,
+		});
+
+		global.fetch = mockFetch;
+
+		const onChunkMock = vi.fn();
+		const onDoneMock = vi.fn();
+		const onErrorMock = vi.fn();
+
+		await streamRequest(
+			{
+				baseUrl: 'https://api.example.com',
+				pushRef: '',
+			},
+			'/data',
+			{ key: 'value' },
+			onChunkMock,
+			onDoneMock,
+			onErrorMock,
+		);
+
+		expect(onChunkMock).not.toHaveBeenCalled();
+		expect(onDoneMock).not.toHaveBeenCalled();
+		expect(onErrorMock).toHaveBeenCalledTimes(1);
+		expect(onErrorMock).toHaveBeenCalledExactlyOnceWith(
+			new ResponseError('Forbidden', { httpStatusCode: 403 }),
+		);
+	});
+
+	it('should call onError when an ok stream ends with unparseable leftover content', async () => {
+		const encoder = new TextEncoder();
+		const mockResponse = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode(`${JSON.stringify({ chunk: 1 })}${STREAM_SEPARATOR}`));
+				// Plain-text error body appended to an already-started 200 stream
+				controller.enqueue(encoder.encode('Something went wrong. Please try again later.'));
+				controller.close();
+			},
+		});
+
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			body: mockResponse,
+		});
+
+		global.fetch = mockFetch;
+
+		const onChunkMock = vi.fn();
+		const onDoneMock = vi.fn();
+		const onErrorMock = vi.fn();
+
+		await streamRequest(
+			{
+				baseUrl: 'https://api.example.com',
+				pushRef: '',
+			},
+			'/data',
+			{ key: 'value' },
+			onChunkMock,
+			onDoneMock,
+			onErrorMock,
+		);
+
+		expect(onChunkMock).toHaveBeenCalledExactlyOnceWith({ chunk: 1 });
+		expect(onDoneMock).not.toHaveBeenCalled();
+		expect(onErrorMock).toHaveBeenCalledExactlyOnceWith(
+			new Error('Something went wrong. Please try again later.'),
+		);
+	});
+
+	it('should call onError with a generic message when the stream is cut off mid-JSON', async () => {
+		const encoder = new TextEncoder();
+		const mockResponse = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode(`${JSON.stringify({ chunk: 1 })}${STREAM_SEPARATOR}`));
+				// Stream ends abruptly in the middle of a JSON chunk
+				controller.enqueue(encoder.encode('{"sessionId":"abc","messages":[{"role":"assi'));
+				controller.close();
+			},
+		});
+
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			body: mockResponse,
+		});
+
+		global.fetch = mockFetch;
+
+		const onChunkMock = vi.fn();
+		const onDoneMock = vi.fn();
+		const onErrorMock = vi.fn();
+
+		await streamRequest(
+			{
+				baseUrl: 'https://api.example.com',
+				pushRef: '',
+			},
+			'/data',
+			{ key: 'value' },
+			onChunkMock,
+			onDoneMock,
+			onErrorMock,
+		);
+
+		expect(onChunkMock).toHaveBeenCalledExactlyOnceWith({ chunk: 1 });
+		expect(onDoneMock).not.toHaveBeenCalled();
+		expect(onErrorMock).toHaveBeenCalledExactlyOnceWith(new Error('Connection lost'));
+	});
+
+	it('should handle broken stream data', async () => {
+		const encoder = new TextEncoder();
+		const mockResponse = new ReadableStream({
+			start(controller) {
+				controller.enqueue(
+					encoder.encode(`${JSON.stringify({ chunk: 1 })}${STREAM_SEPARATOR}{"chunk": `),
+				);
+				controller.enqueue(encoder.encode(`2}${STREAM_SEPARATOR}{"ch`));
+				controller.enqueue(encoder.encode('unk":'));
+				controller.enqueue(encoder.encode(`3}${STREAM_SEPARATOR}`));
+				controller.close();
+			},
+		});
+
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			body: mockResponse,
+		});
+
+		global.fetch = mockFetch;
+
+		const onChunkMock = vi.fn();
+		const onDoneMock = vi.fn();
+		const onErrorMock = vi.fn();
+
+		await streamRequest(
+			{
+				baseUrl: 'https://api.example.com',
+				pushRef: '',
+			},
+			'/data',
+			{ key: 'value' },
+			onChunkMock,
+			onDoneMock,
+			onErrorMock,
+		);
+
+		expect(mockFetch).toHaveBeenCalledWith('https://api.example.com/data', {
+			method: 'POST',
+			body: JSON.stringify({ key: 'value' }),
+			credentials: 'include',
+			headers: {
+				'Content-Type': 'application/json',
+				'browser-id': expect.stringContaining('-'),
+			},
+		});
+
+		expect(onChunkMock).toHaveBeenCalledTimes(3);
+		expect(onChunkMock).toHaveBeenNthCalledWith(1, { chunk: 1 });
+		expect(onChunkMock).toHaveBeenNthCalledWith(2, { chunk: 2 });
+		expect(onChunkMock).toHaveBeenNthCalledWith(3, { chunk: 3 });
+
+		expect(onDoneMock).toHaveBeenCalledTimes(1);
+		expect(onErrorMock).not.toHaveBeenCalled();
+	});
+});
+
+describe('ResponseError', () => {
+	it('is a BaseError with the response fields', () => {
+		const error = new ResponseError('Not found', {
+			errorCode: 4040,
+			httpStatusCode: 404,
+			stack: 'server stack',
+			meta: { url: 'https://example.com' },
+			hint: 'Check the ID',
+		});
+
+		expect(error).toBeInstanceOf(Error);
+		expect(error).toBeInstanceOf(BaseError);
+		expect(error.name).toBe('ResponseError');
+		expect(error.message).toBe('Not found');
+		expect(error.errorCode).toBe(4040);
+		expect(error.httpStatusCode).toBe(404);
+		expect(error.serverStackTrace).toBe('server stack');
+		expect(error.stack).not.toBe('server stack');
+		expect(error.meta).toEqual({ url: 'https://example.com' });
+		expect(error.hint).toBe('Check the ID');
+		expect(error.level).toBe('error');
+		expect(error.description).toBeUndefined();
+	});
+
+	it('leaves the optional fields undefined when they are not given', () => {
+		const error = new ResponseError('Failed');
+
+		expect(error.errorCode).toBeUndefined();
+		expect(error.httpStatusCode).toBeUndefined();
+		expect(error.serverStackTrace).toBeUndefined();
+		expect(error.meta).toBeUndefined();
+		expect(error.hint).toBeUndefined();
+	});
+
+	it('keeps its name when the class name is changed by minification', () => {
+		const originalName = Object.getOwnPropertyDescriptor(ResponseError, 'name');
+		Object.defineProperty(ResponseError, 'name', { value: 'e', configurable: true });
+
+		try {
+			expect(new ResponseError('Failed').name).toBe('ResponseError');
+		} finally {
+			if (originalName) Object.defineProperty(ResponseError, 'name', originalName);
+		}
+	});
+});

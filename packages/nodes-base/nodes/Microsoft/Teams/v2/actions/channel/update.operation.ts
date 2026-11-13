@@ -1,7 +1,9 @@
 import type { INodeProperties, IExecuteFunctions, IDataObject } from 'n8n-workflow';
-import { microsoftApiRequest } from '../../transport';
-import { channelRLC, teamRLC } from '../../descriptions';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { channelRLC, teamRLC } from '../../descriptions';
+import { buildTeamsPath, microsoftApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [
 	teamRLC,
@@ -19,7 +21,7 @@ const properties: INodeProperties[] = [
 		name: 'options',
 		type: 'collection',
 		default: {},
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		options: [
 			{
 				displayName: 'Description',
@@ -62,7 +64,7 @@ export async function execute(this: IExecuteFunctions, i: number) {
 	await microsoftApiRequest.call(
 		this,
 		'PATCH',
-		`/v1.0/teams/${teamId}/channels/${channelId}`,
+		buildTeamsPath.call(this, ['/v1.0/teams/', { id: teamId }, '/channels/', { id: channelId }]),
 		body,
 	);
 	return { success: true };

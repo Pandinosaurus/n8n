@@ -9,7 +9,8 @@ export class DateTime extends VersionedNodeType {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'Date & Time',
 			name: 'dateTime',
-			icon: 'fa:clock',
+			icon: 'node:date-and-time',
+			iconColor: 'green',
 			group: ['transform'],
 			defaultVersion: 2,
 			description: 'Allows you to manipulate date and time values',

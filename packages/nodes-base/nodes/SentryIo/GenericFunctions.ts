@@ -7,31 +7,42 @@ import type {
 	IRequestOptions,
 	IWebhookFunctions,
 	JsonObject,
+	LegacyRequestOptions,
+	RequestPath,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { decodePathValue, NodeApiError, requestUrl } from 'n8n-workflow';
+
+export const toPathValue = (nodeVersion: number, value: string) =>
+	nodeVersion < 1.1 ? decodePathValue(value) : value;
+
+function withNextPage(
+	options: WithRequestTarget<IRequestOptions, 'uri'>,
+	uri?: string,
+): LegacyRequestOptions {
+	return uri ? { ...options, uri } : options;
+}
 
 export async function sentryIoApiRequest(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions | IWebhookFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	qs: IDataObject = {},
 	uri?: string,
-	option: IDataObject = {},
+	option: Pick<IRequestOptions, 'resolveWithFullResponse'> = {},
 ): Promise<any> {
 	const authentication = this.getNodeParameter('authentication', 0);
-
-	const version = this.getNodeParameter('sentryVersion', 0);
 
 	const options = {
 		headers: {},
 		method,
 		qs,
 		body,
-		uri: uri || `https://sentry.io${resource}`,
+		uri: requestUrl`https://sentry.io${resource}`,
 		json: true,
-	} satisfies IRequestOptions;
+	} satisfies WithRequestTarget<IRequestOptions, 'uri'>;
 	if (!Object.keys(body as IDataObject).length) {
 		delete options.body;
 	}
@@ -47,27 +58,31 @@ export async function sentryIoApiRequest(
 	let credentialName;
 
 	try {
-		if (authentication === 'accessToken') {
-			if (version === 'cloud') {
-				credentialName = 'sentryIoApi';
-			} else {
-				credentialName = 'sentryIoServerApi';
-			}
-
-			const credentials = await this.getCredentials(credentialName);
-
-			if (credentials.url) {
-				options.uri = `${credentials?.url}${resource}`;
-			}
-
-			options.headers = {
-				Authorization: `Bearer ${credentials?.token}`,
-			};
-
-			return await this.helpers.request(options);
-		} else {
-			return await this.helpers.requestOAuth2.call(this, 'sentryIoOAuth2Api', options);
+		if (authentication === 'oAuth2') {
+			return await this.helpers.requestOAuth2.call(
+				this,
+				'sentryIoOAuth2Api',
+				withNextPage(options, uri),
+			);
 		}
+
+		if (authentication === 'accessToken') {
+			credentialName = 'sentryIoApi';
+		} else {
+			credentialName = 'sentryIoServerApi';
+		}
+
+		const credentials = await this.getCredentials(credentialName);
+
+		if (credentials.url) {
+			options.uri = requestUrl`${credentials.url}${resource}`;
+		}
+
+		options.headers = {
+			Authorization: `Bearer ${credentials?.token}`,
+		};
+
+		return await this.helpers.request(withNextPage(options, credentials.url ? undefined : uri));
 	} catch (error) {
 		throw new NodeApiError(this.getNode(), error as JsonObject);
 	}
@@ -96,7 +111,7 @@ function hasMore(link: string) {
 export async function sentryApiRequestAllItems(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	resource: string,
+	resource: RequestPath,
 
 	body: any = {},
 	query: IDataObject = {},

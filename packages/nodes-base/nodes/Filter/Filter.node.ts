@@ -9,14 +9,20 @@ export class Filter extends VersionedNodeType {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'Filter',
 			name: 'filter',
-			icon: 'fa:filter',
+			icon: 'node:filter',
+			iconColor: 'light-blue',
 			group: ['transform'],
-			description: 'Remove items matching a condition',
+			description: 'Keep only items matching a condition',
+			defaultVersion: 2.4,
 		};
 
 		const nodeVersions: IVersionedNodeType['nodeVersions'] = {
 			1: new FilterV1(baseDescription),
 			2: new FilterV2(baseDescription),
+			2.1: new FilterV2(baseDescription),
+			2.2: new FilterV2(baseDescription),
+			2.3: new FilterV2(baseDescription),
+			2.4: new FilterV2(baseDescription),
 		};
 
 		super(nodeVersions, baseDescription);

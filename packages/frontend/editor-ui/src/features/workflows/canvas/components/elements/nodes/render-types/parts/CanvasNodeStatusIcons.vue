@@ -1,0 +1,312 @@
+<script setup lang="ts">
+import { computed, inject, useCssModule } from 'vue';
+import TitledList from '@/app/components/TitledList.vue';
+import { useNodeHelpers } from '@/app/composables/useNodeHelpers';
+import { useCanvasNode } from '../../../../../composables/useCanvasNode';
+import { injectCanvasRenderData } from '@/features/workflows/canvas/canvas.utils';
+import { useI18n } from '@n8n/i18n';
+import { CanvasNodeDirtiness, CanvasNodeRenderType } from '../../../../../canvas.types';
+import { useRoute } from 'vue-router';
+import { EditorEnabledFeaturesKey, VIEWS } from '@/app/constants';
+import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
+
+import { N8nIcon, N8nTooltip } from '@n8n/design-system';
+import {
+	describeSubWorkflowRestriction,
+	useSubWorkflowRestriction,
+} from '@n8n/frontend-module-type-availability-policies';
+import { usePolicyViolationLabels } from '@/app/composables/usePolicyViolationLabels';
+import CanvasNodeStatusMark from './CanvasNodeStatusMark.vue';
+const {
+	size = 'large',
+	spinnerScrim = false,
+	spinnerLayout = 'absolute',
+} = defineProps<{
+	size?: 'small' | 'medium' | 'large';
+	spinnerScrim?: boolean;
+	spinnerLayout?: 'absolute' | 'static';
+}>();
+
+const nodeHelpers = useNodeHelpers();
+const i18n = useI18n();
+const $style = useCssModule();
+
+const {
+	id,
+	name,
+	validationErrors,
+	hasValidationErrors,
+	executionStatus,
+	hasRunData,
+	runDataIterations,
+	isDisabled,
+	isReadOnly,
+	render,
+	isNotInstalledCommunityNode,
+	isRestricted,
+	restrictionScope,
+	isDeprecated,
+	deprecatedReplacementName,
+} = useCanvasNode();
+const renderData = injectCanvasRenderData();
+
+const deprecatedTooltip = computed(() =>
+	deprecatedReplacementName.value
+		? i18n.baseText('node.deprecatedWithReplacement', {
+				interpolate: { nodeTypeName: deprecatedReplacementName.value },
+			})
+		: i18n.baseText('node.deprecated'),
+);
+
+const editorFeatures = inject(EditorEnabledFeaturesKey, undefined);
+const workflowDocumentStore = injectWorkflowDocumentStore();
+const needsCredentialSetup = computed(() => {
+	if (!editorFeatures?.value.credentialSetupWarnings) return false;
+	const node = workflowDocumentStore.value.getNodeById(id.value);
+	const issues = node?.issues;
+	const credentialTypes = Object.keys(issues?.credentials ?? {});
+	if (!node || !credentialTypes.length) return false;
+	if (
+		Object.entries(issues ?? {}).some(
+			([kind, issue]) =>
+				kind !== 'credentials' &&
+				(typeof issue === 'boolean' ? issue : Object.keys(issue ?? {}).length > 0),
+		)
+	)
+		return false;
+	return credentialTypes.every((type) => {
+		const credential = node.credentials?.[type];
+		return !credential?.id && !credential?.__aiGatewayManaged;
+	});
+});
+const { labelOf } = usePolicyViolationLabels();
+const { restriction: subWorkflowRestriction } = useSubWorkflowRestriction({
+	parentWorkflowId: () => workflowDocumentStore.value.workflowId,
+	node: () => workflowDocumentStore.value.getNodeById(id.value),
+	// The check is gated like the sub-workflow picker, so a viewer would only get a 403.
+	enabled: () =>
+		!isReadOnly.value && workflowDocumentStore.value.scopes.includes('workflow:update'),
+});
+const subWorkflowRestrictionLines = computed(() =>
+	subWorkflowRestriction.value
+		? describeSubWorkflowRestriction(subWorkflowRestriction.value, labelOf)
+		: [],
+);
+const executionErrors = computed(
+	() => renderData.value.executionIssuesByNodeId.get(id.value)?.value ?? [],
+);
+const hasExecutionErrors = computed(() => executionErrors.value.length > 0);
+const hasPinnedData = computed(() => !!renderData.value.pinnedDataByNodeName[name.value]);
+const hasExecutionPinData = computed(
+	() => !!renderData.value.getDisplayedExecutionPinData(id.value),
+);
+const hasVisiblePinData = computed(() => hasPinnedData.value || hasExecutionPinData.value);
+const route = useRoute();
+
+// Hosts such as template previews opt out of issue indicators (validation
+// and execution errors) when the viewer can't act on them.
+const hideNodeIssues = computed(() => editorFeatures?.value.showNodeIssues === false);
+const isDemoRoute = computed(() => route.name === VIEWS.DEMO);
+const dirtiness = computed(() =>
+	render.value.type === CanvasNodeRenderType.Default ? render.value.options.dirtiness : undefined,
+);
+
+const commonClasses = computed(() => [
+	$style.status,
+	spinnerScrim ? $style.spinnerScrim : '',
+	spinnerLayout === 'absolute' ? $style.absoluteSpinner : '',
+]);
+
+const restrictionTitle = computed(() =>
+	i18n.baseText(
+		restrictionScope.value === 'project'
+			? 'node.restricted.project.title'
+			: 'node.restricted.instance.title',
+	),
+);
+
+const groupedExecutionErrors = computed(() => {
+	const errorCounts = executionErrors.value.reduce(
+		(acc, error) => {
+			acc[error] = (acc[error] || 0) + 1;
+			return acc;
+		},
+		{} as Record<string, number>,
+	);
+
+	return Object.entries(errorCounts).map(([error, count]) =>
+		count > 1 ? `${error} (x${count})` : error,
+	);
+});
+</script>
+
+<template>
+	<div
+		v-if="isRestricted"
+		:class="[...commonClasses, $style.issues]"
+		data-test-id="node-restricted"
+	>
+		<N8nTooltip :show-after="500" placement="bottom">
+			<template #content>{{ restrictionTitle }}</template>
+			<N8nIcon icon="lock" :size="size" />
+		</N8nTooltip>
+	</div>
+	<div
+		v-else-if="isNotInstalledCommunityNode && !isDemoRoute"
+		:class="[...commonClasses, $style.issues]"
+		data-test-id="node-not-installed"
+	>
+		<N8nTooltip :show-after="500" placement="bottom">
+			<template #content> {{ i18n.baseText('node.install-to-use') }} </template>
+			<N8nIcon icon="hard-drive-download" :size="size" />
+		</N8nTooltip>
+	</div>
+	<div v-else-if="isDisabled" :class="[...commonClasses, $style.disabled]">
+		<N8nIcon icon="power" :size="size" />
+	</div>
+	<div
+		v-else-if="hasExecutionErrors && !hideNodeIssues"
+		:class="[...commonClasses, $style.issues]"
+		data-test-id="node-issues"
+	>
+		<N8nTooltip :show-after="500" placement="bottom">
+			<template #content>
+				<TitledList :title="`${i18n.baseText('node.issues')}:`" :items="groupedExecutionErrors" />
+			</template>
+			<CanvasNodeStatusMark status="error" :size="size" />
+		</N8nTooltip>
+	</div>
+	<div
+		v-else-if="isDeprecated"
+		:class="[...commonClasses, $style.deprecated]"
+		data-test-id="canvas-node-status-deprecated"
+	>
+		<N8nTooltip :show-after="500" placement="bottom">
+			<template #content> {{ deprecatedTooltip }} </template>
+			<N8nIcon icon="triangle-alert" :size="size" />
+		</N8nTooltip>
+	</div>
+	<div
+		v-else-if="hasValidationErrors && !hideNodeIssues"
+		:class="[...commonClasses, needsCredentialSetup ? $style.warning : $style.issues]"
+		:data-test-id="needsCredentialSetup ? 'node-setup-required' : 'node-issues'"
+	>
+		<N8nTooltip :show-after="500" placement="bottom">
+			<template #content>
+				<TitledList
+					:title="i18n.baseText(needsCredentialSetup ? 'node.setupRequired' : 'node.issues')"
+					:items="validationErrors"
+				/>
+			</template>
+			<N8nIcon :icon="needsCredentialSetup ? 'key-round' : 'node-validation-error'" :size="size" />
+		</N8nTooltip>
+	</div>
+	<div
+		v-else-if="subWorkflowRestriction"
+		:class="[...commonClasses, $style.warning]"
+		data-test-id="node-sub-workflow-restricted"
+	>
+		<N8nTooltip :show-after="500" placement="bottom">
+			<template #content>
+				<TitledList
+					:title="subWorkflowRestrictionLines[0]"
+					:items="subWorkflowRestrictionLines.slice(1)"
+				/>
+			</template>
+			<N8nIcon icon="triangle-alert" :size="size" />
+		</N8nTooltip>
+	</div>
+	<div v-else-if="executionStatus === 'unknown'">
+		<!-- Do nothing, unknown means the node never executed -->
+	</div>
+	<div
+		v-else-if="
+			hasVisiblePinData && (!nodeHelpers.isProductionExecutionPreview.value || hasExecutionPinData)
+		"
+		data-test-id="canvas-node-status-pinned"
+		:class="[...commonClasses, $style.pinnedData]"
+	>
+		<N8nIcon icon="node-pin" :size="size" />
+	</div>
+	<div v-else-if="dirtiness !== undefined">
+		<N8nTooltip :show-after="500" placement="bottom">
+			<template #content>
+				{{
+					i18n.baseText(
+						dirtiness === CanvasNodeDirtiness.PARAMETERS_UPDATED
+							? 'node.dirty'
+							: 'node.subjectToChange',
+					)
+				}}
+			</template>
+			<div data-test-id="canvas-node-status-warning" :class="[...commonClasses, $style.warning]">
+				<CanvasNodeStatusMark status="warning" :iterations="runDataIterations" :size="size" />
+			</div>
+		</N8nTooltip>
+	</div>
+	<div
+		v-else-if="hasRunData && executionStatus === 'success'"
+		data-test-id="canvas-node-status-success"
+		:class="commonClasses"
+	>
+		<CanvasNodeStatusMark status="success" :iterations="runDataIterations" :size="size" />
+	</div>
+</template>
+
+<style lang="scss" module>
+.status {
+	display: flex;
+	align-items: center;
+	gap: var(--spacing--5xs);
+	font-weight: var(--font-weight--medium);
+}
+
+.waiting {
+	color: var(--color--secondary);
+}
+
+.pinnedData {
+	color: var(--color--secondary);
+}
+
+.running {
+	color: hsl(var(--color--primary--h), var(--color--primary--s), var(--color--primary--l));
+
+	&.absoluteSpinner {
+		width: 100%;
+		height: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 3.75em;
+		color: hsla(var(--color--primary--h), var(--color--primary--s), var(--color--primary--l), 0.7);
+		position: absolute;
+		left: 0;
+		top: 0;
+		padding: var(--canvas-node--status-icons--margin);
+	}
+
+	&.spinnerScrim {
+		z-index: 10;
+		background-color: rgba(255, 255, 255, 0.82);
+		border-radius: var(--radius--lg);
+	}
+}
+
+.deprecated {
+	color: var(--color--danger);
+}
+
+.issues {
+	color: var(--color--danger);
+	cursor: default;
+}
+
+.warning {
+	color: var(--color--warning);
+}
+
+.disabled {
+	color: var(--color--foreground--shade-2);
+}
+</style>

@@ -1,4 +1,5 @@
 import type { INodeProperties } from 'n8n-workflow';
+
 import * as create from './create.operation';
 import * as deleteSpreadsheet from './delete.operation';
 
@@ -21,12 +22,14 @@ export const descriptions: INodeProperties[] = [
 				value: 'create',
 				description: 'Create a spreadsheet',
 				action: 'Create spreadsheet',
+				annotations: { effect: 'write', destructive: false, idempotent: false },
 			},
 			{
 				name: 'Delete',
 				value: 'deleteSpreadsheet',
 				description: 'Delete a spreadsheet',
 				action: 'Delete spreadsheet',
+				annotations: { effect: 'write', destructive: true, idempotent: false },
 			},
 		],
 		default: 'create',

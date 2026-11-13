@@ -1,3 +1,5 @@
+import flow from 'lodash/flow';
+import sortBy from 'lodash/sortBy';
 import type {
 	IExecuteFunctions,
 	IHookFunctions,
@@ -6,11 +8,11 @@ import type {
 	JsonObject,
 	IHttpRequestMethods,
 	IRequestOptions,
+	RequestPath,
+	RequestUrl,
+	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
-
-import flow from 'lodash/flow';
-import sortBy from 'lodash/sortBy';
+import { NodeApiError, NodeOperationError, requestPath, requestUrl } from 'n8n-workflow';
 
 import type {
 	AllFields,
@@ -34,30 +36,34 @@ export function throwOnErrorStatus(
 		data?: Array<{ status: string; message: string }>;
 	},
 ) {
-	if (responseData?.data?.[0].status === 'error') {
-		throw new NodeOperationError(this.getNode(), responseData as Error);
+	const errorRecord = responseData?.data?.[0];
+	if (errorRecord?.status === 'error') {
+		// Zoho returns per-record errors in a 2xx response, so surface the
+		// record's own message (e.g. "duplicate data") instead of a generic one.
+		throw new NodeOperationError(this.getNode(), errorRecord as unknown as Error, {
+			message: errorRecord.message,
+			description: JSON.stringify(errorRecord, null, 2),
+		});
 	}
 }
 
 export async function zohoApiRequest(
 	this: IExecuteFunctions | IHookFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
-	uri?: string,
+	uri?: RequestUrl,
 ) {
-	const { oauthTokenData } = (await this.getCredentials(
-		'zohoOAuth2Api',
-	)) as ZohoOAuth2ApiCredentials;
+	const { oauthTokenData } = await this.getCredentials<ZohoOAuth2ApiCredentials>('zohoOAuth2Api');
 
-	const options: IRequestOptions = {
+	const options: WithRequestTarget<IRequestOptions, 'uri'> = {
 		body: {
 			data: [body],
 		},
 		method,
 		qs,
-		uri: uri || `${oauthTokenData.api_domain}/crm/v2${endpoint}`,
+		uri: uri ?? requestUrl`${oauthTokenData.api_domain}/crm/v2${endpoint}`,
 		json: true,
 	};
 
@@ -92,7 +98,7 @@ export async function zohoApiRequest(
 export async function zohoApiRequestAllItems(
 	this: IHookFunctions | IExecuteFunctions | ILoadOptionsFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
 ) {
@@ -118,7 +124,7 @@ export async function zohoApiRequestAllItems(
 export async function handleListing(
 	this: IExecuteFunctions,
 	method: IHttpRequestMethods,
-	endpoint: string,
+	endpoint: RequestPath,
 	body: IDataObject = {},
 	qs: IDataObject = {},
 ) {
@@ -376,7 +382,7 @@ export async function getFields(
 	let { fields } = (await zohoApiRequest.call(
 		this,
 		'GET',
-		'/settings/fields',
+		requestPath`/settings/fields`,
 		{},
 		qs,
 	)) as LoadedFields;
@@ -411,7 +417,7 @@ export async function getPicklistOptions(
 	const responseData = (await zohoApiRequest.call(
 		this,
 		'GET',
-		'/settings/layouts',
+		requestPath`/settings/layouts`,
 		{},
 		qs,
 	)) as LoadedLayouts;

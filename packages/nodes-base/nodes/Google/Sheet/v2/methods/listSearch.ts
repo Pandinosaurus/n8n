@@ -4,7 +4,10 @@ import type {
 	INodeListSearchItems,
 	INodeListSearchResult,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeOperationError, requestPath, requestUrl } from 'n8n-workflow';
+
+import { escapeBackslashQuotedValue } from '@utils/query-escaping';
+
 import type { ResourceLocator } from '../helpers/GoogleSheets.types';
 import { getSpreadsheetId } from '../helpers/GoogleSheets.utils';
 import { apiRequest } from '../transport';
@@ -16,7 +19,7 @@ export async function spreadSheetsSearch(
 ): Promise<INodeListSearchResult> {
 	const query: string[] = [];
 	if (filter) {
-		query.push(`name contains '${filter.replace("'", "\\'")}'`);
+		query.push(`name contains '${escapeBackslashQuotedValue(filter)}'`);
 	}
 	query.push("mimeType = 'application/vnd.google-apps.spreadsheet'");
 
@@ -32,10 +35,10 @@ export async function spreadSheetsSearch(
 	const res = await apiRequest.call(
 		this,
 		'GET',
-		'',
+		requestPath``,
 		{},
 		qs,
-		'https://www.googleapis.com/drive/v3/files',
+		requestUrl`https://www.googleapis.com/drive/v3/files`,
 	);
 	return {
 		results: res.files.map((sheet: IDataObject) => ({
@@ -66,7 +69,7 @@ export async function sheetsSearch(
 	const responseData = await apiRequest.call(
 		this,
 		'GET',
-		`/v4/spreadsheets/${spreadsheetId}`,
+		requestPath`/v4/spreadsheets/${spreadsheetId}`,
 		{},
 		query,
 	);
@@ -84,7 +87,6 @@ export async function sheetsSearch(
 		returnData.push({
 			name: sheet.properties!.title as string,
 			value: (sheet.properties!.sheetId as number) || 'gid=0',
-			//prettier-ignore
 			url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${sheet.properties!.sheetId}`,
 		});
 	}

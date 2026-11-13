@@ -1,5 +1,12 @@
 import type { INodeProperties } from 'n8n-workflow';
 
+import {
+	databaseUrlExtractionRegexp,
+	databaseUrlValidationRegexp,
+	idExtractionRegexp,
+	idValidationRegexp,
+} from '../constants';
+
 export const databaseOperations: INodeProperties[] = [
 	{
 		displayName: 'Operation',
@@ -92,13 +99,12 @@ export const databaseFields: INodeProperties[] = [
 				name: 'url',
 				type: 'string',
 				placeholder:
-					'https://www.notion.so/0fe2f7de558b471eab07e9d871cdf4a9?v=f2d424ba0c404733a3f500c78c881610',
+					'https://www.notion.com/0fe2f7de558b471eab07e9d871cdf4a9?v=f2d424ba0c404733a3f500c78c881610',
 				validation: [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}).*',
+							regex: databaseUrlValidationRegexp,
 							errorMessage:
 								'Not a valid Notion Database URL. Hint: use the URL of the database itself, not a page containing it.',
 						},
@@ -106,8 +112,7 @@ export const databaseFields: INodeProperties[] = [
 				],
 				extractValue: {
 					type: 'regex',
-					regex:
-						'(?:https|http)://www.notion.so/(?:[a-z0-9-]{2,}/)?([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})',
+					regex: databaseUrlExtractionRegexp,
 				},
 			},
 			{
@@ -119,17 +124,16 @@ export const databaseFields: INodeProperties[] = [
 					{
 						type: 'regex',
 						properties: {
-							regex:
-								'^(([0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12})|([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))[ \t]*',
+							regex: idValidationRegexp,
 							errorMessage: 'Not a valid Notion Database ID',
 						},
 					},
 				],
 				extractValue: {
 					type: 'regex',
-					regex: '^([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-?[89ab][0-9a-f]{3}-?[0-9a-f]{12})',
+					regex: idExtractionRegexp,
 				},
-				url: '=https://www.notion.so/{{$value.replace(/-/g, "")}}',
+				url: '=https://www.notion.com/{{$value.replace(/-/g, "")}}',
 			},
 		],
 		displayOptions: {
@@ -169,7 +173,6 @@ export const databaseFields: INodeProperties[] = [
 		},
 		typeOptions: {
 			minValue: 1,
-			maxValue: 100,
 		},
 		default: 50,
 		description: 'Max number of results to return',
@@ -189,6 +192,10 @@ export const databaseFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint:
+				'When true, returns only id, name, and url for each database. Set false to retain native database fields such as the properties schema. This operation returns database metadata, not database-page property values. Match verification output fixtures to the selected output mode.',
+		},
 	},
 	/* -------------------------------------------------------------------------- */
 	/*                                database:search                             */
@@ -249,6 +256,10 @@ export const databaseFields: INodeProperties[] = [
 		},
 		default: true,
 		description: 'Whether to return a simplified version of the response instead of the raw data',
+		builderHint: {
+			propertyHint:
+				'When true, returns only id, name, and url for each database. Set false to retain native database fields such as the properties schema. This operation returns database metadata, not database-page property values. Match verification output fixtures to the selected output mode.',
+		},
 	},
 	{
 		displayName: 'Options',

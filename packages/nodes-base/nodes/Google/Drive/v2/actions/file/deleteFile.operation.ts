@@ -1,8 +1,10 @@
 import type { IExecuteFunctions, INodeExecutionData, INodeProperties } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+import { updateDisplayOptions } from '@utils/utilities';
 
 import { googleApiRequest } from '../../transport';
 import { fileRLC } from '../common.descriptions';
-import { updateDisplayOptions } from '@utils/utilities';
 
 const properties: INodeProperties[] = [
 	{
@@ -13,7 +15,7 @@ const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -49,9 +51,21 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	};
 
 	if (deletePermanently) {
-		await googleApiRequest.call(this, 'DELETE', `/drive/v3/files/${fileId}`, undefined, qs);
+		await googleApiRequest.call(
+			this,
+			'DELETE',
+			requestPath`/drive/v3/files/${fileId}`,
+			undefined,
+			qs,
+		);
 	} else {
-		await googleApiRequest.call(this, 'PATCH', `/drive/v3/files/${fileId}`, { trashed: true }, qs);
+		await googleApiRequest.call(
+			this,
+			'PATCH',
+			requestPath`/drive/v3/files/${fileId}`,
+			{ trashed: true },
+			qs,
+		);
 	}
 
 	const executionData = this.helpers.constructExecutionMetaData(

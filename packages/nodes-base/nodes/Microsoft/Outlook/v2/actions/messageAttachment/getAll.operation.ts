@@ -1,7 +1,10 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
-import { microsoftApiRequest, microsoftApiRequestAllItems } from '../../transport';
-import { messageRLC, returnAllOrLimit } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions } from '@utils/utilities';
+
+import { messageRLC, returnAllOrLimit } from '../../descriptions';
+import { microsoftApiRequest, microsoftApiRequestAllItems } from '../../transport';
 
 export const properties: INodeProperties[] = [
 	messageRLC,
@@ -10,7 +13,7 @@ export const properties: INodeProperties[] = [
 		displayName: 'Options',
 		name: 'options',
 		type: 'collection',
-		placeholder: 'Add Option',
+		placeholder: 'Add option',
 		default: {},
 		options: [
 			{
@@ -75,19 +78,20 @@ export async function execute(this: IExecuteFunctions, index: number) {
 		qs.$select = (options.fields as string[]).map((field) => field.trim()).join(',');
 	}
 
-	const endpoint = `/messages/${messageId}/attachments`;
+	const endpoint = requestPath`/messages/${messageId}/attachments`;
 	if (returnAll) {
 		responseData = await microsoftApiRequestAllItems.call(
 			this,
 			'value',
 			'GET',
 			endpoint,
+			index,
 			undefined,
 			qs,
 		);
 	} else {
 		qs.$top = this.getNodeParameter('limit', index);
-		responseData = await microsoftApiRequest.call(this, 'GET', endpoint, undefined, qs);
+		responseData = await microsoftApiRequest.call(this, 'GET', endpoint, index, undefined, qs);
 		responseData = responseData.value;
 	}
 

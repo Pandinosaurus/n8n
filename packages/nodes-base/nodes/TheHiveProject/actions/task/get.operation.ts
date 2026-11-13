@@ -4,9 +4,12 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { theHiveApiRequest } from '../../transport';
-import { taskRLC } from '../../descriptions';
+import { requestPath } from 'n8n-workflow';
+
 import { updateDisplayOptions, wrapData } from '@utils/utilities';
+
+import { taskRLC } from '../../descriptions';
+import { theHiveApiRequest } from '../../transport';
 
 const properties: INodeProperties[] = [taskRLC];
 
@@ -37,7 +40,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 
 	qs.name = `get-task-${taskId}`;
 
-	responseData = await theHiveApiRequest.call(this, 'POST', '/v1/query', body, qs);
+	responseData = await theHiveApiRequest.call(this, 'POST', requestPath`/v1/query`, body, qs);
 
 	const executionData = this.helpers.constructExecutionMetaData(wrapData(responseData), {
 		itemData: { item: i },

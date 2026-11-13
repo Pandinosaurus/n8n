@@ -1,0 +1,1054 @@
+import type { CreateProjectDto, ProjectType, UpdateProjectDto } from '@n8n/api-types';
+import { LicenseState, Logger, ModuleRegistry } from '@n8n/backend-common';
+import { EventService, ProjectNotFoundError, RoleService } from '@n8n/backend-services';
+import {
+	type User,
+	FolderRepository,
+	Project,
+	TransactionRunner,
+	ProjectRelation,
+	ProjectRelationRepository,
+	ProjectRepository,
+	ProjectIdConflictError,
+	SharedCredentialsRepository,
+	SharedWorkflowRepository,
+	UserRepository,
+	type ProjectListOptions,
+	type OperationContext,
+	RoleRepository,
+} from '@n8n/db';
+import { Container, Service } from '@n8n/di';
+import {
+	combineScopes,
+	getAuthPrincipalScopes,
+	hasGlobalScope,
+	type Scope,
+	type GlobalRole,
+	type ProjectRole,
+	AssignableProjectRole,
+	IMPLICIT_TEAM_PROJECT_MEMBER_ROLE_SLUGS,
+	PROJECT_OWNER_ROLE_SLUG,
+	isAssignableProjectRoleSlug,
+} from '@n8n/permissions';
+import type { EntityManager } from '@n8n/typeorm';
+
+import {
+	BadRequestError,
+	ConflictError,
+	ForbiddenError,
+	NotFoundError,
+	UserError,
+} from '@n8n/errors';
+import type { PublicApiCaller } from '@/public-api/public-api-client';
+import { UserManagementMailer } from '@/user-management/email';
+
+import { OwnershipService } from './ownership.service';
+
+const INSTANCE_ACCESS_ROLE_ERROR =
+	"This user has access through their instance role. Project roles can't change their access in this project.";
+const INSTANCE_ACCESS_REMOVE_ERROR =
+	"This user has access through their instance role and can't be removed from the project.";
+
+export class TeamProjectOverQuotaError extends UserError {
+	constructor(limit: number) {
+		super(
+			`Attempted to create a new project but quota is already exhausted. You may have a maximum of ${limit} team projects.`,
+		);
+	}
+}
+
+export class UnlicensedProjectRoleError extends UserError {
+	constructor(role: AssignableProjectRole) {
+		super(`Your instance is not licensed to use role "${role}".`);
+	}
+}
+
+export { ProjectNotFoundError } from '@n8n/backend-services';
+
+export interface ProjectCreateOverrides {
+	id?: string;
+	description?: string | null;
+	customTelemetryTags?: Array<{ key: string; value: string }>;
+}
+
+export type ProjectWithRelationsAndScopes = Project & {
+	role: ProjectRole | AssignableProjectRole | GlobalRole;
+	scopes?: Scope[];
+};
+
+@Service()
+export class ProjectService {
+	constructor(
+		private readonly sharedWorkflowRepository: SharedWorkflowRepository,
+		private readonly projectRepository: ProjectRepository,
+		private readonly projectRelationRepository: ProjectRelationRepository,
+		private readonly roleService: RoleService,
+		private readonly sharedCredentialsRepository: SharedCredentialsRepository,
+		private readonly folderRepository: FolderRepository,
+		private readonly licenseState: LicenseState,
+		private readonly moduleRegistry: ModuleRegistry,
+		private readonly ownershipService: OwnershipService,
+		private readonly logger: Logger,
+		private readonly eventService: EventService,
+		private readonly userManagementMailer: UserManagementMailer,
+		private readonly userRepository: UserRepository,
+		private readonly roleRepository: RoleRepository,
+		private readonly txRunner: TransactionRunner,
+	) {}
+
+	private get workflowService() {
+		return import('@/workflows/workflow.service.js').then(({ WorkflowService }) =>
+			Container.get(WorkflowService),
+		);
+	}
+
+	private get credentialsService() {
+		return import('@/credentials/credentials.service.js').then(({ CredentialsService }) =>
+			Container.get(CredentialsService),
+		);
+	}
+
+	private get ownershipTransferService() {
+		return import('@/services/ownership-transfer/ownership-transfer.service.js').then(
+			({ OwnershipTransferService }) => Container.get(OwnershipTransferService),
+		);
+	}
+
+	private get variablesService() {
+		return import('@/environments.ee/variables/variables.service.ee.js').then(
+			({ VariablesService }) => Container.get(VariablesService),
+		);
+	}
+
+	private get dataTableService() {
+		return import('@n8n/backend-module-data-table').then(({ DataTableService }) =>
+			Container.get(DataTableService),
+		);
+	}
+
+	private get secretsProvidersConnectionsService() {
+		return import('@/modules/external-secrets.ee/secrets-providers-connections.service.ee.js').then(
+			({ SecretsProvidersConnectionsService }) => Container.get(SecretsProvidersConnectionsService),
+		);
+	}
+
+	private get agentProjectCleanupService() {
+		return import('@/modules/agents/agent-project-cleanup.service.js').then(
+			({ AgentProjectCleanupService }) => Container.get(AgentProjectCleanupService),
+		);
+	}
+
+	private get connectionStatusProxy() {
+		return import('@/credentials/credential-connection-status-proxy.js').then(
+			({ CredentialConnectionStatusProxy }) => Container.get(CredentialConnectionStatusProxy),
+		);
+	}
+
+	async deleteProject(
+		user: User,
+		projectId: string,
+		{
+			migrateToProject,
+			publicApi = false,
+		}: { migrateToProject?: string; publicApi?: PublicApiCaller } = {},
+		ctx: OperationContext = {},
+	) {
+		const workflowService = await this.workflowService;
+		const credentialsService = await this.credentialsService;
+
+		if (projectId === migrateToProject) {
+			throw new BadRequestError(
+				'Request to delete a project failed because the project to delete and the project to migrate to are the same project',
+			);
+		}
+
+		const project = await this.getProjectWithScope(user, projectId, ['project:delete']);
+		ProjectNotFoundError.isDefinedAndNotNull(project, projectId);
+
+		let targetProject: Project | null = null;
+		if (migrateToProject) {
+			targetProject = await this.getProjectWithScope(user, migrateToProject, [
+				'credential:create',
+				'workflow:create',
+				'dataTable:create',
+			]);
+
+			if (!targetProject) {
+				throw new NotFoundError(
+					`Could not find project to migrate to. ID: ${targetProject}. You may lack permissions to create workflow, credentials or data tables in the target project.`,
+				);
+			}
+		}
+
+		// 0. check if this is a team project
+		if (project.type !== 'team') {
+			throw new ForbiddenError(
+				`Can't delete project. Project with ID "${projectId}" is not a team project.`,
+			);
+		}
+
+		const ownedCredentials = await this.sharedCredentialsRepository.find({
+			where: { projectId: project.id, role: 'credential:owner' },
+			relations: { credentials: true },
+		});
+
+		// End-user credentials can't live in personal projects, so reject the whole
+		// migration before anything moves — deleteProject is a sequence of awaits,
+		// not a transaction.
+		if (targetProject?.type === 'personal') {
+			const endUserCredentials = ownedCredentials.filter((sc) => sc.credentials.isResolvable);
+			if (endUserCredentials.length > 0) {
+				const names = endUserCredentials.map((sc) => `"${sc.credentials.name}"`).join(', ');
+				throw new BadRequestError(
+					`Can't migrate end-user credentials (${names}) to a personal project. Switch them back to fixed credentials, move them to another team project, or delete this project without migrating.`,
+				);
+			}
+		}
+
+		if (targetProject) {
+			const ownershipTransferService = await this.ownershipTransferService;
+			await ownershipTransferService.enforceTransferPolicy(project.id, targetProject.id, {
+				kind: 'user',
+				user,
+			});
+		}
+
+		// 1. delete or migrate workflows owned by this project
+		const ownedSharedWorkflows = await this.sharedWorkflowRepository.find({
+			where: { projectId: project.id, role: 'workflow:owner' },
+		});
+		const workflowIds = ownedSharedWorkflows.map((sw) => sw.workflowId);
+
+		if (targetProject) {
+			await this.sharedWorkflowRepository.makeOwner(workflowIds, targetProject.id);
+		} else {
+			for (const sharedWorkflow of ownedSharedWorkflows) {
+				await workflowService.delete(user, sharedWorkflow.workflowId, true, { publicApi }, ctx);
+			}
+		}
+
+		// 2. delete credentials owned by this project
+		if (targetProject) {
+			await this.sharedCredentialsRepository.makeOwner(
+				ownedCredentials.map((sc) => sc.credentialsId),
+				targetProject.id,
+			);
+		} else {
+			for (const sharedCredential of ownedCredentials) {
+				await credentialsService.delete(user, sharedCredential.credentials.id, {}, ctx);
+			}
+		}
+
+		// 3. Move folders over to the target project, before deleting the project else cascading will delete workflows
+		if (targetProject) {
+			await this.folderRepository.transferAllFoldersToProject(project.id, targetProject.id);
+		}
+
+		// 4. delete shared credentials into this project
+		// Cascading deletes take care of this.
+
+		// 5. delete shared workflows into this project
+		// Cascading deletes take care of this.
+
+		// 6. delete or migrate associated data tables
+		if (this.moduleRegistry.isActive('data-table')) {
+			const dataTableService = await this.dataTableService;
+
+			if (targetProject) {
+				await dataTableService.transferDataTablesByProjectId(project.id, targetProject.id);
+			} else {
+				await dataTableService.deleteDataTableByProjectId(project.id);
+			}
+		}
+
+		// 7. delete secrets providers connections that are owned by this project
+		if (this.moduleRegistry.isActive('external-secrets')) {
+			const secretsProvidersConnectionsService = await this.secretsProvidersConnectionsService;
+			await secretsProvidersConnectionsService.cleanupConnectionsForProjectDeletion(project.id);
+		}
+
+		// 8. Remove agent data before project removal cascades delete its records.
+		if (this.moduleRegistry.isActive('agents')) {
+			await (await this.agentProjectCleanupService).cleanupProject(project.id);
+		}
+
+		// Capture member user IDs before the project (and its relations) are removed,
+		// so we can clean up orphaned per-user credential entries afterward.
+		const projectMembers = await this.projectRelationRepository.findBy({ projectId: project.id });
+		const memberUserIds = projectMembers.map((pr) => pr.userId);
+
+		// 9. Delete the project and its deletion marker in one transaction.
+		await this.txRunner.run({}, async (ctx) => {
+			await this.projectRepository.removeProjectForDeletion(project, ctx);
+			if (this.moduleRegistry.isActive('agents')) {
+				await (await this.agentProjectCleanupService).completeProjectDeletion(projectId, ctx);
+			}
+		});
+
+		if (targetProject) {
+			// The cascade removes the source owner rows. Invalidate after the transaction commits.
+			try {
+				await this.ownershipService.invalidateWorkflowProjectCacheByIds(workflowIds);
+			} catch (error) {
+				this.logger.warn('Failed to invalidate the workflow project cache on project delete', {
+					projectId,
+					error: error instanceof Error ? error.message : error,
+				});
+			}
+		}
+
+		// The cascade deletes the project's variables. Refresh the cache so their keys are free again.
+		try {
+			await (await this.variablesService).updateCache();
+		} catch (error) {
+			this.logger.warn('Failed to refresh the variables cache on project delete', {
+				projectId: project.id,
+				error: error instanceof Error ? error.message : error,
+			});
+		}
+
+		// 10. delete project relations
+		// Cascading deletes take care of this.
+
+		// 11. delete orphaned per-user credential entries for former members
+		if (memberUserIds.length > 0) {
+			const proxy = await this.connectionStatusProxy;
+			await proxy.cleanupOrphanedEntriesForUsers(memberUserIds);
+		}
+
+		this.eventService.emit('team-project-deleted', {
+			userId: user.id,
+			role: user.role.slug,
+			projectId,
+			removalType: migrateToProject !== undefined ? 'transfer' : 'delete',
+			targetProjectId: migrateToProject,
+		});
+	}
+
+	/**
+	 * Find all the projects where a workflow is accessible,
+	 * along with the roles of a user in those projects.
+	 */
+	async findProjectsWorkflowIsIn(workflowId: string) {
+		return await this.sharedWorkflowRepository.findProjectIds(workflowId);
+	}
+
+	async findTeamProjectsWorkflowIsIn(workflowId: string) {
+		return await this.sharedWorkflowRepository.findTeamProjectIds(workflowId);
+	}
+
+	/**
+	 * Enrich projects with the requesting user's role and scopes.
+	 * Mirrors the logic in getMyProjects controller: for each project,
+	 * find the user's ProjectRelation and combine global + project scopes.
+	 */
+	async addUserScopes(
+		user: User,
+		projects: Project[],
+	): Promise<Array<Project & { role: string; scopes: Scope[] }>> {
+		if (projects.length === 0) return [];
+
+		const relations = await this.projectRelationRepository.findByUserAndProjects(
+			user.id,
+			projects.map((p) => p.id),
+		);
+		const relationsByProject = new Map(relations.map((r) => [r.projectId, r]));
+		const globalScopes = getAuthPrincipalScopes(user);
+
+		return projects.map((project) => {
+			const relation = relationsByProject.get(project.id);
+			const projectScopes = relation?.role?.scopes?.map((s) => s.slug) ?? [];
+			return Object.assign(project, {
+				role: relation?.role?.slug ?? user.role.slug,
+				scopes: [
+					...new Set(
+						combineScopes({
+							global: globalScopes,
+							...(projectScopes.length ? { project: projectScopes } : {}),
+						}),
+					),
+				].sort(),
+			});
+		});
+	}
+
+	async getAccessibleProjects(user: User): Promise<Project[]> {
+		// This user is probably an admin, show them everything
+		if (hasGlobalScope(user, 'project:read')) {
+			return await this.projectRepository.find();
+		}
+		return await this.projectRepository.getAccessibleProjects(user.id);
+	}
+
+	async getAccessibleProjectsAndCount(
+		user: User,
+		options: ProjectListOptions,
+	): Promise<{ projects: Project[]; count: number }> {
+		const [projects, count] = hasGlobalScope(user, 'project:read')
+			? await this.projectRepository.findAllProjectsAndCount(options)
+			: await this.projectRepository.getAccessibleProjectsAndCount(user.id, options);
+		return { projects, count };
+	}
+
+	// Returns the projects a caller can pick as share targets, including peer
+	// personal projects. Admins (project:read) still see everything; non-admin
+	// callers also see all personal projects so the share dropdown can surface
+	// other users. See `ProjectRepository.getShareableProjectsAndCount`.
+	async getShareableProjectsAndCount(
+		user: User,
+		options: ProjectListOptions,
+	): Promise<{ projects: Project[]; count: number }> {
+		const [projects, count] = hasGlobalScope(user, 'project:read')
+			? await this.projectRepository.findAllProjectsAndCount(options)
+			: await this.projectRepository.getShareableProjectsAndCount(user.id, options);
+		return { projects, count };
+	}
+
+	async getProjectsAndCount({
+		offset,
+		limit,
+	}: {
+		offset: number;
+		limit: number;
+	}): Promise<{ projects: Project[]; count: number }> {
+		const [projects, count] = await this.projectRepository.findAndCount({
+			skip: offset,
+			take: limit,
+			order: { createdAt: 'ASC', id: 'ASC' },
+		});
+		return { projects, count };
+	}
+
+	async getPersonalProjectOwners(projectIds: string[]): Promise<ProjectRelation[]> {
+		return await this.projectRelationRepository.getPersonalProjectOwners(projectIds);
+	}
+
+	async getMyProjects(user: User): Promise<ProjectWithRelationsAndScopes[]> {
+		const projectRelations = await this.getProjectRelationsForUser(user);
+		const otherTeamProjects = hasGlobalScope(user, 'project:read')
+			? await this.projectRepository.findTeamProjectsExcluding(
+					projectRelations.map((relation) => relation.projectId),
+				)
+			: [];
+
+		const results: ProjectWithRelationsAndScopes[] = [];
+
+		for (const relation of projectRelations) {
+			const result: ProjectWithRelationsAndScopes = Object.assign(
+				this.projectRepository.create(relation.project),
+				{ role: relation.role.slug, scopes: [] },
+			);
+
+			if (result.scopes) {
+				result.scopes.push(
+					...combineScopes({
+						global: getAuthPrincipalScopes(user),
+						project: relation.role.scopes.map((scope) => scope.slug),
+					}),
+				);
+			}
+
+			results.push(result);
+		}
+
+		for (const project of otherTeamProjects) {
+			const result: ProjectWithRelationsAndScopes = Object.assign(
+				this.projectRepository.create(project),
+				{
+					// If the user has the global `project:read` scope then they may not
+					// own this relationship in that case we use the global user role
+					// instead of the relation role, which is for another user.
+					role: user.role.slug,
+					scopes: [],
+				},
+			);
+
+			if (result.scopes) {
+				result.scopes.push(...combineScopes({ global: getAuthPrincipalScopes(user) }));
+			}
+
+			results.push(result);
+		}
+
+		// Deduplicate and sort scopes
+		for (const result of results) {
+			if (result.scopes) {
+				result.scopes = [...new Set(result.scopes)].sort();
+			}
+		}
+
+		return results;
+	}
+
+	async createTeamProject(
+		adminUser: User,
+		data: CreateProjectDto,
+		overrides: ProjectCreateOverrides = {},
+	): Promise<Project> {
+		const limit = this.licenseState.getMaxTeamProjects();
+		let project: Project | null;
+		try {
+			project = await this.projectRepository.insertTeamProjectWithAdmin(
+				{
+					name: data.name,
+					icon: data.icon ?? null,
+					id: overrides.id,
+					description: overrides.description ?? null,
+					customTelemetryTags: overrides.customTelemetryTags ?? [],
+				},
+				adminUser.id,
+				limit,
+			);
+		} catch (error) {
+			if (error instanceof ProjectIdConflictError) throw new ConflictError(error.message);
+			throw error;
+		}
+		if (!project) throw new TeamProjectOverQuotaError(limit);
+
+		this.eventService.emit('team-project-created', {
+			userId: adminUser.id,
+			role: adminUser.role.slug,
+			uiContext: data.uiContext,
+		});
+
+		return project;
+	}
+
+	async updateProject(
+		user: User,
+		projectId: string,
+		{ name, icon, description, customTelemetryTags }: UpdateProjectDto,
+		{ preserveCustomTelemetryTags = false }: { preserveCustomTelemetryTags?: boolean } = {},
+	): Promise<void> {
+		const tags = preserveCustomTelemetryTags
+			? customTelemetryTags
+			: customTelemetryTags
+					?.map(({ key, value }) => ({ key: key.trim(), value }))
+					.filter(({ key }) => key !== '');
+
+		const result = await this.projectRepository.update(
+			{ id: projectId, type: 'team' },
+			{ name, icon, description, customTelemetryTags: tags },
+		);
+		if (!result.affected) {
+			throw new ProjectNotFoundError(projectId);
+		}
+
+		// Ensure OTel spans pick up the updated customTelemetryTags on the next execution.
+		await this.ownershipService.invalidateWorkflowProjectCacheForProject(projectId);
+
+		this.eventService.emit('team-project-updated', {
+			userId: user.id,
+			role: user.role.slug,
+			projectId,
+			...(customTelemetryTags !== undefined
+				? { otelProjectCustomTagsCount: customTelemetryTags.length }
+				: {}),
+		});
+	}
+
+	async getPersonalProject(user: User): Promise<Project | null> {
+		return await this.projectRepository.getPersonalProjectForUser(user.id);
+	}
+
+	/**
+	 * The user's project relations with project, role and role scopes. This runs on
+	 * most editor requests (scope resolution for lists and single resources), so the
+	 * repository keeps the row count proportional to the number of relations.
+	 */
+	async getProjectRelationsForUser(user: User): Promise<ProjectRelation[]> {
+		return await this.projectRelationRepository.findAllByUser(user.id, { withProject: true });
+	}
+
+	async syncProjectRelations(
+		projectId: string,
+		relations: Array<{ role: AssignableProjectRole; userId: string }>,
+	): Promise<{
+		project: Project;
+		newRelations: Array<{ role: AssignableProjectRole; userId: string }>;
+	}> {
+		const project = await this.getTeamProjectWithRelations(projectId);
+		this.checkRolesLicensed(project, relations);
+
+		// Check that all roles exist
+		await this.roleService.checkRolesExist(
+			relations.map((r) => r.role),
+			'project',
+		);
+
+		const incomingByUserId = new Map(relations.map((r) => [r.userId, r.role]));
+
+		const removedUserIds = project.projectRelations
+			.filter((r) => !incomingByUserId.has(r.userId))
+			.map((r) => r.userId);
+
+		// Users whose role slug changed — a downgrade may strip credential:update,
+		// so their per-user credential entries must be re-evaluated too.
+		const roleChangedUserIds = project.projectRelations
+			.filter((r) => {
+				const newRole = incomingByUserId.get(r.userId);
+				return newRole !== undefined && newRole !== r.role.slug;
+			})
+			.map((r) => r.userId);
+
+		const affectedUserIds = [...new Set([...removedUserIds, ...roleChangedUserIds])];
+
+		const proxy = await this.connectionStatusProxy;
+
+		await this.projectRelationRepository.manager.transaction(async (em) => {
+			await this.pruneRelations(em, project);
+			await this.addManyRelations(em, project, relations);
+
+			if (affectedUserIds.length > 0) {
+				await proxy.cleanupOrphanedEntriesForUsers(affectedUserIds, em);
+			}
+		});
+
+		const newRelations = relations.filter(
+			(relation) => !project.projectRelations.some((r) => r.userId === relation.userId),
+		);
+
+		return { project, newRelations };
+	}
+
+	private async notifyNewSharees(
+		sharer: User,
+		project: Project,
+		newSharees: Array<{ userId: string; role: AssignableProjectRole }>,
+		publicApi: PublicApiCaller,
+		ctx: OperationContext = {},
+	) {
+		if (newSharees.length === 0) return;
+		await this.userManagementMailer.notifyProjectShared({
+			sharer,
+			newSharees,
+			project: { id: project.id, name: project.name },
+			publicApi,
+			ctx,
+		});
+	}
+
+	private async emitProjectMembersUpdated(user: User, projectId: string) {
+		const relations = await this.getProjectRelations(projectId);
+		this.eventService.emit('team-project-updated', {
+			userId: user.id,
+			role: user.role.slug,
+			members: relations.map((r) => ({ userId: r.userId, role: r.role.slug })),
+			projectId,
+		});
+	}
+
+	/**
+	 * Adds users to a team project with specified roles.
+	 *
+	 * Throws if you the project is a personal project.
+	 * Throws if the relations contain `project:personalOwner`.
+	 */
+	async addUsersToProject(
+		{
+			user,
+			projectId,
+			relations,
+			publicApi = false,
+		}: {
+			user: User;
+			projectId: string;
+			relations: Array<{ userId: string; role: AssignableProjectRole }>;
+			publicApi?: PublicApiCaller;
+		},
+		ctx: OperationContext = {},
+	) {
+		const project = await this.getTeamProjectWithRelations(projectId);
+		this.checkRolesLicensed(project, relations);
+
+		// Check that project role exists
+		await this.roleService.checkRolesExist(
+			relations.map((r) => r.role),
+			'project',
+		);
+
+		if (project.type === 'personal') {
+			throw new ForbiddenError("Can't add users to personal projects.");
+		}
+
+		if (relations.some((r) => r.role === PROJECT_OWNER_ROLE_SLUG)) {
+			throw new ForbiddenError("Can't add a personalOwner to a team project.");
+		}
+
+		const memberRelations = await this.withoutInstanceAdmins(relations);
+
+		const existingUserIds = new Set(project.projectRelations.map((pr) => pr.userId));
+		const newSharees = memberRelations.filter((relation) => !existingUserIds.has(relation.userId));
+
+		await this.projectRelationRepository.save(
+			memberRelations.map((relation) => ({
+				projectId,
+				userId: relation.userId,
+				role: { slug: relation.role },
+			})),
+		);
+
+		await this.notifyNewSharees(user, project, newSharees, publicApi, ctx);
+		await this.emitProjectMembersUpdated(user, projectId);
+	}
+
+	/**
+	 * Add users with conflict semantics:
+	 * - Adds users that are not already members
+	 * - No-ops for users already in the project with the same role
+	 * - Reports conflicts for users already in the project with a different role (no change)
+	 */
+	async addUsersWithConflictSemantics(
+		user: User,
+		projectId: string,
+		relations: Array<{ userId: string; role: AssignableProjectRole }>,
+	): Promise<{
+		project: Project;
+		added: Array<{ userId: string; role: AssignableProjectRole }>;
+		conflicts: Array<{
+			userId: string;
+			currentRole: AssignableProjectRole;
+			requestedRole: AssignableProjectRole;
+		}>;
+	}> {
+		const project = await this.getTeamProjectWithRelations(projectId);
+		this.checkRolesLicensed(project, relations);
+
+		// Validate roles exist
+		await this.roleService.checkRolesExist(
+			relations.map((r) => r.role),
+			'project',
+		);
+
+		const memberRelations = await this.withoutInstanceAdmins(relations);
+
+		const existingByUserId = new Map(project.projectRelations.map((r) => [r.userId, r]));
+		const added: Array<{ userId: string; role: AssignableProjectRole }> = [];
+		const conflicts: Array<{
+			userId: string;
+			currentRole: AssignableProjectRole;
+			requestedRole: AssignableProjectRole;
+		}> = [];
+
+		for (const rel of memberRelations) {
+			const existing = existingByUserId.get(rel.userId);
+			if (!existing) continue; // will be inserted below
+			const current = existing.role?.slug;
+			if (current && current !== rel.role && isAssignableProjectRoleSlug(current)) {
+				conflicts.push({ userId: rel.userId, currentRole: current, requestedRole: rel.role });
+			}
+		}
+
+		// Insert only non-existing users
+		const toInsert = memberRelations.filter((rel) => !existingByUserId.has(rel.userId));
+		if (toInsert.length > 0) {
+			// Use insert to avoid accidental upsert of different role
+			await this.projectRelationRepository.insert(
+				toInsert.map((v) => ({
+					projectId: project.id,
+					userId: v.userId,
+					role: { slug: v.role },
+				})),
+			);
+			added.push(...toInsert);
+		}
+
+		await this.notifyNewSharees(user, project, added, false);
+		await this.emitProjectMembersUpdated(user, project.id);
+
+		return { project, added, conflicts };
+	}
+
+	private async getTeamProjectWithRelations(projectId: string) {
+		const project = await this.projectRepository.findOne({
+			where: { id: projectId, type: 'team' },
+			relations: { projectRelations: { role: true } },
+		});
+		ProjectNotFoundError.isDefinedAndNotNull(project, projectId);
+		return project;
+	}
+
+	/** Check to see if the instance is licensed to use all roles provided */
+	private checkRolesLicensed(
+		project: Project,
+		relations: Array<{ role: AssignableProjectRole; userId: string }>,
+	) {
+		for (const { role, userId } of relations) {
+			const existing = project.projectRelations.find((pr) => pr.userId === userId);
+			// We don't throw an error if the user already exists with that role so
+			// existing projects continue working as is.
+			if (existing?.role?.slug !== role && !this.roleService.isRoleLicensed(role)) {
+				throw new UnlicensedProjectRoleError(role);
+			}
+		}
+	}
+
+	/**
+	 * Ids of enabled instance owners and admins. Their project access comes from
+	 * their global role, so project membership does not apply to them.
+	 */
+	private async findInstanceAdminIds(userIds: string[]): Promise<Set<string>> {
+		if (userIds.length === 0) return new Set();
+		const users = await this.userRepository.findManyByIds(userIds, { includeRole: true });
+		return new Set(
+			users
+				.filter(
+					(u) =>
+						!u.disabled &&
+						!!u.role &&
+						IMPLICIT_TEAM_PROJECT_MEMBER_ROLE_SLUGS.includes(u.role.slug),
+				)
+				.map((u) => u.id),
+		);
+	}
+
+	/**
+	 * Drops instance owners and admins from an add request. They already have
+	 * access, so they are treated like members who already hold the role.
+	 */
+	private async withoutInstanceAdmins<T extends { userId: string }>(relations: T[]): Promise<T[]> {
+		const instanceAdminIds = await this.findInstanceAdminIds(relations.map((r) => r.userId));
+		return relations.filter((r) => !instanceAdminIds.has(r.userId));
+	}
+
+	private async assertNoInstanceAdmins(userIds: string[], message: string) {
+		const instanceAdminIds = await this.findInstanceAdminIds(userIds);
+		if (instanceAdminIds.size > 0) throw new ForbiddenError(message);
+	}
+
+	private isUserProjectOwner(project: Project, userId: string) {
+		return project.projectRelations.some(
+			(pr) => pr.userId === userId && pr.role.slug === PROJECT_OWNER_ROLE_SLUG,
+		);
+	}
+
+	async deleteUserFromProject(user: User, projectId: string, userId: string) {
+		const project = await this.getTeamProjectWithRelations(projectId);
+
+		// Prevent project owner from being removed
+		if (this.isUserProjectOwner(project, userId)) {
+			throw new ForbiddenError('Project owner cannot be removed from the project');
+		}
+
+		await this.assertNoInstanceAdmins([userId], INSTANCE_ACCESS_REMOVE_ERROR);
+
+		const proxy = await this.connectionStatusProxy;
+
+		await this.projectRelationRepository.manager.transaction(async (em) => {
+			await em.delete(ProjectRelation, { projectId: project.id, userId });
+			await proxy.cleanupOrphanedEntriesForUsers([userId], em);
+		});
+
+		await this.emitProjectMembersUpdated(user, projectId);
+	}
+
+	async changeUserRoleInProject(
+		user: User,
+		projectId: string,
+		userId: string,
+		role: AssignableProjectRole,
+	) {
+		if (role === PROJECT_OWNER_ROLE_SLUG) {
+			throw new ForbiddenError('Personal owner cannot be added to a team project.');
+		}
+
+		const project = await this.getTeamProjectWithRelations(projectId);
+
+		// Check that project role exists
+		await this.roleService.checkRolesExist([role], 'project');
+
+		ProjectNotFoundError.isDefinedAndNotNull(project, projectId);
+
+		// Instance owners and admins are listed as members without a relation, so
+		// check them first to return the reason instead of "not found".
+		await this.assertNoInstanceAdmins([userId], INSTANCE_ACCESS_ROLE_ERROR);
+
+		const projectUserExists = project.projectRelations.some((r) => r.userId === userId);
+		if (!projectUserExists) {
+			throw new ProjectNotFoundError(projectId);
+		}
+
+		// License check: only allow change to roles that are licensed
+		const currentRelation = project.projectRelations.find((r) => r.userId === userId);
+		const currentRole = currentRelation?.role?.slug;
+		if (currentRole !== role && !this.roleService.isRoleLicensed(role)) {
+			throw new UnlicensedProjectRoleError(role);
+		}
+
+		const proxy = await this.connectionStatusProxy;
+
+		await this.projectRelationRepository.manager.transaction(async (em) => {
+			await em.update(ProjectRelation, { projectId, userId }, { role: { slug: role } });
+			await proxy.cleanupOrphanedEntriesForUsers([userId], em);
+		});
+
+		await this.emitProjectMembersUpdated(user, projectId);
+	}
+
+	async pruneRelations(em: EntityManager, project: Project) {
+		await em.delete(ProjectRelation, { projectId: project.id });
+	}
+
+	async addManyRelations(
+		em: EntityManager,
+		project: Project,
+		relations: Array<{ userId: string; role: AssignableProjectRole }>,
+	) {
+		await em.insert(
+			ProjectRelation,
+			relations.map((v) =>
+				this.projectRelationRepository.create({
+					projectId: project.id,
+					userId: v.userId,
+					role: { slug: v.role },
+				}),
+			),
+		);
+	}
+
+	async getProjectWithScope(
+		user: User,
+		projectId: string,
+		scopes: Scope[],
+		ctx: OperationContext = {},
+	) {
+		const projectRoles = hasGlobalScope(user, scopes, { mode: 'allOf' })
+			? undefined
+			: await this.roleService.rolesWithScope(
+					'project',
+					scopes,
+					async () => await this.roleRepository.findAll(ctx),
+				);
+
+		return await this.projectRepository.findOneWithUserRoles(projectId, user.id, projectRoles, ctx);
+	}
+
+	async getProjectIdsWithScope(user: User, scopes: Scope[], projectIds?: string[]) {
+		const projectRoles = hasGlobalScope(user, scopes, { mode: 'allOf' })
+			? undefined
+			: await this.roleService.rolesWithScope('project', scopes);
+
+		return await this.projectRepository.findIdsWithUserRoles(user.id, projectRoles, projectIds);
+	}
+
+	async findExistingProjectIds(projectIds: string[]): Promise<Set<string>> {
+		if (projectIds.length === 0) return new Set();
+		return new Set(await this.projectRepository.findExistingIds(projectIds));
+	}
+
+	async findProjectsByIdsForUser(
+		user: User,
+		projectIds: string[],
+		scopes: Scope[],
+	): Promise<Project[]> {
+		if (projectIds.length === 0) {
+			return [];
+		}
+
+		const projectRoles = hasGlobalScope(user, scopes, { mode: 'allOf' })
+			? undefined
+			: await this.roleService.rolesWithScope('project', scopes);
+
+		return await this.projectRepository.findByIdsWithUserRoles(projectIds, user.id, projectRoles);
+	}
+
+	/**
+	 * Add a user to a team project with specified roles.
+	 *
+	 * Throws if you the project is a personal project.
+	 * Throws if the relations contain `project:personalOwner`.
+	 */
+	async addUser(
+		projectId: string,
+		{ userId, role }: { userId: string; role: AssignableProjectRole },
+		trx?: EntityManager,
+	) {
+		trx = trx ?? this.projectRelationRepository.manager;
+		return await trx.save(ProjectRelation, {
+			projectId,
+			userId,
+			role: { slug: role },
+		});
+	}
+
+	async getProject(projectId: string): Promise<Project> {
+		return await this.projectRepository.findOneOrFail({
+			where: {
+				id: projectId,
+			},
+		});
+	}
+
+	/** Finds a project by id, or `null` when it does not exist. */
+	async findProject(projectId: string): Promise<Project | null> {
+		return await this.projectRepository.findOne({ where: { id: projectId } });
+	}
+
+	async getProjectRelations(projectId: string): Promise<ProjectRelation[]> {
+		return await this.projectRelationRepository.find({
+			where: { projectId },
+			relations: { user: true, role: true },
+		});
+	}
+
+	/**
+	 * Users who always reach this project through their global role, whether or
+	 * not a project relation exists for them. Personal projects are never shared
+	 * this way, so they return an empty list.
+	 */
+	async getImplicitProjectMembers(project: Pick<Project, 'id' | 'type'>): Promise<User[]> {
+		if (project.type !== 'team') return [];
+
+		return await this.userRepository.findEligibleByProjectOrGlobalRoles({
+			projectId: project.id,
+			projectRoleSlugs: [],
+			globalRoleSlugs: IMPLICIT_TEAM_PROJECT_MEMBER_ROLE_SLUGS,
+		});
+	}
+
+	async findUserIdsByProjectId(projectId: string): Promise<string[]> {
+		return await this.projectRelationRepository.findUserIdsByProjectId(projectId);
+	}
+
+	async getProjectRelationForUserAndProject(
+		userId: string,
+		projectId: string,
+	): Promise<ProjectRelation | null> {
+		return await this.projectRelationRepository.findOne({
+			where: { projectId, userId },
+			relations: { user: true, role: true },
+		});
+	}
+
+	async getProjectMembersAndCount(
+		projectId: string,
+		{ offset, limit }: { offset: number; limit: number },
+	): Promise<{ members: ProjectRelation[]; count: number }> {
+		const [members, count] = await this.projectRelationRepository.findAndCount({
+			where: { projectId },
+			relations: { user: true, role: true },
+			order: { createdAt: 'ASC', userId: 'ASC' },
+			skip: offset,
+			take: limit,
+		});
+		return { members, count };
+	}
+
+	async getProjectScopesForUser(user: User, projectId: string): Promise<Scope[]> {
+		const relation = await this.getProjectRelationForUserAndProject(user.id, projectId);
+		return [
+			...combineScopes({
+				global: getAuthPrincipalScopes(user),
+				project: relation?.role.scopes.map((scope) => scope.slug) ?? [],
+			}),
+		];
+	}
+
+	async getUserOwnedOrAdminProjects(userId: string): Promise<Project[]> {
+		return await this.projectRepository.findOwnedOrAdminByUser(userId);
+	}
+
+	async getProjectCounts(): Promise<Record<ProjectType, number>> {
+		return await this.projectRepository.getProjectCounts();
+	}
+}

@@ -1,0 +1,663 @@
+import type { LicenseProvider } from '@n8n/backend-common';
+import { Logger } from '@n8n/backend-common';
+import { GlobalConfig } from '@n8n/config';
+import {
+	DEFAULT_WORKFLOW_HISTORY_PRUNE_LIMIT,
+	LICENSE_FEATURES,
+	LICENSE_QUOTAS,
+	Time,
+	UNLIMITED_LICENSE_QUOTA,
+	type BooleanLicenseFeature,
+	type NumericLicenseFeature,
+} from '@n8n/constants';
+import { SettingsRepository } from '@n8n/db';
+import { OnPubSubEvent, OnShutdown } from '@n8n/decorators';
+import { Container, Service } from '@n8n/di';
+import { ensureError } from '@n8n/utils/errors/ensure-error';
+import type { TEntitlement, TLicenseBlock } from '@n8n_io/license-sdk';
+import { LicenseManager } from '@n8n_io/license-sdk';
+import { InstanceSettings } from 'n8n-core';
+
+import { LicenseMetricsService } from '@/metrics/license-metrics.service';
+
+import { N8N_VERSION, SETTINGS_LICENSE_CERT_KEY } from './constants';
+
+const LICENSE_RENEWAL_DISABLED_WARNING =
+	'Automatic license renewal is disabled. The license will not renew automatically, and access to licensed features may be lost!';
+
+/** The license server rejects device fingerprints shorter than this. */
+const MIN_DEVICE_FINGERPRINT_LENGTH = 32;
+
+export type FeatureReturnType = Partial<
+	{
+		planName: string;
+	} & { [K in NumericLicenseFeature]: number } & { [K in BooleanLicenseFeature]: boolean }
+>;
+
+type LicenseRefreshCallback = (cert: string) => void;
+
+/** A free add-on that can be activated next to a paid plan. Lowercased, as the frontend compares it. */
+const REGISTERED_COMMUNITY_PLAN_NAME = 'registered community';
+
+/** Same precedence as the SDK's merge for a single entitlement: overrides win over features. */
+function entitlementPlanName(entitlement: TEntitlement): string | undefined {
+	const planName = entitlement.featureOverrides?.planName ?? entitlement.features?.planName;
+	return typeof planName === 'string' ? planName : undefined;
+}
+
+function isMainPlanFlag(entitlement: TEntitlement): boolean | undefined {
+	const terms = entitlement.productMetadata?.terms;
+	if (typeof terms !== 'object' || terms === null || !('isMainPlan' in terms)) return undefined;
+	return typeof terms.isMainPlan === 'boolean' ? terms.isMainPlan : undefined;
+}
+
+@Service()
+export class License implements LicenseProvider {
+	private manager: LicenseManager | undefined;
+
+	private isShuttingDown = false;
+
+	private refreshCallbacks: LicenseRefreshCallback[] = [];
+
+	private hasWarnedShortDeviceFingerprint = false;
+
+	private readonly loggedPlanNameMismatches = new Set<string>();
+
+	constructor(
+		private readonly logger: Logger,
+		private readonly instanceSettings: InstanceSettings,
+		private readonly settingsRepository: SettingsRepository,
+		private readonly licenseMetricsService: LicenseMetricsService,
+		private readonly globalConfig: GlobalConfig,
+	) {
+		this.logger = this.logger.scoped('license');
+	}
+
+	async init({
+		forceRecreate = false,
+		isCli = false,
+	}: { forceRecreate?: boolean; isCli?: boolean } = {}) {
+		if (this.manager && !forceRecreate) {
+			this.logger.warn('License manager already initialized or shutting down');
+			return;
+		}
+		if (this.isShuttingDown) {
+			this.logger.warn('License manager already shutting down');
+			return;
+		}
+
+		const { instanceType } = this.instanceSettings;
+		const isMainInstance = instanceType === 'main';
+		const server = this.globalConfig.license.serverUrl;
+		const offlineMode = !isMainInstance;
+		const autoRenewOffset = 72 * Time.hours.toSeconds;
+		const saveCertStr = isMainInstance
+			? async (value: TLicenseBlock) => await this.saveCertStr(value)
+			: async () => {};
+		const onFeatureChange = isMainInstance
+			? async () => await this.onFeatureChange()
+			: async () => {};
+		const onLicenseRenewed = isMainInstance
+			? async () => await this.onLicenseRenewed()
+			: async () => {};
+		const collectUsageMetrics = isMainInstance
+			? async () => await this.licenseMetricsService.collectUsageMetrics()
+			: async () => [];
+		const collectPassthroughData = isMainInstance
+			? async () => await this.licenseMetricsService.collectPassthroughData()
+			: async () => ({});
+		const onExpirySoon = !this.instanceSettings.isLeader ? () => this.onExpirySoon() : undefined;
+		const expirySoonOffsetMins = !this.instanceSettings.isLeader ? 120 : undefined;
+
+		const { isLeader } = this.instanceSettings;
+		const { autoRenewalEnabled } = this.globalConfig.license;
+		const eligibleToRenew = isCli || isLeader;
+
+		const shouldRenew = eligibleToRenew && autoRenewalEnabled;
+
+		if (eligibleToRenew && !autoRenewalEnabled) {
+			this.logger.warn(LICENSE_RENEWAL_DISABLED_WARNING);
+		}
+
+		try {
+			this.manager = new LicenseManager({
+				server,
+				tenantId: this.globalConfig.license.tenantId,
+				productIdentifier: `n8n-${N8N_VERSION}`,
+				autoRenewEnabled: autoRenewalEnabled,
+				autoRenewTimer: false,
+				renewOnInit: shouldRenew,
+				autoRenewOffset,
+				detachFloatingOnShutdown:
+					this.globalConfig.license.detachFloatingOnShutdown && !this.instanceSettings.isMultiMain,
+				offlineMode,
+				logger: this.logger,
+				loadCertStr: async () => await this.loadCertStr(),
+				saveCertStr,
+				deviceFingerprint: () => this.deviceFingerprint(),
+				collectUsageMetrics,
+				collectPassthroughData,
+				onFeatureChange,
+				onLicenseRenewed,
+				onExpirySoon,
+				expirySoonOffsetMins,
+			});
+
+			await this.manager.initialize();
+
+			this.logger.debug('License initialized');
+		} catch (error: unknown) {
+			if (error instanceof Error) {
+				this.logger.error('Could not initialize license manager sdk', { error });
+			}
+		}
+	}
+
+	/**
+	 * `instanceId` can be pinned to an arbitrary value via `N8N_INSTANCE_ID` or
+	 * the `instance.id` deployment-key row, but the license server rejects
+	 * fingerprints shorter than 32 characters. Fall back to the
+	 * encryption-key-derived id — the fingerprint every instance used before
+	 * pinning existed — so activation and renewal keep working.
+	 */
+	private deviceFingerprint(): string {
+		const { instanceId, derivedInstanceId } = this.instanceSettings;
+		if (instanceId.length >= MIN_DEVICE_FINGERPRINT_LENGTH) return instanceId;
+
+		if (!this.hasWarnedShortDeviceFingerprint) {
+			this.hasWarnedShortDeviceFingerprint = true;
+			this.logger.warn(
+				`Instance ID is shorter than ${MIN_DEVICE_FINGERPRINT_LENGTH} characters, so it cannot be used as the license device fingerprint. Falling back to the encryption-key-derived ID. Check the N8N_INSTANCE_ID env var and the 'instance.id' deployment key.`,
+			);
+		}
+
+		return derivedInstanceId;
+	}
+
+	async loadCertStr(): Promise<TLicenseBlock> {
+		// if we have an ephemeral license, we don't want to load it from the database
+		const ephemeralLicense = this.globalConfig.license.cert;
+		if (ephemeralLicense) {
+			return ephemeralLicense;
+		}
+		const databaseSettings = await this.settingsRepository.findOne({
+			where: {
+				key: SETTINGS_LICENSE_CERT_KEY,
+			},
+		});
+
+		return databaseSettings?.value ?? '';
+	}
+
+	private async onFeatureChange() {
+		// The entitlement timer fires on every main at once, so without this check each main publishes the same reload.
+		// `onLicenseRenewed` has no check, because the renewal runs on any main and only that main stored the new cert.
+		// TODO(leaderless): Remove this publish. Each process already updates its own features on this timer.
+		if (this.instanceSettings.isLeader) {
+			void this.broadcastReloadLicenseCommand();
+		}
+		await this.notifyRefreshCallbacks();
+	}
+
+	private async onLicenseRenewed() {
+		void this.broadcastReloadLicenseCommand();
+		await this.notifyRefreshCallbacks();
+	}
+
+	private async broadcastReloadLicenseCommand() {
+		if (this.globalConfig.executions.mode === 'queue') {
+			const { Publisher } = await import('@n8n/backend-services');
+			await Container.get(Publisher).publishCommand({ command: 'reload-license' });
+		}
+	}
+
+	async saveCertStr(value: TLicenseBlock): Promise<void> {
+		// if we have an ephemeral license, we don't want to save it to the database
+		if (this.globalConfig.license.cert) return;
+		await this.settingsRepository.upsert(
+			{
+				key: SETTINGS_LICENSE_CERT_KEY,
+				value,
+				loadOnStartup: false,
+			},
+			['key'],
+		);
+	}
+
+	/**
+	 * Register a callback to be notified when license certificate is refreshed.
+	 * Returns an unsubscribe function.
+	 */
+	onCertRefresh(refreshCallback: LicenseRefreshCallback): () => void {
+		this.refreshCallbacks.push(refreshCallback);
+		return () => {
+			const index = this.refreshCallbacks.indexOf(refreshCallback);
+			if (index > -1) {
+				this.refreshCallbacks.splice(index, 1);
+			}
+		};
+	}
+
+	private async notifyRefreshCallbacks(): Promise<void> {
+		const cert = await this.loadCertStr();
+		for (const refreshCallback of this.refreshCallbacks) {
+			try {
+				refreshCallback(cert);
+			} catch (error) {
+				this.logger.error('Error in license refresh callback', { error });
+			}
+		}
+	}
+
+	async activate(activationKey: string): Promise<void>;
+	async activate(activationKey: string, eulaUri: string, userEmail: string): Promise<void>;
+	async activate(activationKey: string, eulaUri?: string, userEmail?: string): Promise<void> {
+		if (!this.manager) {
+			return;
+		}
+
+		await this.manager.activate(activationKey, { eulaUri, email: userEmail });
+		this.logger.debug('License activated');
+	}
+
+	/** Loads the cert another instance stored. Never renews. */
+	@OnPubSubEvent('reload-license')
+	async reload(): Promise<void> {
+		if (!this.manager) {
+			return;
+		}
+		try {
+			await this.manager.reloadStoredCert();
+		} catch (error: unknown) {
+			this.logger.warn('Failed to reload the stored license cert', {
+				error: ensureError(error).message,
+			});
+			return;
+		}
+		await this.notifyRefreshCallbacks();
+		this.logger.debug('License reloaded');
+	}
+
+	/** Runs one auto-renewal pass. */
+	async renewIfDue(): Promise<void> {
+		await this.manager?.renewIfDue();
+	}
+
+	async renew() {
+		if (!this.manager) {
+			return;
+		}
+
+		await this.manager.renew();
+		this.logger.debug('License renewed');
+	}
+
+	async clear() {
+		if (!this.manager) {
+			return;
+		}
+
+		await this.manager.clear();
+		this.logger.info('License cleared');
+	}
+
+	@OnShutdown()
+	async shutdown() {
+		// Shut down License manager to unclaim any floating entitlements
+		// Note: While this saves a new license cert to DB, the previous entitlements are still kept in memory so that the shutdown process can complete
+		this.isShuttingDown = true;
+
+		if (!this.manager) {
+			return;
+		}
+
+		await this.manager.shutdown();
+		this.logger.debug('License shut down');
+	}
+
+	isLicensed(feature: BooleanLicenseFeature) {
+		return this.manager?.hasFeatureEnabled(feature) ?? false;
+	}
+
+	isCertValid(): boolean {
+		return this.manager?.isValid(false /* useLogger */) ?? false;
+	}
+
+	hasFeatureInCert(feature: BooleanLicenseFeature): boolean {
+		return this.manager?.hasFeatureEnabled(feature, false) ?? false;
+	}
+
+	/** @deprecated Use `LicenseState.isDynamicCredentialsLicensed` instead. */
+	isDynamicCredentialsEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.DYNAMIC_CREDENTIALS);
+	}
+
+	/** @deprecated Use `LicenseState.isSharingLicensed` instead. */
+	isSharingEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.SHARING);
+	}
+
+	/** @deprecated Use `LicenseState.isLogStreamingLicensed` instead. */
+	isLogStreamingEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.LOG_STREAMING);
+	}
+
+	/** @deprecated Use `LicenseState.isLdapLicensed` instead. */
+	isLdapEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.LDAP);
+	}
+
+	/** @deprecated Use `LicenseState.isSamlLicensed` instead. */
+	isSamlEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.SAML);
+	}
+
+	/** @deprecated Use `LicenseState.isAiAssistantLicensed` instead. */
+	isAiAssistantEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.AI_ASSISTANT);
+	}
+
+	/** @deprecated Use `LicenseState.isAskAiLicensed` instead. */
+	isAskAiEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.ASK_AI);
+	}
+
+	/** @deprecated Use `LicenseState.isAiCreditsLicensed` instead. */
+	isAiCreditsEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.AI_CREDITS);
+	}
+
+	/** @deprecated Use `LicenseState.isAdvancedExecutionFiltersLicensed` instead. */
+	isAdvancedExecutionFiltersEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.ADVANCED_EXECUTION_FILTERS);
+	}
+
+	/** @deprecated Use `LicenseState.isAdvancedPermissionsLicensed` instead. */
+	isAdvancedPermissionsLicensed() {
+		return this.isLicensed(LICENSE_FEATURES.ADVANCED_PERMISSIONS);
+	}
+
+	/** @deprecated Use `LicenseState.isDebugInEditorLicensed` instead. */
+	isDebugInEditorLicensed() {
+		return this.isLicensed(LICENSE_FEATURES.DEBUG_IN_EDITOR);
+	}
+
+	/** @deprecated Use `LicenseState.isBinaryDataS3Licensed` instead. */
+	isBinaryDataS3Licensed() {
+		return this.isLicensed(LICENSE_FEATURES.BINARY_DATA_S3);
+	}
+
+	/** @deprecated Use `LicenseState.isMultiMainLicensed` instead. */
+	isMultiMainLicensed() {
+		return this.isLicensed(LICENSE_FEATURES.MULTIPLE_MAIN_INSTANCES);
+	}
+
+	/** @deprecated Use `LicenseState.isVariablesLicensed` instead. */
+	isVariablesEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.VARIABLES);
+	}
+
+	/** @deprecated Use `LicenseState.isSourceControlLicensed` instead. */
+	isSourceControlLicensed() {
+		return this.isLicensed(LICENSE_FEATURES.SOURCE_CONTROL);
+	}
+
+	/** @deprecated Use `LicenseState.isExternalSecretsLicensed` instead. */
+	isExternalSecretsEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.EXTERNAL_SECRETS);
+	}
+
+	/** @deprecated Use `LicenseState.isAPIDisabled` instead. */
+	isAPIDisabled() {
+		return this.isLicensed(LICENSE_FEATURES.API_DISABLED);
+	}
+
+	/** @deprecated Use `LicenseState.isWorkerViewLicensed` instead. */
+	isWorkerViewLicensed() {
+		return this.isLicensed(LICENSE_FEATURES.WORKER_VIEW);
+	}
+
+	/** @deprecated Use `LicenseState.isProjectRoleAdminLicensed` instead. */
+	isProjectRoleAdminLicensed() {
+		return this.isLicensed(LICENSE_FEATURES.PROJECT_ROLE_ADMIN);
+	}
+
+	/** @deprecated Use `LicenseState.isProjectRoleEditorLicensed` instead. */
+	isProjectRoleEditorLicensed() {
+		return this.isLicensed(LICENSE_FEATURES.PROJECT_ROLE_EDITOR);
+	}
+
+	/** @deprecated Use `LicenseState.isProjectRoleViewerLicensed` instead. */
+	isProjectRoleViewerLicensed() {
+		return this.isLicensed(LICENSE_FEATURES.PROJECT_ROLE_VIEWER);
+	}
+
+	/** @deprecated Use `LicenseState.isCustomNpmRegistryLicensed` instead. */
+	isCustomNpmRegistryEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.COMMUNITY_NODES_CUSTOM_REGISTRY);
+	}
+
+	/** @deprecated Use `LicenseState.isFoldersLicensed` instead. */
+	isFoldersEnabled() {
+		return this.isLicensed(LICENSE_FEATURES.FOLDERS);
+	}
+
+	getCurrentEntitlements() {
+		return this.manager?.getCurrentEntitlements() ?? [];
+	}
+
+	getValue<T extends keyof FeatureReturnType>(feature: T): FeatureReturnType[T] {
+		return this.manager?.getFeatureValue(feature) as FeatureReturnType[T];
+	}
+
+	getManagementJwt(): string {
+		if (!this.manager) {
+			return '';
+		}
+		return this.manager.getManagementJwt();
+	}
+
+	/**
+	 * Helper function to get the latest main plan for a license
+	 */
+	getMainPlan(): TEntitlement | undefined {
+		if (!this.manager) {
+			return undefined;
+		}
+
+		const entitlements = this.getCurrentEntitlements();
+		if (!entitlements.length) {
+			return undefined;
+		}
+
+		entitlements.sort((a, b) => b.validFrom.getTime() - a.validFrom.getTime());
+
+		return entitlements.find(
+			(entitlement) => (entitlement.productMetadata?.terms as { isMainPlan?: boolean })?.isMainPlan,
+		);
+	}
+
+	getConsumerId() {
+		return this.manager?.getConsumerId() ?? 'unknown';
+	}
+
+	isEphemeral() {
+		return this.manager?.isEphemeral() ?? false;
+	}
+
+	getDeviceFingerprint() {
+		return this.manager?.getDeviceFingerprint();
+	}
+
+	// Helper functions for computed data
+
+	/** @deprecated Use `LicenseState` instead. */
+	getUsersLimit() {
+		return this.getValue(LICENSE_QUOTAS.USERS_LIMIT) ?? UNLIMITED_LICENSE_QUOTA;
+	}
+
+	/** @deprecated Use `LicenseState` instead. */
+	getTriggerLimit() {
+		return this.getValue(LICENSE_QUOTAS.TRIGGER_LIMIT) ?? UNLIMITED_LICENSE_QUOTA;
+	}
+
+	/** @deprecated Use `LicenseState` instead. */
+	getVariablesLimit() {
+		return this.getValue(LICENSE_QUOTAS.VARIABLES_LIMIT) ?? UNLIMITED_LICENSE_QUOTA;
+	}
+
+	/** @deprecated Use `LicenseState` instead. */
+	getAiCredits() {
+		return this.getValue(LICENSE_QUOTAS.AI_CREDITS) ?? 0;
+	}
+
+	/** @deprecated Use `LicenseState` instead. */
+	getWorkflowHistoryPruneLimit() {
+		return (
+			this.getValue(LICENSE_QUOTAS.WORKFLOW_HISTORY_PRUNE_LIMIT) ??
+			DEFAULT_WORKFLOW_HISTORY_PRUNE_LIMIT
+		);
+	}
+
+	/** @deprecated Use `LicenseState` instead. */
+	getTeamProjectLimit() {
+		return this.getValue(LICENSE_QUOTAS.TEAM_PROJECT_LIMIT) ?? 0;
+	}
+
+	/**
+	 * The SDK merges all active entitlements and lets the newest one win, so an add-on that
+	 * started later (such as Registered Community) would otherwise rename a paid plan.
+	 */
+	getPlanName(): string {
+		const mergedPlanName = this.getValue('planName');
+		// Empty when the cert is missing, invalid or expired; the entitlements alone can't tell.
+		if (mergedPlanName === undefined) return 'Community';
+
+		const planEntitlement = this.getPlanEntitlement();
+		const planName = planEntitlement && entitlementPlanName(planEntitlement);
+
+		if (planEntitlement && planName && planName !== mergedPlanName) {
+			this.logPlanNameMismatch(planEntitlement, planName, mergedPlanName);
+		}
+
+		return planName ?? mergedPlanName;
+	}
+
+	/**
+	 * The newest entitlement that names a plan and is not an add-on. Sales-led products such as
+	 * Enterprise are not marked as main plans, so a marked plan must not outrank a newer unmarked one.
+	 */
+	private getPlanEntitlement(): TEntitlement | undefined {
+		return this.getCurrentEntitlements()
+			.filter((entitlement) => {
+				const planName = entitlementPlanName(entitlement);
+				return (
+					planName !== undefined &&
+					// TODO(LIC-230): Drop the name check once sales-led products are marked as main plans.
+					planName.toLowerCase() !== REGISTERED_COMMUNITY_PLAN_NAME &&
+					isMainPlanFlag(entitlement) !== false
+				);
+			})
+			.sort((a, b) => b.validFrom.getTime() - a.validFrom.getTime())[0];
+	}
+
+	private logPlanNameMismatch(
+		planEntitlement: TEntitlement,
+		planName: string,
+		mergedPlanName: string,
+	) {
+		const key = `${planName}|${mergedPlanName}`;
+		if (this.loggedPlanNameMismatches.has(key)) return;
+		this.loggedPlanNameMismatches.add(key);
+
+		this.logger.info('License has another active entitlement that names a different plan', {
+			planName,
+			mergedPlanName,
+			planEntitlementId: planEntitlement.id,
+			overridingEntitlementIds: this.getCurrentEntitlements()
+				.filter((entitlement) => entitlementPlanName(entitlement) === mergedPlanName)
+				.map((entitlement) => entitlement.id),
+		});
+	}
+
+	/** Uses `getPlanName()` so that overrides of it, such as in E2E mode, also apply. */
+	isEnterprisePlan(): boolean {
+		return this.getPlanName() === 'Enterprise';
+	}
+
+	getExpiryDate(): Date | null {
+		try {
+			return this.manager?.getExpiryDate() ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	getTerminationDate(): Date | null {
+		try {
+			return this.manager?.getTerminationDate() ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	getExpiringInDays(): number | undefined {
+		const expiryDate = this.getExpiryDate();
+		if (!expiryDate) return undefined;
+
+		const expiryTime = expiryDate.getTime();
+		if (Number.isNaN(expiryTime)) return undefined;
+
+		const now = new Date();
+		const diffMs = expiryTime - now.getTime();
+		const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+		// Return 0 for already expired licenses instead of negative values
+		return Math.max(0, diffDays);
+	}
+
+	getTerminatingInDays(): number | undefined {
+		const terminationDate = this.getTerminationDate();
+		if (!terminationDate) return undefined;
+
+		const terminationTime = terminationDate.getTime();
+		if (Number.isNaN(terminationTime)) return undefined;
+
+		const now = new Date();
+		const diffMs = terminationTime - now.getTime();
+		const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+		// Return 0 for already terminated licenses instead of negative values
+		return Math.max(0, diffDays);
+	}
+
+	getInfo(): string {
+		if (!this.manager) {
+			return 'n/a';
+		}
+
+		return this.manager.toString();
+	}
+
+	/** @deprecated Use `LicenseState` instead. */
+	isWithinUsersLimit() {
+		// oxlint-disable-next-line typescript/no-deprecated
+		return this.getUsersLimit() === UNLIMITED_LICENSE_QUOTA;
+	}
+
+	private onExpirySoon() {
+		this.logger.info('License is about to expire soon, reloading license...');
+
+		// reload in background to avoid blocking SDK
+
+		void this.reload()
+			.then(() => {
+				this.logger.info('Reloaded license on expiry soon');
+			})
+			.catch((error) => {
+				this.logger.error('Failed to reload license on expiry soon', {
+					error: error instanceof Error ? error.message : error,
+				});
+			});
+	}
+}

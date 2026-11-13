@@ -7,19 +7,20 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
+
+import { activityFields, activityOperations } from './ActivityDescription';
+import type { IActivity } from './ActivityInterface';
+import { companyFields, companyOperations } from './CompanyDescription';
+import type { ICompany } from './CompanyInterface';
+import { dealFields, dealOperations } from './DealDescription';
+import type { IDeal } from './DealInterface';
 import {
 	salesmateApiRequest,
 	salesmateApiRequestAllItems,
 	simplifySalesmateData,
 	validateJSON,
 } from './GenericFunctions';
-import { companyFields, companyOperations } from './CompanyDescription';
-import { activityFields, activityOperations } from './ActivityDescription';
-import type { ICompany } from './CompanyInterface';
-import type { IActivity } from './ActivityInterface';
-import type { IDeal } from './DealInterface';
-import { dealFields, dealOperations } from './DealDescription';
 
 export class Salesmate implements INodeType {
 	description: INodeTypeDescription = {
@@ -34,8 +35,9 @@ export class Salesmate implements INodeType {
 		defaults: {
 			name: 'Salesmate',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'salesmateApi',
@@ -79,7 +81,7 @@ export class Salesmate implements INodeType {
 			// select them easily
 			async getUsers(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const returnData: INodePropertyOptions[] = [];
-				const users = await salesmateApiRequest.call(this, 'GET', '/v1/users/active');
+				const users = await salesmateApiRequest.call(this, 'GET', requestPath`/v1/users/active`);
 				for (const user of users.Data) {
 					const userName = user.nickname;
 					const userId = user.id;
@@ -98,7 +100,12 @@ export class Salesmate implements INodeType {
 					fields: ['name', 'id'],
 					query: {},
 				};
-				const contacts = await salesmateApiRequest.call(this, 'POST', '/v2/contacts/search', qs);
+				const contacts = await salesmateApiRequest.call(
+					this,
+					'POST',
+					requestPath`/v2/contacts/search`,
+					qs,
+				);
 				for (const contact of contacts.Data.data) {
 					const contactName = contact.name;
 					const contactId = contact.id;
@@ -117,7 +124,12 @@ export class Salesmate implements INodeType {
 					fields: ['name', 'id'],
 					query: {},
 				};
-				const companies = await salesmateApiRequest.call(this, 'POST', '/v2/companies/search', qs);
+				const companies = await salesmateApiRequest.call(
+					this,
+					'POST',
+					requestPath`/v2/companies/search`,
+					qs,
+				);
 				for (const company of companies.Data.data) {
 					const companyName = company.name;
 					const companyId = company.id;
@@ -198,7 +210,12 @@ export class Salesmate implements INodeType {
 					if (additionalFields.tags) {
 						body.tags = additionalFields.tags as string;
 					}
-					responseData = await salesmateApiRequest.call(this, 'POST', '/v1/companies', body);
+					responseData = await salesmateApiRequest.call(
+						this,
+						'POST',
+						requestPath`/v1/companies`,
+						body,
+					);
 					responseData = responseData.Data;
 					if (!rawData) {
 						delete responseData.detail;
@@ -266,7 +283,7 @@ export class Salesmate implements INodeType {
 					responseData = await salesmateApiRequest.call(
 						this,
 						'PUT',
-						`/v1/companies/${companyId}`,
+						requestPath`/v1/companies/${companyId}`,
 						body,
 					);
 					responseData = responseData.Data;
@@ -277,7 +294,11 @@ export class Salesmate implements INodeType {
 				if (operation === 'get') {
 					const companyId = this.getNodeParameter('id', i) as string;
 					const rawData = this.getNodeParameter('rawData', i);
-					responseData = await salesmateApiRequest.call(this, 'GET', `/v1/companies/${companyId}`);
+					responseData = await salesmateApiRequest.call(
+						this,
+						'GET',
+						requestPath`/v1/companies/${companyId}`,
+					);
 					responseData = responseData.Data;
 
 					if (!rawData) {
@@ -357,7 +378,7 @@ export class Salesmate implements INodeType {
 							this,
 							'Data',
 							'POST',
-							'/v2/companies/search',
+							requestPath`/v2/companies/search`,
 							body,
 							qs,
 						);
@@ -367,7 +388,7 @@ export class Salesmate implements INodeType {
 						responseData = await salesmateApiRequest.call(
 							this,
 							'POST',
-							'/v2/companies/search',
+							requestPath`/v2/companies/search`,
 							body,
 							qs,
 						);
@@ -379,7 +400,7 @@ export class Salesmate implements INodeType {
 					responseData = await salesmateApiRequest.call(
 						this,
 						'DELETE',
-						`/v1/companies/${companyId}`,
+						requestPath`/v1/companies/${companyId}`,
 					);
 				}
 			}
@@ -413,7 +434,12 @@ export class Salesmate implements INodeType {
 					if (additionalFields.tags) {
 						body.tags = additionalFields.tags as string;
 					}
-					responseData = await salesmateApiRequest.call(this, 'POST', '/v1/activities', body);
+					responseData = await salesmateApiRequest.call(
+						this,
+						'POST',
+						requestPath`/v1/activities`,
+						body,
+					);
 					responseData = responseData.Data;
 					if (!rawData) {
 						delete responseData.detail;
@@ -454,7 +480,7 @@ export class Salesmate implements INodeType {
 					responseData = await salesmateApiRequest.call(
 						this,
 						'PUT',
-						`/v1/activities/${activityId}`,
+						requestPath`/v1/activities/${activityId}`,
 						body,
 					);
 					responseData = responseData.Data;
@@ -468,7 +494,7 @@ export class Salesmate implements INodeType {
 					responseData = await salesmateApiRequest.call(
 						this,
 						'GET',
-						`/v1/activities/${activityId}`,
+						requestPath`/v1/activities/${activityId}`,
 					);
 					responseData = responseData.Data;
 
@@ -550,7 +576,7 @@ export class Salesmate implements INodeType {
 							this,
 							'Data',
 							'POST',
-							'/v2/activities/search',
+							requestPath`/v2/activities/search`,
 							body,
 							qs,
 						);
@@ -560,7 +586,7 @@ export class Salesmate implements INodeType {
 						responseData = await salesmateApiRequest.call(
 							this,
 							'POST',
-							'/v2/activities/search',
+							requestPath`/v2/activities/search`,
 							body,
 							qs,
 						);
@@ -572,7 +598,7 @@ export class Salesmate implements INodeType {
 					responseData = await salesmateApiRequest.call(
 						this,
 						'DELETE',
-						`/v1/activities/${activityId}`,
+						requestPath`/v1/activities/${activityId}`,
 					);
 				}
 			}
@@ -617,7 +643,7 @@ export class Salesmate implements INodeType {
 					if (additionalFields.priority) {
 						body.priority = additionalFields.priority as string;
 					}
-					responseData = await salesmateApiRequest.call(this, 'POST', '/v1/deals', body);
+					responseData = await salesmateApiRequest.call(this, 'POST', requestPath`/v1/deals`, body);
 					responseData = responseData.Data;
 					if (!rawData) {
 						delete responseData.detail;
@@ -670,7 +696,12 @@ export class Salesmate implements INodeType {
 					if (updateFields.priority) {
 						body.priority = updateFields.priority as string;
 					}
-					responseData = await salesmateApiRequest.call(this, 'PUT', `/v1/deals/${dealId}`, body);
+					responseData = await salesmateApiRequest.call(
+						this,
+						'PUT',
+						requestPath`/v1/deals/${dealId}`,
+						body,
+					);
 					responseData = responseData.Data;
 					if (!rawData) {
 						delete responseData.detail;
@@ -679,7 +710,11 @@ export class Salesmate implements INodeType {
 				if (operation === 'get') {
 					const dealId = this.getNodeParameter('id', i) as string;
 					const rawData = this.getNodeParameter('rawData', i);
-					responseData = await salesmateApiRequest.call(this, 'GET', `/v1/deals/${dealId}`);
+					responseData = await salesmateApiRequest.call(
+						this,
+						'GET',
+						requestPath`/v1/deals/${dealId}`,
+					);
 					responseData = responseData.Data;
 
 					if (!rawData) {
@@ -758,7 +793,7 @@ export class Salesmate implements INodeType {
 							this,
 							'Data',
 							'POST',
-							'/v2/deals/search',
+							requestPath`/v2/deals/search`,
 							body,
 							qs,
 						);
@@ -768,7 +803,7 @@ export class Salesmate implements INodeType {
 						responseData = await salesmateApiRequest.call(
 							this,
 							'POST',
-							'/v2/deals/search',
+							requestPath`/v2/deals/search`,
 							body,
 							qs,
 						);
@@ -777,7 +812,11 @@ export class Salesmate implements INodeType {
 				}
 				if (operation === 'delete') {
 					const dealId = this.getNodeParameter('id', i) as string;
-					responseData = await salesmateApiRequest.call(this, 'DELETE', `/v1/deals/${dealId}`);
+					responseData = await salesmateApiRequest.call(
+						this,
+						'DELETE',
+						requestPath`/v1/deals/${dealId}`,
+					);
 				}
 			}
 

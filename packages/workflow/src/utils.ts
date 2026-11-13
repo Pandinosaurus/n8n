@@ -1,8 +1,14 @@
+import { parse as esprimaParse, Syntax } from 'esprima-next';
+import type { Node as SyntaxNode, ExpressionStatement } from 'esprima-next';
 import FormData from 'form-data';
-import type { BinaryFileType, IDisplayOptions, INodeProperties, JsonObject } from './Interfaces';
-import { ApplicationError } from './errors/application.error';
+import { jsonrepair } from 'jsonrepair';
+import merge from 'lodash/merge';
+import path from 'path';
 
-import { merge } from 'lodash';
+import { ALPHABET } from './constants';
+import { UserError } from '@n8n/errors';
+import type { BinaryFileType, IDisplayOptions, INodeProperties, JsonObject } from './interfaces';
+import * as LoggerProxy from './logger-proxy';
 
 const readStreamClasses = new Set(['ReadStream', 'Readable', 'ReadableStream']);
 
@@ -11,6 +17,21 @@ const readStreamClasses = new Set(['ReadStream', 'Readable', 'ReadableStream']);
 BigInt.prototype.toJSON = function () {
 	return this.toString();
 };
+
+/**
+ * Type guard for plain objects suitable for key-based traversal/serialization.
+ *
+ * Returns `true` for objects whose prototype is `Object.prototype` (object literals)
+ * or `null` (`Object.create(null)`), and `false` for arrays and non-plain objects
+ * such as `Date`, `Map`, `Set`, and class instances.
+ */
+export function isObject(value: unknown): value is Record<string, unknown> {
+	if (value === null || typeof value !== 'object') return false;
+	if (Array.isArray(value)) return false;
+	if (Object.prototype.toString.call(value) !== '[object Object]') return false;
+
+	return Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null;
+}
 
 export const isObjectEmpty = (obj: object | null | undefined): boolean => {
 	if (obj === undefined || obj === null) return true;
@@ -26,6 +47,11 @@ export const isObjectEmpty = (obj: object | null | undefined): boolean => {
 };
 
 export type Primitives = string | number | boolean | bigint | symbol | null | undefined;
+
+// Property keys that must never be copied onto a clone: assigning `__proto__`
+// reassigns the clone's prototype, and `constructor`/`prototype` can shadow
+// built-ins. Source data parsed from JSON can carry these as own properties.
+const reservedCopyKeys = new Set(['__proto__', 'constructor', 'prototype']);
 
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument */
 export const deepCopy = <T extends ((object | Date) & { toJSON?: () => string }) | Primitives>(
@@ -59,7 +85,7 @@ export const deepCopy = <T extends ((object | Date) & { toJSON?: () => string })
 	const clone = Object.create(Object.getPrototypeOf({}));
 	hash.set(source, clone);
 	for (const i in source) {
-		if (hasOwnProp(i)) {
+		if (hasOwnProp(i) && !reservedCopyKeys.has(i)) {
 			clone[i] = deepCopy((source as any)[i], hash, path + `.${i}`);
 		}
 	}
@@ -67,20 +93,93 @@ export const deepCopy = <T extends ((object | Date) & { toJSON?: () => string })
 };
 // eslint-enable
 
+function syntaxNodeToValue(expression?: SyntaxNode | null): unknown {
+	switch (expression?.type) {
+		case Syntax.ObjectExpression:
+			return Object.fromEntries(
+				expression.properties
+					.filter((prop) => prop.type === Syntax.Property)
+					.map(({ key, value }) => [syntaxNodeToValue(key), syntaxNodeToValue(value)]),
+			);
+		case Syntax.Identifier:
+			return expression.name;
+		case Syntax.Literal:
+			return expression.value;
+		case Syntax.ArrayExpression:
+			return expression.elements.map((exp) => syntaxNodeToValue(exp));
+		case Syntax.UnaryExpression: {
+			const value = syntaxNodeToValue(expression.argument);
+			if (typeof value === 'number' && expression.operator === '-') {
+				return -value;
+			}
+			return value;
+		}
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * Parse any JavaScript ObjectExpression, including:
+ * - single quoted keys
+ * - unquoted keys
+ */
+function parseJSObject(objectAsString: string): object {
+	const jsExpression = esprimaParse(`(${objectAsString})`).body.find(
+		(node): node is ExpressionStatement =>
+			node.type === Syntax.ExpressionStatement && node.expression.type === Syntax.ObjectExpression,
+	);
+
+	return syntaxNodeToValue(jsExpression?.expression) as object;
+}
+
 type MutuallyExclusive<T, U> =
 	| (T & { [k in Exclude<keyof U, keyof T>]?: never })
 	| (U & { [k in Exclude<keyof T, keyof U>]?: never });
 
-type JSONParseOptions<T> = MutuallyExclusive<{ errorMessage: string }, { fallbackValue: T }>;
+type JSONParseOptions<T> = { acceptJSObject?: boolean; repairJSON?: boolean } & MutuallyExclusive<
+	{ errorMessage?: string },
+	{ fallbackValue?: T }
+>;
 
+/**
+ * Parses a JSON string into an object with optional error handling and recovery mechanisms.
+ *
+ * @param {string} jsonString - The JSON string to parse.
+ * @param {Object} [options] - Optional settings for parsing the JSON string. Either `fallbackValue` or `errorMessage` can be set, but not both.
+ * @param {boolean} [options.acceptJSObject=false] - If true, attempts to recover from common JSON format errors by parsing the JSON string as a JavaScript Object.
+ * @param {boolean} [options.repairJSON=false] - If true, attempts to repair common JSON format errors by repairing the JSON string.
+ * @param {string} [options.errorMessage] - A custom error message to throw if the JSON string cannot be parsed.
+ * @param {*} [options.fallbackValue] - A fallback value to return if the JSON string cannot be parsed.
+ * @returns {Object} - The parsed object, or the fallback value if parsing fails and `fallbackValue` is set.
+ */
 export const jsonParse = <T>(jsonString: string, options?: JSONParseOptions<T>): T => {
 	try {
 		return JSON.parse(jsonString) as T;
 	} catch (error) {
+		if (options?.acceptJSObject) {
+			try {
+				const jsonStringCleaned = parseJSObject(jsonString);
+				return jsonStringCleaned as T;
+			} catch (e) {
+				// Ignore this error and return the original error or the fallback value
+			}
+		}
+		if (options?.repairJSON) {
+			try {
+				const jsonStringCleaned = jsonrepair(jsonString);
+				return JSON.parse(jsonStringCleaned) as T;
+			} catch (e) {
+				// Ignore this error and return the original error or the fallback value
+			}
+		}
 		if (options?.fallbackValue !== undefined) {
+			if (options.fallbackValue instanceof Function) {
+				return options.fallbackValue();
+			}
 			return options.fallbackValue;
 		} else if (options?.errorMessage) {
-			throw new ApplicationError(options.errorMessage);
+			throw new UserError(options.errorMessage);
 		}
 
 		throw error;
@@ -91,6 +190,28 @@ type JSONStringifyOptions = {
 	replaceCircularRefs?: boolean;
 };
 
+/**
+ * Decodes a Base64 string with proper UTF-8 character handling.
+ *
+ * @param str - The Base64 string to decode
+ * @returns The decoded UTF-8 string
+ */
+export const base64DecodeUTF8 = (str: string): string => {
+	try {
+		// Use modern TextDecoder for proper UTF-8 handling
+		const bytes = new Uint8Array(
+			atob(str)
+				.split('')
+				.map((char) => char.charCodeAt(0)),
+		);
+		return new TextDecoder('utf-8').decode(bytes);
+	} catch (error) {
+		// Fallback method for older browsers
+		console.warn('TextDecoder not available, using fallback method');
+		return atob(str);
+	}
+};
+
 export const replaceCircularReferences = <T>(value: T, knownObjects = new WeakSet()): T => {
 	if (typeof value !== 'object' || value === null || value instanceof RegExp) return value;
 	if ('toJSON' in value && typeof value.toJSON === 'function') return value.toJSON() as T;
@@ -98,7 +219,19 @@ export const replaceCircularReferences = <T>(value: T, knownObjects = new WeakSe
 	knownObjects.add(value);
 	const copy = (Array.isArray(value) ? [] : {}) as T;
 	for (const key in value) {
-		copy[key] = replaceCircularReferences(value[key], knownObjects);
+		if (reservedCopyKeys.has(key)) continue;
+		try {
+			copy[key] = replaceCircularReferences(value[key], knownObjects);
+		} catch (error: unknown) {
+			if (
+				error instanceof TypeError &&
+				error.message.includes('Cannot assign to read only property')
+			) {
+				LoggerProxy.error('Error while replacing circular references: ' + error.message, { error });
+				continue; // Skip properties that cannot be assigned to (readonly, non-configurable, etc.)
+			}
+			throw error;
+		}
 	}
 	knownObjects.delete(value);
 	return copy;
@@ -108,10 +241,10 @@ export const jsonStringify = (obj: unknown, options: JSONStringifyOptions = {}):
 	return JSON.stringify(options?.replaceCircularRefs ? replaceCircularReferences(obj) : obj);
 };
 
-export const sleep = async (ms: number): Promise<void> =>
-	await new Promise((resolve) => {
-		setTimeout(resolve, ms);
-	});
+// Kept only as a backwards-compat layer for community nodes — internal code
+// must import `sleep` from `@n8n/utils/sleep` (enforced by eslint rule
+// no-restricted-sleep-import).
+export { sleep } from '@n8n/utils/sleep';
 
 export function fileTypeFromMimeType(mimeType: string): BinaryFileType | undefined {
 	if (mimeType.startsWith('application/json')) return 'json';
@@ -178,4 +311,194 @@ export function updateDisplayOptions(
 			displayOptions: merge({}, nodeProperty.displayOptions, displayOptions),
 		};
 	});
+}
+
+export function randomInt(max: number): number;
+export function randomInt(min: number, max: number): number;
+/**
+ * Generates a random integer within a specified range.
+ *
+ * @param {number} min - The lower bound of the range. If `max` is not provided, this value is used as the upper bound and the lower bound is set to 0.
+ * @param {number} [max] - The upper bound of the range, not inclusive.
+ * @returns {number} A random integer within the specified range.
+ */
+export function randomInt(min: number, max?: number): number {
+	if (max === undefined) {
+		max = min;
+		min = 0;
+	}
+	return min + (crypto.getRandomValues(new Uint32Array(1))[0] % (max - min));
+}
+
+export function randomString(length: number): string;
+export function randomString(minLength: number, maxLength: number): string;
+/**
+ * Generates a random alphanumeric string of a specified length, or within a range of lengths.
+ *
+ * @param {number} minLength - If `maxLength` is not provided, this is the length of the string to generate. Otherwise, this is the lower bound of the range of possible lengths.
+ * @param {number} [maxLength] - The upper bound of the range of possible lengths. If provided, the actual length of the string will be a random number between `minLength` and `maxLength`, inclusive.
+ * @returns {string} A random alphanumeric string of the specified length or within the specified range of lengths.
+ */
+export function randomString(minLength: number, maxLength?: number): string {
+	const length = maxLength === undefined ? minLength : randomInt(minLength, maxLength + 1);
+	return [...crypto.getRandomValues(new Uint32Array(length))]
+		.map((byte) => ALPHABET[byte % ALPHABET.length])
+		.join('');
+}
+
+/**
+ * Checks if a value is an object with a specific key and provides a type guard for the key.
+ */
+export function hasKey<T extends PropertyKey>(value: unknown, key: T): value is Record<T, unknown> {
+	return value !== null && typeof value === 'object' && value.hasOwnProperty(key);
+}
+
+/**
+ * Names rejected for static and literal member access by the expression
+ * transform, and for runtime-built keys by each engine's runtime sanitizer.
+ * Exported so other engine runtimes can be checked against it
+ * (test/expression-sanitize-parity.test.ts).
+ */
+export const unsafeObjectProperties: ReadonlySet<string> = new Set([
+	'__proto__',
+	'prototype',
+	'constructor',
+	'getPrototypeOf',
+	'setPrototypeOf',
+	'getOwnPropertyDescriptor',
+	'getOwnPropertyDescriptors',
+	'defineProperty',
+	'defineProperties',
+	'mainModule',
+	'binding',
+	'_linkedBinding',
+	'_load',
+	'prepareStackTrace',
+	'__lookupGetter__',
+	'__lookupSetter__',
+	'__defineGetter__',
+	'__defineSetter__',
+	'caller',
+	'callee',
+	'arguments',
+	'getBuiltinModule',
+	'dlopen',
+	'execve',
+	'loadEnvFile',
+]);
+
+/**
+ * Checks if a property key is safe to use on an object, preventing prototype pollution.
+ * setting untrusted properties can alter the object's prototype chain and introduce vulnerabilities.
+ *
+ * @see setSafeObjectProperty
+ */
+export function isSafeObjectProperty(property: string) {
+	return !unsafeObjectProperties.has(property);
+}
+
+/**
+ * Checks if a value can be used as an own key of a plain object: it has to be a string,
+ * and not a name that resolves to an inherited member.
+ *
+ * Use this where the key comes from data rather than from code — a node name, or a
+ * connection field in a stored workflow. `isSafeObjectProperty` is declared
+ * `(property: string)` but only tests the name, so a value that is not a string at
+ * runtime passes it and is then coerced by the bracket access that follows:
+ * `obj[['__proto__']]` writes to `obj['__proto__']`.
+ *
+ * It is a separate function on purpose. `isSafeObjectProperty` is also called with keys
+ * that are legitimately not strings, such as the numeric literal in `items[0]` while an
+ * expression is sanitised, so it cannot require a string itself.
+ */
+export function isUsableObjectKey(value: unknown): value is string {
+	return typeof value === 'string' && isSafeObjectProperty(value);
+}
+
+// eslint-disable-next-line n8n-local-rules/no-dynamic-regexp -- static pattern
+const unsafeObjectPropertyTokenPattern = new RegExp(
+	`\\b(?:${[...unsafeObjectProperties]
+		.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+		.join('|')})\\b`,
+);
+
+export function containsUnsafeObjectPropertyToken(input: string) {
+	return unsafeObjectPropertyTokenPattern.test(input);
+}
+
+/**
+ * Safely sets a property on an object, preventing prototype pollution.
+ *
+ * @see isSafeObjectProperty
+ */
+export function setSafeObjectProperty(
+	target: Record<string, unknown>,
+	property: string,
+	value: unknown,
+) {
+	if (isSafeObjectProperty(property)) {
+		target[property] = value;
+	}
+}
+
+const DANGEROUS_XML_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+
+export function sanitizeXmlName(name: string) {
+	if (DANGEROUS_XML_NAMES.has(name)) return `sanitized_${name}`;
+
+	return name;
+}
+
+const COMMUNITY_PACKAGE_NAME_REGEX = /^(?!@n8n\/)(@[\w.-]+\/)?n8n-nodes-(?!base\b)\b\w+/g;
+
+export function isCommunityPackageName(packageName: string): boolean {
+	COMMUNITY_PACKAGE_NAME_REGEX.lastIndex = 0;
+	// Community packages names start with <@username/>n8n-nodes- not followed by word 'base'
+	const nameMatch = COMMUNITY_PACKAGE_NAME_REGEX.exec(packageName);
+
+	return !!nameMatch;
+}
+
+export function dedupe<T>(arr: T[]): T[] {
+	return [...new Set(arr)];
+}
+
+/**
+ * Extracts a safe filename from a path or filename string.
+ *
+ * Handles both Unix and Windows path separators, removing directory
+ * components and null bytes to return just the filename.
+ *
+ * @param fileName - The filename or path to sanitize
+ * @returns The extracted filename without path components
+ *
+ * @example
+ * sanitizeFilename('path/to/file.txt') // returns 'file.txt'
+ * sanitizeFilename('/tmp/upload/doc.pdf') // returns 'doc.pdf'
+ * sanitizeFilename('C:\\Users\\file.txt') // returns 'file.txt'
+ * sanitizeFilename('../../../etc/passwd') // returns 'passwd'
+ */
+export function sanitizeFilename(fileName: string): string {
+	// Normalize to forward slashes first to handle Windows paths on Unix
+	const normalized = fileName.replace(/\\/g, '/');
+
+	// Extract just the filename, stripping all directory components
+	let sanitized = path.basename(normalized);
+
+	// Remove null bytes which could be used for null byte injection attacks
+	sanitized = sanitized.replace(/\0/g, '');
+
+	// If the result is empty or just dots, use a default name
+	if (!sanitized || /^\.+$/.test(sanitized)) {
+		sanitized = 'untitled';
+	}
+
+	return sanitized;
+}
+
+/** Generates a cryptographically secure 64-character hex token (256 bits). */
+export function generateSecureToken(): string {
+	const bytes = new Uint8Array(32);
+	crypto.getRandomValues(bytes);
+	return bytes.reduce((hex, byte) => hex + byte.toString(16).padStart(2, '0'), '');
 }

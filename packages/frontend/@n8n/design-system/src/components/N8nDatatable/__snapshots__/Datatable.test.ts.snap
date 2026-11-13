@@ -1,0 +1,119 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`components > N8nDatatable > should render correctly 1`] = `
+"<div data-v-c73ff18f="" class="datatable datatableWrapper">
+  <div data-v-c73ff18f="" class="n8nTable">
+    <div class="n8nTableScroll" data-test-id="table-base-scroll">
+      <table>
+        <thead data-v-c73ff18f="">
+          <tr data-v-c73ff18f="">
+            <th data-v-c73ff18f="" class="">ID</th>
+            <th data-v-c73ff18f="" class="">Name</th>
+            <th data-v-c73ff18f="" class="">Age</th>
+            <th data-v-c73ff18f="" class="">Action</th>
+          </tr>
+        </thead>
+        <tbody data-v-c73ff18f="">
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">1</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Richard Hendricks</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">29</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">2</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Bertram Gilfoyle</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">44</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">3</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Dinesh Chugtai</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">31</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">4</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Jared Dunn </span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">38</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">5</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Richard Hendricks</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">29</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">6</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Bertram Gilfoyle</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">44</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">7</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Dinesh Chugtai</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">31</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">8</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Jared Dunn </span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">38</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">9</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Richard Hendricks</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">29</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+          <tr data-v-c73ff18f="">
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">10</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">Bertram Gilfoyle</span></td>
+            <td data-v-c73ff18f="" class=""><span data-v-c73ff18f="">44</span></td>
+            <td data-v-c73ff18f="" class="">
+              <n8n-button-stub data-v-c73ff18f="" variant="solid" size="medium" loading="false" icononly="false" disabled="false" class="" column="[object Object]"></n8n-button-stub>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div data-v-c73ff18f="" class="n8n-pagination paginationContainer medium pagination" data-test-id="pagination">
+    <div class="total" data-test-id="pagination-total">Total 15</div>
+    <nav>
+      <div class="paginationList" data-test-id="pagination-list"><span class="disabledTrigger" data-state="closed" data-grace-area-trigger=""><n8n-button-stub icon="chevron-left" variant="ghost" size="medium" loading="false" icononly="true" disabled="true" class="" aria-label="Previous page" type="button" data-test-id="pagination-prev"></n8n-button-stub></span>
+        <!--v-if--><button data-type="page" aria-label="Page 1" aria-current="page" data-selected="true" type="button" class="paginationItem" data-test-id="pagination-item" value="1">1</button><button data-type="page" aria-label="Page 2" type="button" class="paginationItem" data-test-id="pagination-item" value="2">2</button><span class="" data-state="closed" data-grace-area-trigger=""><n8n-button-stub icon="chevron-right" variant="ghost" size="medium" loading="false" icononly="true" disabled="false" class="" aria-label="Next page" type="button" data-test-id="pagination-next"></n8n-button-stub></span>
+        <!--v-if-->
+      </div>
+    </nav>
+    <div data-test-id="pagination-sizes" aria-label="Page size" tabindex="0" class="selectTrigger medium pageSizes" role="combobox" aria-expanded="false" aria-required="false" aria-autocomplete="none" disabled="false" dir="ltr" data-state="closed">
+      <!--v-if--><span style="pointer-events: none;" data-placeholder="Select an option" class="selectValue">10/page</span>
+      <!--v-if--><svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" class="n8n-icon trailingIcon" aria-hidden="true" focusable="false" role="img" height="1em" width="1em" data-icon="chevron-down">
+        <path d="M15.56 5.25 8 12.81.44 5.25 1.5 4.19l6.5 6.5 6.5-6.5z"></path>
+      </svg>
+    </div>
+    <!--v-if--><select aria-hidden="true" tabindex="-1" style="position: absolute; border: 0px; width: 1px; height: 1px; padding: 0px; margin: -1px; overflow: hidden; clip: rect(0px, 0px, 0px, 0px); clip-path: inset(50%); white-space: nowrap; word-wrap: normal;" value="10"></select>
+    <!--v-if-->
+  </div>
+</div>"
+`;
